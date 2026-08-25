@@ -6,59 +6,9 @@
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://www.greatkenyanjobs.com/about</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.5</priority>
-  </url>
-  <url>
-    <loc>https://www.greatkenyanjobs.com/career-tips</loc>
-    <changefreq>weekly</changefreq>
-    <priority>0.6</priority>
-  </url>
-  <url>
-    <loc>https://www.greatkenyanjobs.com/categories</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
     <loc>https://www.greatkenyanjobs.com/companies</loc>
     <changefreq>daily</changefreq>
     <priority>0.8</priority>
-  </url>
-  <url>
-    <loc>https://www.greatkenyanjobs.com/companies/recent-jobs</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
-    <loc>https://www.greatkenyanjobs.com/contact</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.4</priority>
-  </url>
-  <url>
-    <loc>https://www.greatkenyanjobs.com/employer/employer-services</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.5</priority>
-  </url>
-  <url>
-    <loc>https://www.greatkenyanjobs.com/employer/service-pricing</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.5</priority>
-  </url>
-  <url>
-    <loc>https://www.greatkenyanjobs.com/employer/upload</loc>
-    <changefreq>weekly</changefreq>
-    <priority>0.6</priority>
-  </url>
-  <url>
-    <loc>https://www.greatkenyanjobs.com/info</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.3</priority>
-  </url>
-  <url>
-    <loc>https://www.greatkenyanjobs.com/job-categories/recent-jobs</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.7</priority>
   </url>
   <url>
     <loc>https://www.greatkenyanjobs.com/jobs</loc>
@@ -66,42 +16,27 @@
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://www.greatkenyanjobs.com/jobs/newest-jobs</loc>
-    <changefreq>always</changefreq>
-    <priority>0.9</priority>
-  </url>
-  <url>
-    <loc>https://www.greatkenyanjobs.com/jobs/related-jobs</loc>
-    <changefreq>always</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
-    <loc>https://www.greatkenyanjobs.com/jobs/weekly-jobs</loc>
-    <changefreq>always</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
-    <loc>https://www.greatkenyanjobs.com/jobseeker/cv-expert-look</loc>
-    <changefreq>weekly</changefreq>
+    <loc>https://www.greatkenyanjobs.com/pages/about</loc>
+    <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
-    <loc>https://www.greatkenyanjobs.com/jobseeker/job-alerts</loc>
-    <changefreq>weekly</changefreq>
-    <priority>0.6</priority>
+    <loc>https://www.greatkenyanjobs.com/pages/contact</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.4</priority>
   </url>
   <url>
-    <loc>https://www.greatkenyanjobs.com/privacy-policy</loc>
+    <loc>https://www.greatkenyanjobs.com/pages/privacy-policy</loc>
     <changefreq>monthly</changefreq>
     <priority>0.3</priority>
   </url>
   <url>
-    <loc>https://www.greatkenyanjobs.com/telegram</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.5</priority>
+    <loc>https://www.greatkenyanjobs.com/pages/terms-conditions</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://www.greatkenyanjobs.com/whatsapp</loc>
+    <loc>https://www.greatkenyanjobs.com/social-media/featured</loc>
     <changefreq>daily</changefreq>
     <priority>0.5</priority>
   </url>
