@@ -1,0 +1,851 @@
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\Job\JobCategory;
+use Illuminate\Console\Command;
+use Illuminate\Support\Str;
+
+class ImportJobCategories extends Command
+{
+    protected $signature = 'import:job-categories 
+                            {country? : Specific country to import (AU, UG, KE, RW, TZ, MW, ZM, SG, ZA)}
+                            {--force : Force update existing records}
+                            {--dry-run : Show what would be imported without actually importing}';
+    
+    protected $description = 'Import job categories for supported countries';
+
+    // Country-specific job categories
+    protected const CATEGORY_DATA = [
+        'AU' => [
+            'country_name' => 'Australia',
+            'categories' => [
+                ['name' => 'Accounting/ Finance', 'sort' => 1],
+                ['name' => 'Administrative', 'sort' => 2],
+                ['name' => 'Advertising', 'sort' => 3],
+                ['name' => 'Airlines/ Avionics/ Aerospace', 'sort' => 4],
+                ['name' => 'Architectural', 'sort' => 5],
+                ['name' => 'Automotive', 'sort' => 6],
+                ['name' => 'Banking/ Finance', 'sort' => 7],
+                ['name' => 'Biotechnology', 'sort' => 8],
+                ['name' => 'Civil/ Construction', 'sort' => 9],
+                ['name' => 'Engineering', 'sort' => 10],
+                ['name' => 'Cleared', 'sort' => 11],
+                ['name' => 'Communications/ Public Relations', 'sort' => 12],
+                ['name' => 'Computer/ IT', 'sort' => 13],
+                ['name' => 'Construction', 'sort' => 14],
+                ['name' => 'Consultant/ Contractual', 'sort' => 15],
+                ['name' => 'Customer Service', 'sort' => 16],
+                ['name' => 'Defense', 'sort' => 17],
+                ['name' => 'Design', 'sort' => 18],
+                ['name' => 'Education/ Academic/ Teaching', 'sort' => 19],
+                ['name' => 'Electrical Engineering', 'sort' => 20],
+                ['name' => 'Electronics Engineering', 'sort' => 21],
+                ['name' => 'Energy', 'sort' => 22],
+                ['name' => 'Environmental/ Safety', 'sort' => 24],
+                ['name' => 'Fundraising', 'sort' => 25],
+                ['name' => 'Health/ Medicine', 'sort' => 26],
+                ['name' => 'Security, Homeland Security', 'sort' => 27],
+                ['name' => 'Human Resource', 'sort' => 28],
+                ['name' => 'Insurance', 'sort' => 29],
+                ['name' => 'Intelligence', 'sort' => 30],
+                ['name' => 'Internships/ Trainee', 'sort' => 31],
+                ['name' => 'Legal', 'sort' => 32],
+                ['name' => 'Logistics/ Transportation/ Procurements', 'sort' => 33],
+                ['name' => 'Maintenance', 'sort' => 34],
+                ['name' => 'Management', 'sort' => 35],
+                ['name' => 'Manufacturing/ Warehouse', 'sort' => 36],
+                ['name' => 'Marketing', 'sort' => 37],
+                ['name' => 'Materials Management', 'sort' => 38],
+                ['name' => 'Mechanical Engineering', 'sort' => 39],
+                ['name' => 'Mortgage/ Real Estate', 'sort' => 40],
+                ['name' => 'National Security', 'sort' => 41],
+                ['name' => 'Part-time/ Freelance', 'sort' => 42],
+                ['name' => 'Printing', 'sort' => 43],
+                ['name' => 'Product Design', 'sort' => 44],
+                ['name' => 'Public Relations', 'sort' => 45],
+                ['name' => 'Public Safety', 'sort' => 46],
+                ['name' => 'Data, Monitoring, and Research', 'sort' => 47],
+                ['name' => 'Retail', 'sort' => 48],
+                ['name' => 'Sales', 'sort' => 49],
+                ['name' => 'Scientific', 'sort' => 50],
+                ['name' => 'Shipping/ Distribution', 'sort' => 51],
+                ['name' => 'Technician', 'sort' => 52],
+                ['name' => 'Trade', 'sort' => 53],
+                ['name' => 'Transportation', 'sort' => 54],
+                ['name' => 'Transportation Engineering', 'sort' => 55],
+                ['name' => 'Web Site Development', 'sort' => 56],
+                ['name' => 'Environment, Forestry and Agriculture', 'sort' => 57],
+                ['name' => 'Several Jobs in one Advert', 'sort' => 58],
+                ['name' => 'NGO - Non Government Organisations', 'sort' => 59],
+                ['name' => 'Junior Job/ Fresh Graduate/ Entry Level', 'sort' => 60],
+                ['name' => 'Government', 'sort' => 61],
+                ['name' => 'Corporate / Organisation Officer', 'sort' => 62],
+                ['name' => 'Corporate / Organisation Specialist', 'sort' => 63],
+                ['name' => 'Corporate / Organisation Coordinator', 'sort' => 64],
+                ['name' => 'Corporate / Organisation Middle Management', 'sort' => 65],
+                ['name' => 'Corporate / Organisation Control', 'sort' => 66],
+                ['name' => 'Corporate / Organisation Management', 'sort' => 67],
+                ['name' => 'Corporate / Organisation Top Management / CEO', 'sort' => 68],
+                ['name' => 'Corporate / Organisation Director', 'sort' => 69],
+                ['name' => 'Tenders', 'sort' => 70],
+                ['name' => 'Hospitality/ Chef/ Cook', 'sort' => 71],
+            ],
+        ],
+        'UG' => [
+            'country_name' => 'Uganda',
+            'categories' => [
+                ['name' => 'Accounting/ Finance', 'sort' => 1],
+                ['name' => 'Administrative', 'sort' => 2],
+                ['name' => 'Advertising', 'sort' => 3],
+                ['name' => 'Airlines/ Avionics/ Aerospace', 'sort' => 4],
+                ['name' => 'Architectural', 'sort' => 5],
+                ['name' => 'Automotive', 'sort' => 6],
+                ['name' => 'Banking/ Finance', 'sort' => 7],
+                ['name' => 'Biotechnology', 'sort' => 8],
+                ['name' => 'Civil/ Construction', 'sort' => 9],
+                ['name' => 'Engineering', 'sort' => 10],
+                ['name' => 'Cleared', 'sort' => 11],
+                ['name' => 'Communications/ Public Relations', 'sort' => 12],
+                ['name' => 'Computer/ IT', 'sort' => 13],
+                ['name' => 'Construction', 'sort' => 14],
+                ['name' => 'Consultant/ Contractual', 'sort' => 15],
+                ['name' => 'Customer Service', 'sort' => 16],
+                ['name' => 'Defense', 'sort' => 17],
+                ['name' => 'Design', 'sort' => 18],
+                ['name' => 'Education/ Academic/ Teaching', 'sort' => 19],
+                ['name' => 'Electrical Engineering', 'sort' => 20],
+                ['name' => 'Electronics Engineering', 'sort' => 21],
+                ['name' => 'Energy', 'sort' => 22],
+                ['name' => 'Environmental/ Safety', 'sort' => 24],
+                ['name' => 'Fundraising', 'sort' => 25],
+                ['name' => 'Health/ Medicine', 'sort' => 26],
+                ['name' => 'Security, Homeland Security', 'sort' => 27],
+                ['name' => 'Human Resource', 'sort' => 28],
+                ['name' => 'Insurance', 'sort' => 29],
+                ['name' => 'Intelligence', 'sort' => 30],
+                ['name' => 'Internships/ Trainee', 'sort' => 31],
+                ['name' => 'Legal', 'sort' => 32],
+                ['name' => 'Logistics/ Transportation/ Procurements', 'sort' => 33],
+                ['name' => 'Maintenance', 'sort' => 34],
+                ['name' => 'Management', 'sort' => 35],
+                ['name' => 'Manufacturing/ Warehouse', 'sort' => 36],
+                ['name' => 'Marketing', 'sort' => 37],
+                ['name' => 'Materials Management', 'sort' => 38],
+                ['name' => 'Mechanical Engineering', 'sort' => 39],
+                ['name' => 'Mortgage/ Real Estate', 'sort' => 40],
+                ['name' => 'National Security', 'sort' => 41],
+                ['name' => 'Part-time/ Freelance', 'sort' => 42],
+                ['name' => 'Printing', 'sort' => 43],
+                ['name' => 'Product Design', 'sort' => 44],
+                ['name' => 'Public Relations', 'sort' => 45],
+                ['name' => 'Public Safety', 'sort' => 46],
+                ['name' => 'Data, Monitoring, and Research', 'sort' => 47],
+                ['name' => 'Retail', 'sort' => 48],
+                ['name' => 'Sales', 'sort' => 49],
+                ['name' => 'Scientific', 'sort' => 50],
+                ['name' => 'Shipping/ Distribution', 'sort' => 51],
+                ['name' => 'Technician', 'sort' => 52],
+                ['name' => 'Trade', 'sort' => 53],
+                ['name' => 'Transportation', 'sort' => 54],
+                ['name' => 'Transportation Engineering', 'sort' => 55],
+                ['name' => 'Web Site Development', 'sort' => 56],
+                ['name' => 'Environment, Forestry and Agriculture', 'sort' => 57],
+                ['name' => 'Several Jobs in one Advert', 'sort' => 58],
+                ['name' => 'NGO - Non Government Organisations', 'sort' => 59],
+                ['name' => 'Junior Job/ Fresh Graduate/ Entry Level', 'sort' => 60],
+                ['name' => 'Government', 'sort' => 61],
+                ['name' => 'Corporate / Organisation Officer', 'sort' => 62],
+                ['name' => 'Corporate / Organisation Specialist', 'sort' => 63],
+                ['name' => 'Corporate / Organisation Coordinator', 'sort' => 64],
+                ['name' => 'Corporate / Organisation Middle Management', 'sort' => 65],
+                ['name' => 'Corporate / Organisation Control', 'sort' => 66],
+                ['name' => 'Corporate / Organisation Management', 'sort' => 67],
+                ['name' => 'Corporate / Organisation Top Management / CEO', 'sort' => 68],
+                ['name' => 'Corporate / Organisation Director', 'sort' => 69],
+                ['name' => 'Tenders', 'sort' => 70],
+                ['name' => 'Hospitality/ Chef/ Cook', 'sort' => 71],
+            ],
+        ],
+        'KE' => [
+            'country_name' => 'Kenya',
+            'categories' => [
+                ['name' => 'Accounting/ Finance', 'sort' => 1],
+                ['name' => 'Administrative', 'sort' => 2],
+                ['name' => 'Advertising', 'sort' => 3],
+                ['name' => 'Airlines/ Avionics/ Aerospace', 'sort' => 4],
+                ['name' => 'Architectural', 'sort' => 5],
+                ['name' => 'Automotive', 'sort' => 6],
+                ['name' => 'Banking/ Finance', 'sort' => 7],
+                ['name' => 'Biotechnology', 'sort' => 8],
+                ['name' => 'Civil/ Construction', 'sort' => 9],
+                ['name' => 'Engineering', 'sort' => 10],
+                ['name' => 'Cleared', 'sort' => 11],
+                ['name' => 'Communications/ Public Relations', 'sort' => 12],
+                ['name' => 'Computer/ IT', 'sort' => 13],
+                ['name' => 'Construction', 'sort' => 14],
+                ['name' => 'Consultant/ Contractual', 'sort' => 15],
+                ['name' => 'Customer Service', 'sort' => 16],
+                ['name' => 'Defense', 'sort' => 17],
+                ['name' => 'Design', 'sort' => 18],
+                ['name' => 'Education/ Academic/ Teaching', 'sort' => 19],
+                ['name' => 'Electrical Engineering', 'sort' => 20],
+                ['name' => 'Electronics Engineering', 'sort' => 21],
+                ['name' => 'Energy', 'sort' => 22],
+                ['name' => 'Environmental/ Safety', 'sort' => 24],
+                ['name' => 'Fundraising', 'sort' => 25],
+                ['name' => 'Health/ Medicine', 'sort' => 26],
+                ['name' => 'Security, Homeland Security', 'sort' => 27],
+                ['name' => 'Human Resource', 'sort' => 28],
+                ['name' => 'Insurance', 'sort' => 29],
+                ['name' => 'Intelligence', 'sort' => 30],
+                ['name' => 'Internships/ Trainee', 'sort' => 31],
+                ['name' => 'Legal', 'sort' => 32],
+                ['name' => 'Logistics/ Transportation/ Procurements', 'sort' => 33],
+                ['name' => 'Maintenance', 'sort' => 34],
+                ['name' => 'Management', 'sort' => 35],
+                ['name' => 'Manufacturing/ Warehouse', 'sort' => 36],
+                ['name' => 'Marketing', 'sort' => 37],
+                ['name' => 'Materials Management', 'sort' => 38],
+                ['name' => 'Mechanical Engineering', 'sort' => 39],
+                ['name' => 'Mortgage/ Real Estate', 'sort' => 40],
+                ['name' => 'National Security', 'sort' => 41],
+                ['name' => 'Part-time/ Freelance', 'sort' => 42],
+                ['name' => 'Printing', 'sort' => 43],
+                ['name' => 'Product Design', 'sort' => 44],
+                ['name' => 'Public Relations', 'sort' => 45],
+                ['name' => 'Public Safety', 'sort' => 46],
+                ['name' => 'Data, Monitoring, and Research', 'sort' => 47],
+                ['name' => 'Retail', 'sort' => 48],
+                ['name' => 'Sales', 'sort' => 49],
+                ['name' => 'Scientific', 'sort' => 50],
+                ['name' => 'Shipping/ Distribution', 'sort' => 51],
+                ['name' => 'Technician', 'sort' => 52],
+                ['name' => 'Trade', 'sort' => 53],
+                ['name' => 'Transportation', 'sort' => 54],
+                ['name' => 'Transportation Engineering', 'sort' => 55],
+                ['name' => 'Web Site Development', 'sort' => 56],
+                ['name' => 'Environment, Forestry and Agriculture', 'sort' => 57],
+                ['name' => 'Several Jobs in one Advert', 'sort' => 58],
+                ['name' => 'NGO - Non Government Organisations', 'sort' => 59],
+                ['name' => 'Junior Job/ Fresh Graduate/ Entry Level', 'sort' => 60],
+                ['name' => 'Government', 'sort' => 61],
+                ['name' => 'Corporate / Organisation Officer', 'sort' => 62],
+                ['name' => 'Corporate / Organisation Specialist', 'sort' => 63],
+                ['name' => 'Corporate / Organisation Coordinator', 'sort' => 64],
+                ['name' => 'Corporate / Organisation Middle Management', 'sort' => 65],
+                ['name' => 'Corporate / Organisation Control', 'sort' => 66],
+                ['name' => 'Corporate / Organisation Management', 'sort' => 67],
+                ['name' => 'Corporate / Organisation Top Management / CEO', 'sort' => 68],
+                ['name' => 'Corporate / Organisation Director', 'sort' => 69],
+                ['name' => 'Tenders', 'sort' => 70],
+                ['name' => 'Hospitality/ Chef/ Cook', 'sort' => 71],
+            ],
+        ],
+        'RW' => [
+            'country_name' => 'Rwanda',
+            'categories' => [
+                ['name' => 'Accounting/ Finance', 'sort' => 1],
+                ['name' => 'Administrative', 'sort' => 2],
+                ['name' => 'Advertising', 'sort' => 3],
+                ['name' => 'Airlines/ Avionics/ Aerospace', 'sort' => 4],
+                ['name' => 'Architectural', 'sort' => 5],
+                ['name' => 'Automotive', 'sort' => 6],
+                ['name' => 'Banking/ Finance', 'sort' => 7],
+                ['name' => 'Biotechnology', 'sort' => 8],
+                ['name' => 'Civil/ Construction', 'sort' => 9],
+                ['name' => 'Engineering', 'sort' => 10],
+                ['name' => 'Cleared', 'sort' => 11],
+                ['name' => 'Communications/ Public Relations', 'sort' => 12],
+                ['name' => 'Computer/ IT', 'sort' => 13],
+                ['name' => 'Construction', 'sort' => 14],
+                ['name' => 'Consultant/ Contractual', 'sort' => 15],
+                ['name' => 'Customer Service', 'sort' => 16],
+                ['name' => 'Defense', 'sort' => 17],
+                ['name' => 'Design', 'sort' => 18],
+                ['name' => 'Education/ Academic/ Teaching', 'sort' => 19],
+                ['name' => 'Electrical Engineering', 'sort' => 20],
+                ['name' => 'Electronics Engineering', 'sort' => 21],
+                ['name' => 'Energy', 'sort' => 22],
+                ['name' => 'Environmental/ Safety', 'sort' => 24],
+                ['name' => 'Fundraising', 'sort' => 25],
+                ['name' => 'Health/ Medicine', 'sort' => 26],
+                ['name' => 'Security, Homeland Security', 'sort' => 27],
+                ['name' => 'Human Resource', 'sort' => 28],
+                ['name' => 'Insurance', 'sort' => 29],
+                ['name' => 'Intelligence', 'sort' => 30],
+                ['name' => 'Internships/ Trainee', 'sort' => 31],
+                ['name' => 'Legal', 'sort' => 32],
+                ['name' => 'Logistics/ Transportation/ Procurements', 'sort' => 33],
+                ['name' => 'Maintenance', 'sort' => 34],
+                ['name' => 'Management', 'sort' => 35],
+                ['name' => 'Manufacturing/ Warehouse', 'sort' => 36],
+                ['name' => 'Marketing', 'sort' => 37],
+                ['name' => 'Materials Management', 'sort' => 38],
+                ['name' => 'Mechanical Engineering', 'sort' => 39],
+                ['name' => 'Mortgage/ Real Estate', 'sort' => 40],
+                ['name' => 'National Security', 'sort' => 41],
+                ['name' => 'Part-time/ Freelance', 'sort' => 42],
+                ['name' => 'Printing', 'sort' => 43],
+                ['name' => 'Product Design', 'sort' => 44],
+                ['name' => 'Public Relations', 'sort' => 45],
+                ['name' => 'Public Safety', 'sort' => 46],
+                ['name' => 'Data, Monitoring, and Research', 'sort' => 47],
+                ['name' => 'Retail', 'sort' => 48],
+                ['name' => 'Sales', 'sort' => 49],
+                ['name' => 'Scientific', 'sort' => 50],
+                ['name' => 'Shipping/ Distribution', 'sort' => 51],
+                ['name' => 'Technician', 'sort' => 52],
+                ['name' => 'Trade', 'sort' => 53],
+                ['name' => 'Transportation', 'sort' => 54],
+                ['name' => 'Transportation Engineering', 'sort' => 55],
+                ['name' => 'Web Site Development', 'sort' => 56],
+                ['name' => 'Environment, Forestry and Agriculture', 'sort' => 57],
+                ['name' => 'Several Jobs in one Advert', 'sort' => 58],
+                ['name' => 'NGO - Non Government Organisations', 'sort' => 59],
+                ['name' => 'Junior Job/ Fresh Graduate/ Entry Level', 'sort' => 60],
+                ['name' => 'Government', 'sort' => 61],
+                ['name' => 'Corporate / Organisation Officer', 'sort' => 62],
+                ['name' => 'Corporate / Organisation Specialist', 'sort' => 63],
+                ['name' => 'Corporate / Organisation Coordinator', 'sort' => 64],
+                ['name' => 'Corporate / Organisation Middle Management', 'sort' => 65],
+                ['name' => 'Corporate / Organisation Control', 'sort' => 66],
+                ['name' => 'Corporate / Organisation Management', 'sort' => 67],
+                ['name' => 'Corporate / Organisation Top Management / CEO', 'sort' => 68],
+                ['name' => 'Corporate / Organisation Director', 'sort' => 69],
+                ['name' => 'Tenders', 'sort' => 70],
+                ['name' => 'Hospitality/ Chef/ Cook', 'sort' => 71],
+            ],
+        ],
+        'TZ' => [
+            'country_name' => 'Tanzania',
+            'categories' => [
+                ['name' => 'Accounting/ Finance', 'sort' => 1],
+                ['name' => 'Administrative', 'sort' => 2],
+                ['name' => 'Advertising', 'sort' => 3],
+                ['name' => 'Airlines/ Avionics/ Aerospace', 'sort' => 4],
+                ['name' => 'Architectural', 'sort' => 5],
+                ['name' => 'Automotive', 'sort' => 6],
+                ['name' => 'Banking/ Finance', 'sort' => 7],
+                ['name' => 'Biotechnology', 'sort' => 8],
+                ['name' => 'Civil/ Construction', 'sort' => 9],
+                ['name' => 'Engineering', 'sort' => 10],
+                ['name' => 'Cleared', 'sort' => 11],
+                ['name' => 'Communications/ Public Relations', 'sort' => 12],
+                ['name' => 'Computer/ IT', 'sort' => 13],
+                ['name' => 'Construction', 'sort' => 14],
+                ['name' => 'Consultant/ Contractual', 'sort' => 15],
+                ['name' => 'Customer Service', 'sort' => 16],
+                ['name' => 'Defense', 'sort' => 17],
+                ['name' => 'Design', 'sort' => 18],
+                ['name' => 'Education/ Academic/ Teaching', 'sort' => 19],
+                ['name' => 'Electrical Engineering', 'sort' => 20],
+                ['name' => 'Electronics Engineering', 'sort' => 21],
+                ['name' => 'Energy', 'sort' => 22],
+                ['name' => 'Environmental/ Safety', 'sort' => 24],
+                ['name' => 'Fundraising', 'sort' => 25],
+                ['name' => 'Health/ Medicine', 'sort' => 26],
+                ['name' => 'Security, Homeland Security', 'sort' => 27],
+                ['name' => 'Human Resource', 'sort' => 28],
+                ['name' => 'Insurance', 'sort' => 29],
+                ['name' => 'Intelligence', 'sort' => 30],
+                ['name' => 'Internships/ Trainee', 'sort' => 31],
+                ['name' => 'Legal', 'sort' => 32],
+                ['name' => 'Logistics/ Transportation/ Procurements', 'sort' => 33],
+                ['name' => 'Maintenance', 'sort' => 34],
+                ['name' => 'Management', 'sort' => 35],
+                ['name' => 'Manufacturing/ Warehouse', 'sort' => 36],
+                ['name' => 'Marketing', 'sort' => 37],
+                ['name' => 'Materials Management', 'sort' => 38],
+                ['name' => 'Mechanical Engineering', 'sort' => 39],
+                ['name' => 'Mortgage/ Real Estate', 'sort' => 40],
+                ['name' => 'National Security', 'sort' => 41],
+                ['name' => 'Part-time/ Freelance', 'sort' => 42],
+                ['name' => 'Printing', 'sort' => 43],
+                ['name' => 'Product Design', 'sort' => 44],
+                ['name' => 'Public Relations', 'sort' => 45],
+                ['name' => 'Public Safety', 'sort' => 46],
+                ['name' => 'Data, Monitoring, and Research', 'sort' => 47],
+                ['name' => 'Retail', 'sort' => 48],
+                ['name' => 'Sales', 'sort' => 49],
+                ['name' => 'Scientific', 'sort' => 50],
+                ['name' => 'Shipping/ Distribution', 'sort' => 51],
+                ['name' => 'Technician', 'sort' => 52],
+                ['name' => 'Trade', 'sort' => 53],
+                ['name' => 'Transportation', 'sort' => 54],
+                ['name' => 'Transportation Engineering', 'sort' => 55],
+                ['name' => 'Web Site Development', 'sort' => 56],
+                ['name' => 'Environment, Forestry and Agriculture', 'sort' => 57],
+                ['name' => 'Several Jobs in one Advert', 'sort' => 58],
+                ['name' => 'NGO - Non Government Organisations', 'sort' => 59],
+                ['name' => 'Junior Job/ Fresh Graduate/ Entry Level', 'sort' => 60],
+                ['name' => 'Government', 'sort' => 61],
+                ['name' => 'Corporate / Organisation Officer', 'sort' => 62],
+                ['name' => 'Corporate / Organisation Specialist', 'sort' => 63],
+                ['name' => 'Corporate / Organisation Coordinator', 'sort' => 64],
+                ['name' => 'Corporate / Organisation Middle Management', 'sort' => 65],
+                ['name' => 'Corporate / Organisation Control', 'sort' => 66],
+                ['name' => 'Corporate / Organisation Management', 'sort' => 67],
+                ['name' => 'Corporate / Organisation Top Management / CEO', 'sort' => 68],
+                ['name' => 'Corporate / Organisation Director', 'sort' => 69],
+                ['name' => 'Tenders', 'sort' => 70],
+                ['name' => 'Hospitality/ Chef/ Cook', 'sort' => 71],
+            ],
+        ],
+        'MW' => [
+            'country_name' => 'Malawi',
+            'categories' => [
+                ['name' => 'Accounting/ Finance', 'sort' => 1],
+                ['name' => 'Administrative', 'sort' => 2],
+                ['name' => 'Advertising', 'sort' => 3],
+                ['name' => 'Airlines/ Avionics/ Aerospace', 'sort' => 4],
+                ['name' => 'Architectural', 'sort' => 5],
+                ['name' => 'Automotive', 'sort' => 6],
+                ['name' => 'Banking/ Finance', 'sort' => 7],
+                ['name' => 'Biotechnology', 'sort' => 8],
+                ['name' => 'Civil/ Construction', 'sort' => 9],
+                ['name' => 'Engineering', 'sort' => 10],
+                ['name' => 'Cleared', 'sort' => 11],
+                ['name' => 'Communications/ Public Relations', 'sort' => 12],
+                ['name' => 'Computer/ IT', 'sort' => 13],
+                ['name' => 'Construction', 'sort' => 14],
+                ['name' => 'Consultant/ Contractual', 'sort' => 15],
+                ['name' => 'Customer Service', 'sort' => 16],
+                ['name' => 'Defense', 'sort' => 17],
+                ['name' => 'Design', 'sort' => 18],
+                ['name' => 'Education/ Academic/ Teaching', 'sort' => 19],
+                ['name' => 'Electrical Engineering', 'sort' => 20],
+                ['name' => 'Electronics Engineering', 'sort' => 21],
+                ['name' => 'Energy', 'sort' => 22],
+                ['name' => 'Environmental/ Safety', 'sort' => 24],
+                ['name' => 'Fundraising', 'sort' => 25],
+                ['name' => 'Health/ Medicine', 'sort' => 26],
+                ['name' => 'Security, Homeland Security', 'sort' => 27],
+                ['name' => 'Human Resource', 'sort' => 28],
+                ['name' => 'Insurance', 'sort' => 29],
+                ['name' => 'Intelligence', 'sort' => 30],
+                ['name' => 'Internships/ Trainee', 'sort' => 31],
+                ['name' => 'Legal', 'sort' => 32],
+                ['name' => 'Logistics/ Transportation/ Procurements', 'sort' => 33],
+                ['name' => 'Maintenance', 'sort' => 34],
+                ['name' => 'Management', 'sort' => 35],
+                ['name' => 'Manufacturing/ Warehouse', 'sort' => 36],
+                ['name' => 'Marketing', 'sort' => 37],
+                ['name' => 'Materials Management', 'sort' => 38],
+                ['name' => 'Mechanical Engineering', 'sort' => 39],
+                ['name' => 'Mortgage/ Real Estate', 'sort' => 40],
+                ['name' => 'National Security', 'sort' => 41],
+                ['name' => 'Part-time/ Freelance', 'sort' => 42],
+                ['name' => 'Printing', 'sort' => 43],
+                ['name' => 'Product Design', 'sort' => 44],
+                ['name' => 'Public Relations', 'sort' => 45],
+                ['name' => 'Public Safety', 'sort' => 46],
+                ['name' => 'Data, Monitoring, and Research', 'sort' => 47],
+                ['name' => 'Retail', 'sort' => 48],
+                ['name' => 'Sales', 'sort' => 49],
+                ['name' => 'Scientific', 'sort' => 50],
+                ['name' => 'Shipping/ Distribution', 'sort' => 51],
+                ['name' => 'Technician', 'sort' => 52],
+                ['name' => 'Trade', 'sort' => 53],
+                ['name' => 'Transportation', 'sort' => 54],
+                ['name' => 'Transportation Engineering', 'sort' => 55],
+                ['name' => 'Web Site Development', 'sort' => 56],
+                ['name' => 'Environment, Forestry and Agriculture', 'sort' => 57],
+                ['name' => 'Several Jobs in one Advert', 'sort' => 58],
+                ['name' => 'NGO - Non Government Organisations', 'sort' => 59],
+                ['name' => 'Junior Job/ Fresh Graduate/ Entry Level', 'sort' => 60],
+                ['name' => 'Government', 'sort' => 61],
+                ['name' => 'Corporate / Organisation Officer', 'sort' => 62],
+                ['name' => 'Corporate / Organisation Specialist', 'sort' => 63],
+                ['name' => 'Corporate / Organisation Coordinator', 'sort' => 64],
+                ['name' => 'Corporate / Organisation Middle Management', 'sort' => 65],
+                ['name' => 'Corporate / Organisation Control', 'sort' => 66],
+                ['name' => 'Corporate / Organisation Management', 'sort' => 67],
+                ['name' => 'Corporate / Organisation Top Management / CEO', 'sort' => 68],
+                ['name' => 'Corporate / Organisation Director', 'sort' => 69],
+                ['name' => 'Tenders', 'sort' => 70],
+                ['name' => 'Hospitality/ Chef/ Cook', 'sort' => 71],
+            ],
+        ],
+        'ZM' => [
+            'country_name' => 'Zambia',
+            'categories' => [
+                ['name' => 'Accounting/ Finance', 'sort' => 1],
+                ['name' => 'Administrative', 'sort' => 2],
+                ['name' => 'Advertising', 'sort' => 3],
+                ['name' => 'Airlines/ Avionics/ Aerospace', 'sort' => 4],
+                ['name' => 'Architectural', 'sort' => 5],
+                ['name' => 'Automotive', 'sort' => 6],
+                ['name' => 'Banking/ Finance', 'sort' => 7],
+                ['name' => 'Biotechnology', 'sort' => 8],
+                ['name' => 'Civil/ Construction', 'sort' => 9],
+                ['name' => 'Engineering', 'sort' => 10],
+                ['name' => 'Cleared', 'sort' => 11],
+                ['name' => 'Communications/ Public Relations', 'sort' => 12],
+                ['name' => 'Computer/ IT', 'sort' => 13],
+                ['name' => 'Construction', 'sort' => 14],
+                ['name' => 'Consultant/ Contractual', 'sort' => 15],
+                ['name' => 'Customer Service', 'sort' => 16],
+                ['name' => 'Defense', 'sort' => 17],
+                ['name' => 'Design', 'sort' => 18],
+                ['name' => 'Education/ Academic/ Teaching', 'sort' => 19],
+                ['name' => 'Electrical Engineering', 'sort' => 20],
+                ['name' => 'Electronics Engineering', 'sort' => 21],
+                ['name' => 'Energy', 'sort' => 22],
+                ['name' => 'Environmental/ Safety', 'sort' => 24],
+                ['name' => 'Fundraising', 'sort' => 25],
+                ['name' => 'Health/ Medicine', 'sort' => 26],
+                ['name' => 'Security, Homeland Security', 'sort' => 27],
+                ['name' => 'Human Resource', 'sort' => 28],
+                ['name' => 'Insurance', 'sort' => 29],
+                ['name' => 'Intelligence', 'sort' => 30],
+                ['name' => 'Internships/ Trainee', 'sort' => 31],
+                ['name' => 'Legal', 'sort' => 32],
+                ['name' => 'Logistics/ Transportation/ Procurements', 'sort' => 33],
+                ['name' => 'Maintenance', 'sort' => 34],
+                ['name' => 'Management', 'sort' => 35],
+                ['name' => 'Manufacturing/ Warehouse', 'sort' => 36],
+                ['name' => 'Marketing', 'sort' => 37],
+                ['name' => 'Materials Management', 'sort' => 38],
+                ['name' => 'Mechanical Engineering', 'sort' => 39],
+                ['name' => 'Mortgage/ Real Estate', 'sort' => 40],
+                ['name' => 'National Security', 'sort' => 41],
+                ['name' => 'Part-time/ Freelance', 'sort' => 42],
+                ['name' => 'Printing', 'sort' => 43],
+                ['name' => 'Product Design', 'sort' => 44],
+                ['name' => 'Public Relations', 'sort' => 45],
+                ['name' => 'Public Safety', 'sort' => 46],
+                ['name' => 'Data, Monitoring, and Research', 'sort' => 47],
+                ['name' => 'Retail', 'sort' => 48],
+                ['name' => 'Sales', 'sort' => 49],
+                ['name' => 'Scientific', 'sort' => 50],
+                ['name' => 'Shipping/ Distribution', 'sort' => 51],
+                ['name' => 'Technician', 'sort' => 52],
+                ['name' => 'Trade', 'sort' => 53],
+                ['name' => 'Transportation', 'sort' => 54],
+                ['name' => 'Transportation Engineering', 'sort' => 55],
+                ['name' => 'Web Site Development', 'sort' => 56],
+                ['name' => 'Environment, Forestry and Agriculture', 'sort' => 57],
+                ['name' => 'Several Jobs in one Advert', 'sort' => 58],
+                ['name' => 'NGO - Non Government Organisations', 'sort' => 59],
+                ['name' => 'Junior Job/ Fresh Graduate/ Entry Level', 'sort' => 60],
+                ['name' => 'Government', 'sort' => 61],
+                ['name' => 'Corporate / Organisation Officer', 'sort' => 62],
+                ['name' => 'Corporate / Organisation Specialist', 'sort' => 63],
+                ['name' => 'Corporate / Organisation Coordinator', 'sort' => 64],
+                ['name' => 'Corporate / Organisation Middle Management', 'sort' => 65],
+                ['name' => 'Corporate / Organisation Control', 'sort' => 66],
+                ['name' => 'Corporate / Organisation Management', 'sort' => 67],
+                ['name' => 'Corporate / Organisation Top Management / CEO', 'sort' => 68],
+                ['name' => 'Corporate / Organisation Director', 'sort' => 69],
+                ['name' => 'Tenders', 'sort' => 70],
+                ['name' => 'Hospitality/ Chef/ Cook', 'sort' => 71],
+            ],
+        ],
+        'SG' => [
+            'country_name' => 'Singapore',
+            'categories' => [
+                ['name' => 'Accounting/ Finance', 'sort' => 1],
+                ['name' => 'Administrative', 'sort' => 2],
+                ['name' => 'Advertising', 'sort' => 3],
+                ['name' => 'Airlines/ Avionics/ Aerospace', 'sort' => 4],
+                ['name' => 'Architectural', 'sort' => 5],
+                ['name' => 'Automotive', 'sort' => 6],
+                ['name' => 'Banking/ Finance', 'sort' => 7],
+                ['name' => 'Biotechnology', 'sort' => 8],
+                ['name' => 'Civil/ Construction', 'sort' => 9],
+                ['name' => 'Engineering', 'sort' => 10],
+                ['name' => 'Cleared', 'sort' => 11],
+                ['name' => 'Communications/ Public Relations', 'sort' => 12],
+                ['name' => 'Computer/ IT', 'sort' => 13],
+                ['name' => 'Construction', 'sort' => 14],
+                ['name' => 'Consultant/ Contractual', 'sort' => 15],
+                ['name' => 'Customer Service', 'sort' => 16],
+                ['name' => 'Defense', 'sort' => 17],
+                ['name' => 'Design', 'sort' => 18],
+                ['name' => 'Education/ Academic/ Teaching', 'sort' => 19],
+                ['name' => 'Electrical Engineering', 'sort' => 20],
+                ['name' => 'Electronics Engineering', 'sort' => 21],
+                ['name' => 'Energy', 'sort' => 22],
+                ['name' => 'Environmental/ Safety', 'sort' => 24],
+                ['name' => 'Fundraising', 'sort' => 25],
+                ['name' => 'Health/ Medicine', 'sort' => 26],
+                ['name' => 'Security, Homeland Security', 'sort' => 27],
+                ['name' => 'Human Resource', 'sort' => 28],
+                ['name' => 'Insurance', 'sort' => 29],
+                ['name' => 'Intelligence', 'sort' => 30],
+                ['name' => 'Internships/ Trainee', 'sort' => 31],
+                ['name' => 'Legal', 'sort' => 32],
+                ['name' => 'Logistics/ Transportation/ Procurements', 'sort' => 33],
+                ['name' => 'Maintenance', 'sort' => 34],
+                ['name' => 'Management', 'sort' => 35],
+                ['name' => 'Manufacturing/ Warehouse', 'sort' => 36],
+                ['name' => 'Marketing', 'sort' => 37],
+                ['name' => 'Materials Management', 'sort' => 38],
+                ['name' => 'Mechanical Engineering', 'sort' => 39],
+                ['name' => 'Mortgage/ Real Estate', 'sort' => 40],
+                ['name' => 'National Security', 'sort' => 41],
+                ['name' => 'Part-time/ Freelance', 'sort' => 42],
+                ['name' => 'Printing', 'sort' => 43],
+                ['name' => 'Product Design', 'sort' => 44],
+                ['name' => 'Public Relations', 'sort' => 45],
+                ['name' => 'Public Safety', 'sort' => 46],
+                ['name' => 'Data, Monitoring, and Research', 'sort' => 47],
+                ['name' => 'Retail', 'sort' => 48],
+                ['name' => 'Sales', 'sort' => 49],
+                ['name' => 'Scientific', 'sort' => 50],
+                ['name' => 'Shipping/ Distribution', 'sort' => 51],
+                ['name' => 'Technician', 'sort' => 52],
+                ['name' => 'Trade', 'sort' => 53],
+                ['name' => 'Transportation', 'sort' => 54],
+                ['name' => 'Transportation Engineering', 'sort' => 55],
+                ['name' => 'Web Site Development', 'sort' => 56],
+                ['name' => 'Environment, Forestry and Agriculture', 'sort' => 57],
+                ['name' => 'Several Jobs in one Advert', 'sort' => 58],
+                ['name' => 'NGO - Non Government Organisations', 'sort' => 59],
+                ['name' => 'Junior Job/ Fresh Graduate/ Entry Level', 'sort' => 60],
+                ['name' => 'Government', 'sort' => 61],
+                ['name' => 'Corporate / Organisation Officer', 'sort' => 62],
+                ['name' => 'Corporate / Organisation Specialist', 'sort' => 63],
+                ['name' => 'Corporate / Organisation Coordinator', 'sort' => 64],
+                ['name' => 'Corporate / Organisation Middle Management', 'sort' => 65],
+                ['name' => 'Corporate / Organisation Control', 'sort' => 66],
+                ['name' => 'Corporate / Organisation Management', 'sort' => 67],
+                ['name' => 'Corporate / Organisation Top Management / CEO', 'sort' => 68],
+                ['name' => 'Corporate / Organisation Director', 'sort' => 69],
+                ['name' => 'Tenders', 'sort' => 70],
+                ['name' => 'Hospitality/ Chef/ Cook', 'sort' => 71],
+            ],
+        ],
+        'ZA' => [
+            'country_name' => 'South Africa',
+            'categories' => [
+                ['name' => 'Accounting/ Finance', 'sort' => 1],
+                ['name' => 'Administrative', 'sort' => 2],
+                ['name' => 'Advertising', 'sort' => 3],
+                ['name' => 'Airlines/ Avionics/ Aerospace', 'sort' => 4],
+                ['name' => 'Architectural', 'sort' => 5],
+                ['name' => 'Automotive', 'sort' => 6],
+                ['name' => 'Banking/ Finance', 'sort' => 7],
+                ['name' => 'Biotechnology', 'sort' => 8],
+                ['name' => 'Civil/ Construction', 'sort' => 9],
+                ['name' => 'Engineering', 'sort' => 10],
+                ['name' => 'Cleared', 'sort' => 11],
+                ['name' => 'Communications/ Public Relations', 'sort' => 12],
+                ['name' => 'Computer/ IT', 'sort' => 13],
+                ['name' => 'Construction', 'sort' => 14],
+                ['name' => 'Consultant/ Contractual', 'sort' => 15],
+                ['name' => 'Customer Service', 'sort' => 16],
+                ['name' => 'Defense', 'sort' => 17],
+                ['name' => 'Design', 'sort' => 18],
+                ['name' => 'Education/ Academic/ Teaching', 'sort' => 19],
+                ['name' => 'Electrical Engineering', 'sort' => 20],
+                ['name' => 'Electronics Engineering', 'sort' => 21],
+                ['name' => 'Energy', 'sort' => 22],
+                ['name' => 'Environmental/ Safety', 'sort' => 24],
+                ['name' => 'Fundraising', 'sort' => 25],
+                ['name' => 'Health/ Medicine', 'sort' => 26],
+                ['name' => 'Security, Homeland Security', 'sort' => 27],
+                ['name' => 'Human Resource', 'sort' => 28],
+                ['name' => 'Insurance', 'sort' => 29],
+                ['name' => 'Intelligence', 'sort' => 30],
+                ['name' => 'Internships/ Trainee', 'sort' => 31],
+                ['name' => 'Legal', 'sort' => 32],
+                ['name' => 'Logistics/ Transportation/ Procurements', 'sort' => 33],
+                ['name' => 'Maintenance', 'sort' => 34],
+                ['name' => 'Management', 'sort' => 35],
+                ['name' => 'Manufacturing/ Warehouse', 'sort' => 36],
+                ['name' => 'Marketing', 'sort' => 37],
+                ['name' => 'Materials Management', 'sort' => 38],
+                ['name' => 'Mechanical Engineering', 'sort' => 39],
+                ['name' => 'Mortgage/ Real Estate', 'sort' => 40],
+                ['name' => 'National Security', 'sort' => 41],
+                ['name' => 'Part-time/ Freelance', 'sort' => 42],
+                ['name' => 'Printing', 'sort' => 43],
+                ['name' => 'Product Design', 'sort' => 44],
+                ['name' => 'Public Relations', 'sort' => 45],
+                ['name' => 'Public Safety', 'sort' => 46],
+                ['name' => 'Data, Monitoring, and Research', 'sort' => 47],
+                ['name' => 'Retail', 'sort' => 48],
+                ['name' => 'Sales', 'sort' => 49],
+                ['name' => 'Scientific', 'sort' => 50],
+                ['name' => 'Shipping/ Distribution', 'sort' => 51],
+                ['name' => 'Technician', 'sort' => 52],
+                ['name' => 'Trade', 'sort' => 53],
+                ['name' => 'Transportation', 'sort' => 54],
+                ['name' => 'Transportation Engineering', 'sort' => 55],
+                ['name' => 'Web Site Development', 'sort' => 56],
+                ['name' => 'Environment, Forestry and Agriculture', 'sort' => 57],
+                ['name' => 'Several Jobs in one Advert', 'sort' => 58],
+                ['name' => 'NGO - Non Government Organisations', 'sort' => 59],
+                ['name' => 'Junior Job/ Fresh Graduate/ Entry Level', 'sort' => 60],
+                ['name' => 'Government', 'sort' => 61],
+                ['name' => 'Corporate / Organisation Officer', 'sort' => 62],
+                ['name' => 'Corporate / Organisation Specialist', 'sort' => 63],
+                ['name' => 'Corporate / Organisation Coordinator', 'sort' => 64],
+                ['name' => 'Corporate / Organisation Middle Management', 'sort' => 65],
+                ['name' => 'Corporate / Organisation Control', 'sort' => 66],
+                ['name' => 'Corporate / Organisation Management', 'sort' => 67],
+                ['name' => 'Corporate / Organisation Top Management / CEO', 'sort' => 68],
+                ['name' => 'Corporate / Organisation Director', 'sort' => 69],
+                ['name' => 'Tenders', 'sort' => 70],
+                ['name' => 'Hospitality/ Chef/ Cook', 'sort' => 71],
+            ],
+        ],
+    ];
+
+    public function handle()
+    {
+        $country = $this->argument('country');
+        $force = $this->option('force');
+        $dryRun = $this->option('dry-run');
+
+        $countries = $country ? [strtoupper($country)] : array_keys(self::CATEGORY_DATA);
+
+        $this->info('🚀 Starting job categories import...');
+        $this->newLine();
+
+        $totalCreated = 0;
+        $totalUpdated = 0;
+        $totalSkipped = 0;
+
+        foreach ($countries as $countryCode) {
+            if (!isset(self::CATEGORY_DATA[$countryCode])) {
+                $this->error("❌ Country '{$countryCode}' not found in category data.");
+                continue;
+            }
+
+            $data = self::CATEGORY_DATA[$countryCode];
+            $countryName = $data['country_name'];
+            $categories = $data['categories'];
+
+            $flag = $this->getCountryFlag($countryCode);
+
+            $this->info("📌 {$flag} Processing {$countryName} ({$countryCode}) - " . count($categories) . " categories");
+            $this->newLine();
+
+            $created = 0;
+            $updated = 0;
+            $skipped = 0;
+
+            foreach ($categories as $categoryData) {
+                $name = $categoryData['name'];
+                $slug = Str::slug($name . '-jobs-in-' . strtolower($countryName) . '-' . strtolower($countryCode));
+                $sort = $categoryData['sort'];
+
+                $categoryInfo = [
+                    'name' => $name . ' jobs in ' . $countryName,
+                    'slug' => $slug,
+                    'description' => null,
+                    'country_code' => $countryCode,
+                    'meta_title' => $name . ' jobs in ' . $countryName . ' - Career Opportunities',
+                    'meta_description' => 'Find ' . $name . ' jobs in ' . $countryName . '. Browse career opportunities and vacancies in the ' . $name . ' industry.',
+                    'icon' => null,
+                    'color' => 'primary',
+                    'is_active' => true,
+                    'is_default' => $sort === 1,
+                    'sort_order' => $sort,
+                ];
+
+                if ($dryRun) {
+                    $this->line("  - Would import: {$name} ({$countryCode})");
+                    continue;
+                }
+
+                $exists = JobCategory::where('slug', $slug)
+                    ->where('country_code', $countryCode)
+                    ->first();
+
+                if ($exists) {
+                    if ($force) {
+                        $exists->update($categoryInfo);
+                        $updated++;
+                        $this->line("  🔄 Updated: {$name}");
+                    } else {
+                        $skipped++;
+                    }
+                } else {
+                    JobCategory::create($categoryInfo);
+                    $created++;
+                }
+            }
+
+            $this->info("✅ {$flag} {$countryName} summary:");
+            $this->line("  - Created: {$created}");
+            $this->line("  - Updated: {$updated}");
+            $this->line("  - Skipped: {$skipped}");
+            $this->newLine();
+
+            $totalCreated += $created;
+            $totalUpdated += $updated;
+            $totalSkipped += $skipped;
+        }
+
+        $this->newLine();
+        $this->info("🎉 Import complete!");
+        $this->table(
+            ['Metric', 'Total'],
+            [
+                ['Created', $totalCreated],
+                ['Updated', $totalUpdated],
+                ['Skipped', $totalSkipped],
+            ]
+        );
+
+        $this->showSummary();
+    }
+
+    private function getCountryFlag($code): string
+    {
+        $flags = [
+            'AU' => '🇦🇺',
+            'UG' => '🇺🇬',
+            'KE' => '🇰🇪',
+            'RW' => '🇷🇼',
+            'TZ' => '🇹🇿',
+            'MW' => '🇲🇼',
+            'ZM' => '🇿🇲',
+            'SG' => '🇸🇬',
+            'ZA' => '🇿🇦',
+        ];
+        return $flags[$code] ?? '🏳️';
+    }
+
+    private function showSummary(): void
+    {
+        $this->newLine();
+        $this->info('📊 Job Categories Summary:');
+        $this->newLine();
+
+        $summary = [];
+        foreach (array_keys(self::CATEGORY_DATA) as $code) {
+            $count = JobCategory::where('country_code', $code)->count();
+            $flag = $this->getCountryFlag($code);
+            $name = self::CATEGORY_DATA[$code]['country_name'];
+            $summary[] = [$flag, $code, $name, $count];
+        }
+
+        $this->table(
+            ['', 'Code', 'Country', 'Total Categories'],
+            $summary
+        );
+    }
+
+    // # Import all countries
+    // php artisan import:job-categories
+
+    // # Import specific country only
+    // php artisan import:job-categories AU      # Australia only
+    // php artisan import:job-categories UG      # Uganda only
+    // php artisan import:job-categories KE      # Kenya only
+
+    // # Force update existing records
+    // php artisan import:job-categories --force
+
+    // # Dry run (see what would be imported without actually importing)
+    // php artisan import:job-categories --dry-run
+
+    // # Combined: import Uganda with force update
+    // php artisan import:job-categories UG --force
+
+}

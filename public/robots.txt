@@ -1,0 +1,15 @@
+User-agent: *
+Disallow:
+
+# Sitemaps
+
+# Sitemaps
+Sitemap: http://localhost/sitemaps/sitemap_index.xml
+Sitemap: http://localhost/sitemaps/sitemap_au.xml
+Sitemap: http://localhost/sitemaps/sitemap_ug.xml
+Sitemap: http://localhost/sitemaps/sitemap_ke.xml
+Sitemap: http://localhost/sitemaps/sitemap_tz.xml
+Sitemap: http://localhost/sitemaps/sitemap_rw.xml
+Sitemap: http://localhost/sitemaps/sitemap_mw.xml
+Sitemap: http://localhost/sitemaps/sitemap_zm.xml
+Sitemap: http://localhost/sitemaps/sitemap_sg.xml
