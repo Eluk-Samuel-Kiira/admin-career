@@ -6,6 +6,10 @@ use App\Http\Controllers\Api\Jobs\{ CountryController,CompanyController, JobCont
     LocationController, CategoryController };
     
 use App\Http\Controllers\Api\Pages\PageController;
+use App\Http\Controllers\Api\Blog\{BlogController};
+
+use App\Http\Controllers\Api\Auth\LoginTokenController;
+
 
 // ✅ TEST ROUTE
 Route::get('/ping', function () {
@@ -61,6 +65,29 @@ Route::middleware(['verifycountry'])->group(function () {
     ->name('api.social-media.featured');
     Route::get('/social-media/country/{countryCode}', [PageController::class, 'getByCountry'])
         ->name('api.social-media.by-country');
+
+
+    Route::get('/blogs', [BlogController::class, 'index']);
+    Route::get('/blogs/categories', [BlogController::class, 'categories']);
+    Route::get('/blogs/{identifier}', [BlogController::class, 'show']);
+    Route::post('/blogs/{id}/view', [BlogController::class, 'trackView']);
+
+
+
+    // Auth Routes
+    Route::prefix('auth')->group(function () {
+        // Public routes
+        Route::post('/register', [LoginTokenController::class, 'registerApi']);
+        Route::post('/send-login-link', [LoginTokenController::class, 'sendLoginLinkApi']);
+        Route::post('/verify-token', [LoginTokenController::class, 'verifyToken']);
+    });
+
+    // Protected routes (require Sanctum token)
+    Route::middleware(['auth:sanctum'])->prefix('auth')->group(function () {
+        Route::post('/logout', [LoginTokenController::class, 'logoutApi']);
+        Route::get('/user', [LoginTokenController::class, 'userApi']);
+    });
+
 });
 
 // Route to test middleware

@@ -134,9 +134,9 @@ class CompanyController extends Controller
             $validated = $request->validate([
                 'name' => 'required|string|max:255',
                 'slug' => 'nullable|string|max:255|unique:companies,slug',
-                'logo' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg,webp|max:2048',
+                'logo' => 'required|image|mimes:jpeg,png,jpg,gif,svg,webp|max:2048',
                 'description' => 'nullable|string',
-                'website' => 'nullable|string|max:255',
+                'website' => 'required|string|max:255',
                 'contact_name' => 'nullable|string|max:255',
                 'contact_email' => 'nullable|email|max:255',
                 'contact_phone' => 'nullable|string|max:255',

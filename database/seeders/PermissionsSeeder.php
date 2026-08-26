@@ -114,6 +114,11 @@ class PermissionsSeeder extends Seeder
             'edit social media platforms',
             'delete social media platforms',
 
+            'view blogs',
+            'create blogs',
+            'edit blogs',
+            'delete blogs',
+
             // ============================================================
             // CANDIDATES / JOB SEEKERS
             // ============================================================

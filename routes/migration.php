@@ -432,3 +432,32 @@ Route::prefix('admin')->middleware(['auth'])->group(function () {
     Route::post('/social-media/{id}/update-followers', [SocialMediaPlatformController::class, 'updateFollowers'])
         ->name('admin.social-media.update-followers');
 });
+
+
+
+
+use App\Http\Controllers\Job\BlogController;
+
+Route::prefix('admin')->middleware(['auth'])->group(function () {
+    // Blog Management
+    Route::get('/blogs', [BlogController::class, 'index'])->name('admin.blogs');
+    Route::get('/blogs/data', [BlogController::class, 'getData'])->name('admin.blogs.data');
+    Route::get('/blogs/filters', [BlogController::class, 'getFilters'])->name('admin.blogs.filters');
+    Route::get('/blogs/tags', [BlogController::class, 'getTags'])->name('admin.blogs.tags');
+    Route::get('/blogs/countries', [BlogController::class, 'getCountries'])->name('admin.blogs.countries');
+    Route::post('/blogs/upload-cover', [BlogController::class, 'uploadCover'])->name('admin.blogs.upload-cover');
+
+    // CRUD routes
+    Route::get('/blogs/create', [BlogController::class, 'create'])->name('admin.blogs.create');
+    Route::get('/blogs/{id}/edit', [BlogController::class, 'edit'])->name('admin.blogs.edit');
+    Route::get('/blogs/{id}', [BlogController::class, 'show'])->name('admin.blogs.show');
+    Route::post('/blogs', [BlogController::class, 'store'])->name('admin.blogs.store');
+    Route::put('/blogs/{id}', [BlogController::class, 'update'])->name('admin.blogs.update');
+    Route::delete('/blogs/{id}', [BlogController::class, 'destroy'])->name('admin.blogs.destroy');
+    
+    // Toggle endpoints
+    Route::post('/blogs/{id}/toggle-status', [BlogController::class, 'toggleStatus'])->name('admin.blogs.toggle-status');
+    Route::post('/blogs/{id}/toggle-featured', [BlogController::class, 'toggleFeatured'])->name('admin.blogs.toggle-featured');
+    Route::post('/blogs/{id}/publish', [BlogController::class, 'publish'])->name('admin.blogs.publish');
+    Route::post('/blogs/{id}/unpublish', [BlogController::class, 'unpublish'])->name('admin.blogs.unpublish');
+});

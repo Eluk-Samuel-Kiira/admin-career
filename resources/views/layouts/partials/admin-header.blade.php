@@ -142,15 +142,20 @@
                         </div>
                         <div class="separator my-2"></div>
                         <div class="menu-item px-5">
-                        <form method="POST" action="{{ route('logout') }}">
-                            @csrf
-                            <div class="menu-item px-5">
-                                <button type="submit" class="menu-link px-5 btn btn-link w-100 text-start p-0 text-gray-800 fs-5 fw-semibold" 
-                                        style="transition: all 0.2s ease;"
-                                        onmouseover="this.style.color='#dc3545'; this.style.fontSize='1.1rem';"
-                                        onmouseout="this.style.color=''; this.style.fontSize='';">Sign Out</button>
-                            </div>
-                        </form>
+                            <form method="POST" action="{{ route('logout') }}" class="m-0 w-100">
+                                @csrf
+                                <button type="submit" class="menu-link px-5 py-3 btn btn-link w-100 text-start p-0 text-gray-800 fs-5 fw-semibold" 
+                                        style="transition: all 0.2s ease; border-radius: 6px; text-decoration: none; background: transparent; border: none; display: flex; align-items: center; gap: 8px;"
+                                        onmouseover="this.style.backgroundColor='#f5f5f5'; this.style.color='#dc3545';"
+                                        onmouseout="this.style.backgroundColor='transparent'; this.style.color='';">
+                                    <i class="ki-duotone ki-entrance-right fs-3">
+                                        <span class="path1"></span>
+                                        <span class="path2"></span>
+                                    </i>
+                                    Sign Out
+                                </button>
+                            </form>
+                        </div>
                     </div>
                     </div>
                 </div>

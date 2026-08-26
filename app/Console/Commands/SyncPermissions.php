@@ -40,6 +40,11 @@ class SyncPermissions extends Command
             'edit social media platforms',
             'delete social media platforms',
 
+            'view blogs',
+            'create blogs',
+            'edit blogs',
+            'delete blogs',
+
             // ============================================================
             // Add more permissions here as needed
             // ============================================================

@@ -10,29 +10,36 @@ class VerifyCountryApiToken
 {
     public function handle(Request $request, Closure $next)
     {
-        // Try to get token from multiple sources (prioritize query param for cPanel)
-        $token = $request->query('api_key'); // Check query parameter first
+        // Try to get token from multiple sources
+        // 1. Check query parameter first (for cPanel/GET requests)
+        $token = $request->query('api_key');
         
-        // If not found in query, check Authorization header
+        // 2. Check request body (for POST requests)
+        if (!$token) {
+            $token = $request->input('api_key');
+        }
+        
+        // 3. Check Authorization header (Bearer token)
         if (!$token) {
             $token = $request->bearerToken();
         }
         
-        // If still not found, check custom header
+        // 4. Check custom header X-API-KEY
         if (!$token) {
             $token = $request->header('X-API-KEY');
         }
 
         $countryCode = $request->header('X-Country-Code');
 
-        // Log what we found
+        // Log what we found for debugging
         // Log::info('🔍 Token resolution', [
         //     'from_query' => !empty($request->query('api_key')),
+        //     'from_body' => !empty($request->input('api_key')),
         //     'from_bearer' => !empty($request->bearerToken()),
         //     'from_custom_header' => !empty($request->header('X-API-KEY')),
         //     'token_present' => !empty($token),
         //     'country_code' => $countryCode,
-        //     'token_preview' => $token ? substr($token, 0, 10) . '...' : 'null',
+        //     'token_preview' => $token ? substr($token, 0, 20) . '...' : 'null',
         // ]);
 
         if (!$token) {

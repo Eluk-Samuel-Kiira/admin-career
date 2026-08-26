@@ -12,7 +12,6 @@ use Laravel\Sanctum\HasApiTokens;
 use Illuminate\Support\Str;
 use App\Models\Job\JobPost;
 
-
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
@@ -106,6 +105,38 @@ class User extends Authenticatable
     }
 
     /**
+     * Check if user is a job seeker
+     */
+    public function isJobSeeker(): bool
+    {
+        return $this->hasRole('job_seeker');
+    }
+
+    /**
+     * Check if user is an employer
+     */
+    public function isEmployer(): bool
+    {
+        return $this->hasRole('employer');
+    }
+
+    /**
+     * Check if user is admin
+     */
+    public function isAdmin(): bool
+    {
+        return $this->hasRole('admin') || $this->hasRole('super_admin');
+    }
+
+    /**
+     * Get the user's role name
+     */
+    public function getRoleNameAttribute(): string
+    {
+        return $this->roles->first()?->name ?? 'job_seeker';
+    }
+
+    /**
      * Calculate profile completion percentage.
      */
     public function getProfileCompletionAttribute(): int
@@ -137,76 +168,6 @@ class User extends Authenticatable
     }
 
     /**
-     * Relationship: User belongs to a department
-     */
-    public function department()
-    {
-        return $this->belongsTo(Department::class);
-    }
-
-    /**
-     * Scope for active users only.
-     */
-    public function scopeActive($query)
-    {
-        return $query->where('is_active', true);
-    }
-
-    /**
-     * Scope to filter users by department
-     */
-    public function scopeByDepartment($query, $departmentId)
-    {
-        return $query->where('department_id', $departmentId);
-    }
-
-    /**
-     * Check if magic link is valid.
-     */
-    public function hasValidMagicLink(): bool
-    {
-        return $this->magic_link_token && 
-               $this->magic_link_expires_at && 
-               now()->lt($this->magic_link_expires_at);
-    }
-
-    /**
-     * Generate a magic link token for the user.
-     */
-    public function generateMagicLinkToken(): string
-    {
-        $this->forceFill([
-            'magic_link_token' => Str::random(64),
-            'magic_link_sent_at' => now(),
-            'magic_link_expires_at' => now()->addMinutes(15),
-        ])->save();
-
-        return $this->magic_link_token;
-    }
-
-    /**
-     * Verify magic link token.
-     */
-    public function verifyMagicLinkToken(string $token): bool
-    {
-        return $this->magic_link_token === $token && 
-               $this->magic_link_expires_at && 
-               now()->lt($this->magic_link_expires_at);
-    }
-
-    /**
-     * Clear magic link token.
-     */
-    public function clearMagicLinkToken(): void
-    {
-        $this->forceFill([
-            'magic_link_token' => null,
-            'magic_link_sent_at' => null,
-            'magic_link_expires_at' => null,
-        ])->save();
-    }
-
-    /**
      * Update last login timestamp.
      */
     public function updateLastLogin(): void
@@ -226,20 +187,87 @@ class User extends Authenticatable
             : asset('assets/media/avatars/300-1.jpg');
     }
 
-    // Relationship with Employee - Fix this
+    /**
+     * Check if magic link is valid.
+     */
+    public function hasValidMagicLink(): bool
+    {
+        return $this->magic_link_token && 
+               $this->magic_link_expires_at && 
+               now()->lt($this->magic_link_expires_at);
+    }
+
+    /**
+     * Clear magic link token.
+     */
+    public function clearMagicLinkToken(): void
+    {
+        $this->forceFill([
+            'magic_link_token' => null,
+            'magic_link_sent_at' => null,
+            'magic_link_expires_at' => null,
+        ])->save();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Relationships
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Relationship: User belongs to a department
+     */
+    public function department()
+    {
+        return $this->belongsTo(Department::class);
+    }
+
+    /**
+     * Relationship: User has one employee profile
+     */
     public function employee()
     {
         return $this->hasOne(Employee::class, 'user_id');
     }
 
-    // Relationship with Employee Salary
+    /**
+     * Relationship: User has one employee salary
+     */
     public function employeeSalary()
     {
         return $this->hasOne(EmployeeSalary::class, 'user_id');
     }
 
-    
-    // Check if user is an employee
+    /**
+     * Relationship: User has one employer profile
+     */
+    public function employerProfile()
+    {
+        return $this->hasOne(EmployerProfile::class);
+    }
+
+    /**
+     * Relationship: User has one seeker profile
+     */
+    public function seekerProfile()
+    {
+        return $this->hasOne(SeekerProfile::class);
+    }
+
+    /**
+     * Get the job posts created by this user (as poster)
+     */
+    public function jobPosts()
+    {
+        return $this->hasMany(JobPost::class, 'poster_id');
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Check methods
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Check if user is an employee
+     */
     public function isEmployee()
     {
         return $this->employee()->exists();
@@ -250,12 +278,46 @@ class User extends Authenticatable
         return $this->employee;
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Scopes
+    // ─────────────────────────────────────────────────────────────────────────
+
     /**
-     * Get the job posts created by this user (as poster)
+     * Scope for active users only.
      */
-    public function jobPosts()
+    public function scopeActive($query)
     {
-        return $this->hasMany(JobPost::class, 'poster_id');
+        return $query->where('is_active', true);
     }
+
+    /**
+     * Scope to filter users by department
+     */
+    public function scopeByDepartment($query, $departmentId)
+    {
+        return $query->where('department_id', $departmentId);
+    }
+
+    /**
+     * Scope for job seekers
+     */
+    public function scopeJobSeekers($query)
+    {
+        return $query->whereHas('roles', function($q) {
+            $q->where('name', 'job_seeker');
+        });
+    }
+
+    /**
+     * Scope for employers
+     */
+    public function scopeEmployers($query)
+    {
+        return $query->whereHas('roles', function($q) {
+            $q->where('name', 'employer');
+        });
+    }
+
+    
 
 }
