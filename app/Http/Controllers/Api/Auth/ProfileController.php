@@ -49,31 +49,30 @@ class ProfileController extends Controller
                 'last_login_at' => $user->last_login_at,
                 'profile_completion' => $user->profile_completion,
                 
-                // ── Seeker Profile Fields ──
+                // Seeker specific
                 'professional_title' => $user->seekerProfile?->professional_title,
                 'years_of_experience' => $user->seekerProfile?->years_of_experience,
                 'skills' => $user->seekerProfile?->skills,
-                'address' => $user->seekerProfile?->address,
-                'city' => $user->seekerProfile?->city,
+                'address' => $user->seekerProfile?->address ?? $user->employerProfile?->address,
+                'city' => $user->seekerProfile?->city ?? $user->employerProfile?->city,
+                'linkedin_url' => $user->seekerProfile?->linkedin_url,
+                'github_url' => $user->seekerProfile?->github_url,
+                'portfolio_url' => $user->seekerProfile?->portfolio_url,
                 'country' => $user->seekerProfile?->country,
                 'postal_code' => $user->seekerProfile?->postal_code,
                 'date_of_birth' => $user->seekerProfile?->date_of_birth,
                 'nationality' => $user->seekerProfile?->nationality,
                 'professional_summary' => $user->seekerProfile?->professional_summary,
-                'linkedin_url' => $user->seekerProfile?->linkedin_url,
-                'github_url' => $user->seekerProfile?->github_url,
-                'portfolio_url' => $user->seekerProfile?->portfolio_url,
                 'languages' => $user->seekerProfile?->languages,
                 'certifications' => $user->seekerProfile?->certifications,
                 'education' => $user->seekerProfile?->education,
                 'work_experience' => $user->seekerProfile?->work_experience,
                 'projects' => $user->seekerProfile?->projects,
-                'cv_file_path' => $user->seekerProfile?->cv_file_path,
-                'cv_original_name' => $user->seekerProfile?->cv_original_name,
-                'job_preferences' => $user->seekerProfile?->job_preferences,
-                'is_public' => $user->seekerProfile?->is_public,
+                'cv_files' => $user->seekerProfile?->cv_files,
+                'is_public' => $user->seekerProfile?->is_public ?? true,
+                'job_preferences' => $user->seekerProfile?->job_preferences ?? [], // ✅ Fixed
                 
-                // ── Employer Profile Fields ──
+                // Employer specific
                 'company_name' => $user->employerProfile?->company_name,
                 'company_logo' => $user->employerProfile?->company_logo,
                 'company_website' => $user->employerProfile?->company_website,
@@ -96,9 +95,10 @@ class ProfileController extends Controller
     {
         $user = $request->user();
 
+        // Make all fields optional for partial updates
         $validated = $request->validate([
-            'first_name' => 'required|string|max:255',
-            'last_name' => 'required|string|max:255',
+            'first_name' => 'sometimes|required|string|max:255',
+            'last_name' => 'sometimes|required|string|max:255',
             'phone' => 'nullable|string|max:25',
             'country_code' => 'nullable|string|max:3',
             'bio' => 'nullable|string|max:500',
@@ -110,7 +110,6 @@ class ProfileController extends Controller
             'linkedin_url' => 'nullable|url|max:255',
             'github_url' => 'nullable|url|max:255',
             'portfolio_url' => 'nullable|url|max:255',
-
             'country' => 'nullable|string|max:255',
             'postal_code' => 'nullable|string|max:20',
             'date_of_birth' => 'nullable|date',
@@ -121,48 +120,66 @@ class ProfileController extends Controller
             'education' => 'nullable|array',
             'work_experience' => 'nullable|array',
             'projects' => 'nullable|array',
+            'is_public' => 'nullable|boolean',
+            'job_preferences' => 'nullable|array', // ✅ Added
         ]);
 
         try {
             DB::beginTransaction();
 
-            // ── 1. Update User table ──
-            $user->update([
-                'first_name' => $validated['first_name'],
-                'last_name' => $validated['last_name'],
-                'phone' => $validated['phone'] ?? $user->phone,
-                'country_code' => $validated['country_code'] ?? $user->country_code,
-                'bio' => $validated['bio'] ?? $user->bio,
-            ]);
+            // ── 1. Update User table (only if fields are present) ──
+            $userData = [];
+            if ($request->has('first_name')) {
+                $userData['first_name'] = $validated['first_name'];
+            }
+            if ($request->has('last_name')) {
+                $userData['last_name'] = $validated['last_name'];
+            }
+            if ($request->has('phone')) {
+                $userData['phone'] = $validated['phone'];
+            }
+            if ($request->has('country_code')) {
+                $userData['country_code'] = $validated['country_code'];
+            }
+            if ($request->has('bio')) {
+                $userData['bio'] = $validated['bio'];
+            }
+            
+            if (!empty($userData)) {
+                $user->update($userData);
+            }
 
-            // ── 2. Update Seeker Profile (if user is a job seeker) ──
+            // ── 2. Update Seeker Profile ──
             if ($user->seekerProfile) {
                 $seekerData = [];
                 
-                // Only update fields that are sent in the request
-                if ($request->has('professional_title')) {
-                    $seekerData['professional_title'] = $validated['professional_title'];
-                }
-                if ($request->has('years_of_experience')) {
-                    $seekerData['years_of_experience'] = $validated['years_of_experience'];
-                }
-                if ($request->has('skills')) {
-                    $seekerData['skills'] = $validated['skills'];
-                }
-                if ($request->has('address')) {
-                    $seekerData['address'] = $validated['address'];
-                }
-                if ($request->has('city')) {
-                    $seekerData['city'] = $validated['city'];
-                }
-                if ($request->has('linkedin_url')) {
-                    $seekerData['linkedin_url'] = $validated['linkedin_url'];
-                }
-                if ($request->has('github_url')) {
-                    $seekerData['github_url'] = $validated['github_url'];
-                }
-                if ($request->has('portfolio_url')) {
-                    $seekerData['portfolio_url'] = $validated['portfolio_url'];
+                $seekerFields = [
+                    'professional_title', 
+                    'years_of_experience', 
+                    'skills', 
+                    'address',
+                    'city', 
+                    'linkedin_url', 
+                    'github_url', 
+                    'portfolio_url',
+                    'country', 
+                    'postal_code', 
+                    'date_of_birth', 
+                    'nationality',
+                    'professional_summary', 
+                    'languages', 
+                    'certifications',
+                    'education', 
+                    'work_experience', 
+                    'projects', 
+                    'is_public',
+                    'job_preferences' // ✅ Added
+                ];
+                
+                foreach ($seekerFields as $field) {
+                    if ($request->has($field)) {
+                        $seekerData[$field] = $validated[$field];
+                    }
                 }
 
                 if (!empty($seekerData)) {
@@ -170,11 +187,10 @@ class ProfileController extends Controller
                 }
             }
 
-            // ── 3. Update Employer Profile (if user is an employer) ──
+            // ── 3. Update Employer Profile ──
             if ($user->employerProfile) {
                 $employerData = [];
                 
-                // Only update address and city for employer
                 if ($request->has('address')) {
                     $employerData['address'] = $validated['address'];
                 }
@@ -188,8 +204,6 @@ class ProfileController extends Controller
             }
 
             DB::commit();
-
-            // Log::info('User profile updated via API', ['user_id' => $user->id]);
 
             // Reload user with relationships
             $user->refresh();
@@ -208,15 +222,30 @@ class ProfileController extends Controller
                     'avatar'       => $user->avatar_url,
                     'bio'          => $user->bio,
                     'role'         => $user->getRoleNameAttribute(),
+                    
+                    // Seeker specific
                     'professional_title' => $user->seekerProfile?->professional_title,
                     'years_of_experience' => $user->seekerProfile?->years_of_experience,
-                
                     'skills' => $user->seekerProfile?->skills,
                     'address' => $user->seekerProfile?->address ?? $user->employerProfile?->address,
                     'city' => $user->seekerProfile?->city ?? $user->employerProfile?->city,
                     'linkedin_url' => $user->seekerProfile?->linkedin_url,
                     'github_url' => $user->seekerProfile?->github_url,
                     'portfolio_url' => $user->seekerProfile?->portfolio_url,
+                    'country' => $user->seekerProfile?->country,
+                    'postal_code' => $user->seekerProfile?->postal_code,
+                    'date_of_birth' => $user->seekerProfile?->date_of_birth,
+                    'nationality' => $user->seekerProfile?->nationality,
+                    'professional_summary' => $user->seekerProfile?->professional_summary,
+                    'languages' => $user->seekerProfile?->languages,
+                    'certifications' => $user->seekerProfile?->certifications,
+                    'education' => $user->seekerProfile?->education,
+                    'work_experience' => $user->seekerProfile?->work_experience,
+                    'projects' => $user->seekerProfile?->projects,
+                    'is_public' => $user->seekerProfile?->is_public ?? true,
+                    'job_preferences' => $user->seekerProfile?->job_preferences ?? [], // ✅ Fixed
+                    
+                    // Employer specific
                     'company_name' => $user->employerProfile?->company_name,
                 ]
             ]);
@@ -277,4 +306,64 @@ class ProfileController extends Controller
         }
     }
 
+    /**
+     * API: Update job preferences only
+     * PUT /api/auth/user/job-preferences
+     */
+    public function updateJobPreferencesApi(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'job_preferences' => 'required|array',
+        ]);
+
+        if (!$user->seekerProfile) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Seeker profile not found'
+            ], 404);
+        }
+
+        try {
+            $user->seekerProfile->update([
+                'job_preferences' => $validated['job_preferences']
+            ]);
+
+            $user->refresh();
+            $user->load(['seekerProfile']);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Job preferences updated successfully',
+                'job_preferences' => $user->seekerProfile->job_preferences,
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Job preferences update error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update job preferences: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * API: Logout
+     * POST /api/auth/logout
+     */
+    public function logoutApi(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        
+        if ($user) {
+            $user->tokens()->delete();
+            // Log::info('User logged out via API', ['user_id' => $user->id]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Logged out successfully'
+        ]);
+    }
 }

@@ -67,6 +67,31 @@ class SeekerProfile extends Model
         return $this->belongsTo(User::class);
     }
 
+    public function jobSeekerJobs()
+    {
+        return $this->hasMany(JobSeekerJob::class, 'seeker_profile_id');
+    }
+
+    public function savedJobs()
+    {
+        return $this->hasMany(JobSeekerJob::class, 'seeker_profile_id')->where('is_saved', true);
+    }
+
+    public function appliedJobs()
+    {
+        return $this->hasMany(JobSeekerJob::class, 'seeker_profile_id')->where('is_applied', true);
+    }
+
+    public function hasSavedJob($jobPostId)
+    {
+        return $this->jobSeekerJobs()->where('job_post_id', $jobPostId)->where('is_saved', true)->exists();
+    }
+
+    public function hasAppliedJob($jobPostId)
+    {
+        return $this->jobSeekerJobs()->where('job_post_id', $jobPostId)->where('is_applied', true)->exists();
+    }
+
     /**
      * Get the user's full name (from profile or user)
      */
