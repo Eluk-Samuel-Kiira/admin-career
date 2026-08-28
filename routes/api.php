@@ -8,7 +8,7 @@ use App\Http\Controllers\Api\Jobs\{ CountryController,CompanyController, JobCont
 use App\Http\Controllers\Api\Pages\PageController;
 use App\Http\Controllers\Api\Blog\{BlogController};
 
-use App\Http\Controllers\Api\Auth\LoginTokenController;
+use App\Http\Controllers\Api\Auth\{ LoginTokenController, ProfileController, CvController };
 
 
 // ✅ TEST ROUTE
@@ -86,6 +86,20 @@ Route::middleware(['verifycountry'])->group(function () {
     Route::middleware(['auth:sanctum'])->prefix('auth')->group(function () {
         Route::post('/logout', [LoginTokenController::class, 'logoutApi']);
         Route::get('/user', [LoginTokenController::class, 'userApi']);
+    });
+
+    Route::middleware(['auth:sanctum'])->prefix('auth')->group(function () {
+        Route::get('/user', [ProfileController::class, 'userApi']);
+        Route::post('/logout', [ProfileController::class, 'logoutApi']);
+        
+        // Profile update routes
+        Route::put('/user/update', [ProfileController::class, 'updateUserApi']);
+        Route::post('/user/avatar', [ProfileController::class, 'updateAvatarApi']);
+        Route::post('/user/cv', [CvController::class, 'upload']);
+
+        Route::get('/user/cv', [CvController::class, 'list']);            
+        Route::delete('/user/cv', [CvController::class, 'delete']);
+
     });
 
 });

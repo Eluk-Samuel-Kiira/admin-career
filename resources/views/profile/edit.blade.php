@@ -260,15 +260,12 @@
                                 <label class="fw-semibold fs-6 mb-2">Country Code</label>
                                 <select name="country_code" class="form-select form-select-solid">
                                     <option value="">Select country code</option>
-                                    <option value="+1" {{ auth()->user()->country_code == '+1' ? 'selected' : '' }}>+1 (USA/Canada)</option>
-                                    <option value="+44" {{ auth()->user()->country_code == '+44' ? 'selected' : '' }}>+44 (UK)</option>
-                                    <option value="+254" {{ auth()->user()->country_code == '+254' ? 'selected' : '' }}>+254 (Kenya)</option>
-                                    <option value="+254" {{ auth()->user()->country_code == '+256' ? 'selected' : '' }}>+256 (Uganda)</option>
-                                    <option value="+234" {{ auth()->user()->country_code == '+234' ? 'selected' : '' }}>+234 (Nigeria)</option>
-                                    <option value="+27" {{ auth()->user()->country_code == '+27' ? 'selected' : '' }}>+27 (South Africa)</option>
-                                    <option value="+33" {{ auth()->user()->country_code == '+33' ? 'selected' : '' }}>+33 (France)</option>
-                                    <option value="+49" {{ auth()->user()->country_code == '+49' ? 'selected' : '' }}>+49 (Germany)</option>
-                                    <option value="+61" {{ auth()->user()->country_code == '+61' ? 'selected' : '' }}>+61 (Australia)</option>
+                                    @foreach($countries as $country)
+                                        <option value="{{ $country->phone_code }}" 
+                                            {{ (auth()->user()->country_code == $country->phone_code) ? 'selected' : '' }}>
+                                            {{ $country->phone_code }} ({{ $country->name }})
+                                        </option>
+                                    @endforeach
                                 </select>
                                 @error('country_code')
                                     <div class="invalid-feedback">{{ $message }}</div>
