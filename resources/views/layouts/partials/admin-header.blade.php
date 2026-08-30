@@ -146,8 +146,7 @@
                                 @csrf
                                 <button type="submit" class="menu-link px-5 py-3 btn btn-link w-100 text-start p-0 text-gray-800 fs-5 fw-semibold" 
                                         style="transition: all 0.2s ease; border-radius: 6px; text-decoration: none; background: transparent; border: none; display: flex; align-items: center; gap: 8px;"
-                                        onmouseover="this.style.backgroundColor='#f5f5f5'; this.style.color='#dc3545';"
-                                        onmouseout="this.style.backgroundColor='transparent'; this.style.color='';">
+                                        onmouseover="this.style.backgroundColor='#f5f5f5';">
                                     <i class="ki-duotone ki-entrance-right fs-3">
                                         <span class="path1"></span>
                                         <span class="path2"></span>

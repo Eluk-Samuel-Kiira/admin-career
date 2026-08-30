@@ -422,4 +422,30 @@ class JobPost extends Model
         
         return $tags;
     }
+
+    public function seekerJobs()
+    {
+        return $this->hasMany(JobSeekerJob::class, 'job_post_id');
+    }
+
+    public function savedBySeekers()
+    {
+        return $this->hasMany(JobSeekerJob::class, 'job_post_id')->where('is_saved', true);
+    }
+
+    public function appliedBySeekers()
+    {
+        return $this->hasMany(JobSeekerJob::class, 'job_post_id')->where('is_applied', true);
+    }
+
+    public function isSavedBySeeker($seekerProfileId)
+    {
+        return $this->seekerJobs()->where('seeker_profile_id', $seekerProfileId)->where('is_saved', true)->exists();
+    }
+
+    public function isAppliedBySeeker($seekerProfileId)
+    {
+        return $this->seekerJobs()->where('seeker_profile_id', $seekerProfileId)->where('is_applied', true)->exists();
+    }
+
 }

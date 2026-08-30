@@ -3,12 +3,12 @@
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\Jobs\{ CountryController,CompanyController, JobController, 
-    LocationController, CategoryController };
+    LocationController, CategoryController, JobActionController };
     
 use App\Http\Controllers\Api\Pages\PageController;
 use App\Http\Controllers\Api\Blog\{BlogController};
 
-use App\Http\Controllers\Api\Auth\LoginTokenController;
+use App\Http\Controllers\Api\Auth\{ LoginTokenController, ProfileController, CvController };
 
 
 // ✅ TEST ROUTE
@@ -33,7 +33,6 @@ Route::middleware(['verifycountry'])->group(function () {
     Route::get('/locations', [JobController::class, 'locations']);
     Route::get('/companies', [JobController::class, 'companies']);
 
-    Route::post('jobs/{id}/track-application', [JobController::class, 'trackApplication']);
 
 
 
@@ -84,8 +83,34 @@ Route::middleware(['verifycountry'])->group(function () {
 
     // Protected routes (require Sanctum token)
     Route::middleware(['auth:sanctum'])->prefix('auth')->group(function () {
-        Route::post('/logout', [LoginTokenController::class, 'logoutApi']);
-        Route::get('/user', [LoginTokenController::class, 'userApi']);
+        // Route::post('/logout', [LoginTokenController::class, 'logoutApi']);
+        // Route::get('/user', [LoginTokenController::class, 'userApi']);
+    });
+
+    Route::middleware(['auth:sanctum'])->prefix('auth')->group(function () {
+        Route::get('/user', [ProfileController::class, 'userApi']);
+        Route::post('/logout', [ProfileController::class, 'logoutApi']);
+        
+        // Profile update routes
+        Route::put('/user/update', [ProfileController::class, 'updateUserApi']);
+        Route::post('/user/avatar', [ProfileController::class, 'updateAvatarApi']);
+        Route::post('/user/cv', [CvController::class, 'upload']);
+
+        Route::get('/user/cv', [CvController::class, 'list']);            
+        Route::delete('/user/cv', [CvController::class, 'delete']);
+
+    });
+
+    
+    Route::post('jobs/{id}/track-application-guest', [JobController::class, 'trackApplication']);
+
+    Route::middleware(['auth:sanctum'])->prefix('job-action')->group(function () {
+        Route::post('/{id}/save', [JobActionController::class, 'toggleSave']);
+        Route::post('/{id}/track-application', [JobActionController::class, 'trackApplication']);
+        Route::get('/{id}/status', [JobActionController::class, 'getJobStatus']);
+        Route::get('/saved', [JobActionController::class, 'getSavedJobs']);
+        Route::get('/applied', [JobActionController::class, 'getAppliedJobs']);
+        Route::put('/{id}/application-status', [JobActionController::class, 'updateApplicationStatus']);
     });
 
 });

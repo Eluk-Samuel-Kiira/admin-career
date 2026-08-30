@@ -16,6 +16,9 @@ class AiService
     protected int $retryAttempts;
     protected int $retryDelay;
     protected array $countrySettings;
+    
+
+
 
     public function __construct()
     {
@@ -525,20 +528,20 @@ class AiService
     /**
      * Get nested array value using dot notation
      */
-    private function getNestedValue(array $data, string $path)
-    {
-        $keys = explode('.', $path);
-        $current = $data;
+    // private function getNestedValue(array $data, string $path)
+    // {
+    //     $keys = explode('.', $path);
+    //     $current = $data;
 
-        foreach ($keys as $key) {
-            if (!isset($current[$key])) {
-                return null;
-            }
-            $current = $current[$key];
-        }
+    //     foreach ($keys as $key) {
+    //         if (!isset($current[$key])) {
+    //             return null;
+    //         }
+    //         $current = $current[$key];
+    //     }
 
-        return $current;
-    }
+    //     return $current;
+    // }
 
     /**
      * Extract the text content from the API response
@@ -919,7 +922,7 @@ class AiService
             'salary_range_name'    => 'salary_ranges',
         ] as $field => $refKey) {
             if (!empty($data[$field]) && !in_array($data[$field], $referenceData[$refKey], true)) {
-                Log::info("AI returned unmatched {$field}", ['value' => $data[$field]]);
+                // Log::info("AI returned unmatched {$field}", ['value' => $data[$field]]);
                 $data[$field] = null; // don't let a hallucinated name reach the dropdown-matcher
             }
         }
@@ -1073,4 +1076,393 @@ class AiService
             'timezone' => 'UTC',
         ];
     }
+
+
+
+    // CV Extraction
+
+    
+
+
+    /**
+     * Order to try models in for CV extraction
+     */
+    protected array $cvFallbackOrder = ['cohere', 'gemini', 'openai', 'claude', 'grok', 'mistral'];
+
+    /**
+     * Extract structured CV data from raw resume text, trying each configured
+     * AI model in order until one returns usable JSON.
+     * 
+     * Returns empty data structure instead of throwing on failure
+     */
+    public function extractCvData(string $resumeText): array
+    {
+        $prompt = $this->buildCvExtractionPrompt($resumeText);
+        $lastException = null;
+        $allFailed = true;
+
+        // Get ordered models - default first, then fallbacks
+        $models = $this->getOrderedCvModels();
+
+        foreach ($models as $model) {
+            $apiKey = $this->getApiKeyFor($model);
+
+            if (!$this->isModelUsable($model, $apiKey)) {
+                // Log::info("⏭️ Skipping {$model} - API key not configured");
+                continue;
+            }
+
+            try {
+                // Log::info("🤖 Attempting CV extraction with {$model}");
+                $raw = $this->callAiApi($model, $apiKey, $prompt);
+                
+                if ($raw) {
+                    $data = $this->parseJsonResponse($raw);
+                    
+                    if ($data !== null && !empty($data) && $this->hasValidCvData($data)) {
+                        // Log::info("✅ CV extraction succeeded with {$model}");
+                        return $data;
+                    }
+                }
+
+                Log::warning("⚠️ {$model} returned unparseable or empty response - trying next model");
+            } catch (\Throwable $e) {
+                $lastException = $e;
+                Log::warning("⚠️ CV extraction failed with {$model}: " . $e->getMessage());
+            }
+        }
+
+        // If we get here, all models failed
+        Log::error('All AI models failed to extract CV data', [
+            'last_error' => $lastException ? $lastException->getMessage() : 'Unknown error'
+        ]);
+        
+        // Return empty data structure instead of throwing
+        return $this->getEmptyCvData();
+    }
+
+    /**
+     * Get ordered models for CV extraction - default first, then fallbacks
+     */
+    protected function getOrderedCvModels(): array
+    {
+        $default = env('AI_DEFAULT_MODEL', 'gemini');
+        return array_values(array_unique(array_merge([$default], $this->cvFallbackOrder)));
+    }
+
+    /**
+     * Check if extracted data has any meaningful content
+     */
+    protected function hasValidCvData(array $data): bool
+    {
+        // Check if there's any non-empty field
+        foreach ($data as $key => $value) {
+            if (is_string($value) && !empty(trim($value))) {
+                return true;
+            }
+            if (is_array($value) && !empty($value)) {
+                return true;
+            }
+            if (is_int($value) && $value > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Get empty CV data structure
+     */
+    protected function getEmptyCvData(): array
+    {
+        return [
+            'first_name' => null,
+            'last_name' => null,
+            'phone' => null,
+            'address' => null,
+            'city' => null,
+            'country' => null,
+            'postal_code' => null,
+            'date_of_birth' => null,
+            'nationality' => null,
+            'professional_summary' => null,
+            'professional_title' => null,
+            'years_of_experience' => null,
+            'linkedin_url' => null,
+            'github_url' => null,
+            'portfolio_url' => null,
+            'skills' => [],
+            'languages' => [],
+            'certifications' => [],
+            'education' => [],
+            'work_experience' => [],
+            'projects' => [],
+        ];
+    }
+
+    /**
+     * Get API key for a model
+     */
+    protected function getApiKeyFor(string $model): ?string
+    {
+        return match ($model) {
+            'openai' => env('OPENAI_API_KEY'),
+            'claude' => env('ANTHROPIC_API_KEY'),
+            'gemini' => env('GEMINI_API_KEY'),
+            'grok' => env('GROK_API_KEY'),
+            'cohere' => env('COHERE_API_KEY'),
+            'mistral' => env('MISTRAL_API_KEY'),
+            default => null,
+        };
+    }
+
+    /**
+     * Check if model is usable (has API key and is configured)
+     */
+    protected function isModelUsable(string $model, ?string $apiKey): bool
+    {
+        if (empty($apiKey) || str_contains($apiKey, 'xxxx') || str_contains($apiKey, 'your-')) {
+            return false;
+        }
+        return (bool) $this->getModelConfig($model);
+    }
+
+    /**
+     * Parse JSON response, handling various formats
+     */
+    protected function parseJsonResponse($raw): ?array
+    {
+        // If raw is an array, encode it
+        if (is_array($raw)) {
+            $raw = json_encode($raw);
+        }
+        
+        // If raw is not a string, return null
+        if (!is_string($raw)) {
+            return null;
+        }
+
+        // Remove markdown code fences
+        $cleaned = preg_replace('/^```(?:json)?\s*|\s*```$/m', '', trim($raw));
+        $cleaned = trim($cleaned);
+
+        // Try to find JSON if there's extra text
+        if (!str_starts_with($cleaned, '{') && !str_starts_with($cleaned, '[')) {
+            preg_match('/\{[^{}]*\}/', $cleaned, $matches);
+            if (!empty($matches)) {
+                $cleaned = $matches[0];
+            }
+        }
+
+        // Try to parse JSON
+        $data = json_decode($cleaned, true);
+
+        if (json_last_error() === JSON_ERROR_NONE && is_array($data)) {
+            return $data;
+        }
+
+        Log::warning('JSON parse error', [
+            'error' => json_last_error_msg(),
+            'raw_preview' => substr($raw, 0, 500)
+        ]);
+
+        return null;
+    }
+
+    /**
+     * Build CV extraction prompt
+     */
+    protected function buildCvExtractionPrompt(string $resumeText): string
+    {
+        return <<<PROMPT
+        You are a strict data-extraction engine. Read the resume/CV text below and
+        return ONLY a single valid JSON object - no markdown, no commentary, no
+        code fences - matching EXACTLY this shape. Use null or an empty array for
+        any field you cannot find. Never invent data that isn't in the text.
+
+        {
+        "first_name": string|null,
+        "last_name": string|null,
+        "phone": string|null,
+        "address": string|null,
+        "city": string|null,
+        "country": string|null,
+        "postal_code": string|null,
+        "date_of_birth": "YYYY-MM-DD"|null,
+        "nationality": string|null,
+        "professional_summary": string|null,
+        "professional_title": string|null,
+        "years_of_experience": integer|null,
+        "linkedin_url": string|null,
+        "github_url": string|null,
+        "portfolio_url": string|null,
+        "skills": string[],
+        "languages": string[],
+        "certifications": [{"name": string, "issuer": string|null, "year": string|null}],
+        "education": [{"institution": string, "degree": string|null, "field": string|null, "grade": string|null, "start_year": string|null, "end_year": string|null}],
+        "work_experience": [{"company": string, "title": string, "start_date": string|null, "end_date": string|null, "description": string|null}],
+        "projects": [{"name": string, "description": string|null, "url": string|null}]
+        }
+
+        For education, include a "grade" field (e.g., "A", "B+", "First Class", "Distinction", "Merit", "Pass", "GPA: 3.8/4.0", etc.) if mentioned in the CV, otherwise null.
+
+        Resume text:
+        ---
+        {$resumeText}
+        ---
+        PROMPT;
+    }
+
+    /**
+     * Call AI API for CV extraction
+     */
+    protected function callAiApiForCv(string $model, string $apiKey, string $prompt, ?string $imageBase64 = null): array|string
+    {
+        $config = $this->getModelConfig($model);
+        if (!$config) {
+            throw new \Exception("Model '{$model}' not configured.");
+        }
+
+        $endpoint = $config['endpoint'];
+        $modelName = $config['model'];
+        $maxTokens = $config['max_tokens'] ?? 4096;
+
+        // Set headers based on model
+        $headers = ['Content-Type' => 'application/json'];
+        
+        if ($model === 'openai' || $model === 'grok' || $model === 'mistral' || $model === 'cohere') {
+            $headers['Authorization'] = "Bearer {$apiKey}";
+        } elseif ($model === 'claude') {
+            $headers['x-api-key'] = $apiKey;
+            $headers['anthropic-version'] = '2023-06-01';
+        }
+
+        $body = $this->buildCvRequestBody($model, $modelName, $maxTokens, $prompt, $imageBase64);
+
+        if ($model === 'gemini') {
+            $endpoint = "https://generativelanguage.googleapis.com/v1beta/models/{$modelName}:generateContent?key={$apiKey}";
+        }
+
+        $response = Http::timeout(60)
+            ->withHeaders($headers)
+            ->post($endpoint, $body);
+
+        if (!$response->successful()) {
+            throw new \Exception("API error ({$model}): " . $this->extractCvErrorMessage($response));
+        }
+
+        return $this->extractCvResponseText($model, $response->json());
+    }
+
+    /**
+     * Build request body for CV extraction
+     */
+    protected function buildCvRequestBody(string $model, string $modelName, int $maxTokens, string $prompt, ?string $imageBase64): array
+    {
+        switch ($model) {
+            case 'openai':
+            case 'grok':
+            case 'mistral':
+                return [
+                    'model' => $modelName,
+                    'max_tokens' => $maxTokens,
+                    'messages' => [
+                        ['role' => 'user', 'content' => $prompt]
+                    ],
+                    'temperature' => 0.1,
+                ];
+
+            case 'claude':
+                return [
+                    'model' => $modelName,
+                    'max_tokens' => $maxTokens,
+                    'messages' => [['role' => 'user', 'content' => $prompt]],
+                ];
+
+            case 'gemini':
+                return [
+                    'contents' => [
+                        ['parts' => [['text' => $prompt]]]
+                    ],
+                    'generationConfig' => ['maxOutputTokens' => $maxTokens],
+                ];
+
+            case 'cohere':
+                return [
+                    'model' => $modelName,
+                    'prompt' => $prompt,
+                    'max_tokens' => $maxTokens,
+                    'temperature' => 0.1,
+                    'return_likelihoods' => 'NONE',
+                ];
+
+            default:
+                throw new \Exception("Unsupported model: {$model}");
+        }
+    }
+
+    /**
+     * Extract error message from CV API response
+     */
+    protected function extractCvErrorMessage($response): string
+    {
+        $body = $response->body();
+        $data = json_decode($body, true);
+
+        $errorPaths = [
+            'error.message',
+            'error.error.message',
+            'error.error',
+            'message',
+            'error'
+        ];
+
+        foreach ($errorPaths as $path) {
+            $value = $this->getNestedValue($data, $path);
+            if ($value && is_string($value)) {
+                return $value;
+            }
+        }
+
+        return $body;
+    }
+
+    /**
+     * Extract text from CV API response
+     */
+    protected function extractCvResponseText(string $model, array $data): string
+    {
+        $text = match ($model) {
+            'openai', 'grok', 'mistral' => $data['choices'][0]['message']['content'] ?? '',
+            'claude' => $data['content'][0]['text'] ?? '',
+            'gemini' => $data['candidates'][0]['content']['parts'][0]['text'] ?? '',
+            'cohere' => $data['generations'][0]['text'] ?? '',
+            default => '',
+        };
+
+        if (empty($text)) {
+            Log::warning("Empty response from AI model '{$model}'", ['response' => json_encode($data)]);
+        }
+
+        return $text;
+    }
+
+    /**
+     * Get nested array value using dot notation
+     */
+    protected function getNestedValue(array $data, string $path)
+    {
+        $keys = explode('.', $path);
+        $current = $data;
+
+        foreach ($keys as $key) {
+            if (!isset($current[$key])) {
+                return null;
+            }
+            $current = $current[$key];
+        }
+
+        return $current;
+    }
+
 }
