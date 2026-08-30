@@ -110,11 +110,11 @@ class JobActionController extends Controller
         // Increment application count on job post
         $jobPost->increment('application_count');
 
-        Log::info('Job application tracked', [
-            'user_id' => $user->id,
-            'job_id' => $jobId,
-            'seeker_profile_id' => $seekerProfile->id,
-        ]);
+        // Log::info('Job application tracked', [
+        //     'user_id' => $user->id,
+        //     'job_id' => $jobId,
+        //     'seeker_profile_id' => $seekerProfile->id,
+        // ]);
 
         return response()->json([
             'success' => true,
@@ -165,13 +165,8 @@ class JobActionController extends Controller
         ]);
     }
 
-    /**
-     * Get all saved jobs for the user
-     */
     public function getSavedJobs(Request $request): JsonResponse
     {
-        
-        \Log::info('Yes');
         $user = $request->user();
 
         if (!$user) {
@@ -197,7 +192,14 @@ class JobActionController extends Controller
             ->orderBy('saved_at', 'desc')
             ->get()
             ->map(function ($item) {
-                return $item->jobPost;
+                $job = $item->jobPost;
+                
+                // ✅ FIX: Add logo_url to the company data
+                if ($job->company) {
+                    $job->company->logo_url = $job->company->logo_url;
+                }
+                
+                return $job;
             });
 
         return response()->json([
@@ -207,9 +209,6 @@ class JobActionController extends Controller
         ]);
     }
 
-    /**
-     * Get all applied jobs for the user with status
-     */
     public function getAppliedJobs(Request $request): JsonResponse
     {
         $user = $request->user();
@@ -237,8 +236,15 @@ class JobActionController extends Controller
             ->orderBy('applied_at', 'desc')
             ->get()
             ->map(function ($item) {
+                $job = $item->jobPost;
+                
+                // ✅ FIX: Add logo_url to the company data
+                if ($job->company) {
+                    $job->company->logo_url = $job->company->logo_url;
+                }
+                
                 return [
-                    'job' => $item->jobPost,
+                    'job' => $job,
                     'applied_at' => $item->applied_at,
                     'status' => $this->getApplicationStatus($item),
                 ];
@@ -263,27 +269,37 @@ class JobActionController extends Controller
     }
 
     /**
-     * Update application status (for employer/admin)
+     * Update application status (for job seeker)
+     * The job seeker can update their own application status
      */
     public function updateApplicationStatus(Request $request, $jobId): JsonResponse
     {
         $user = $request->user();
-        
-        // Only employers or admins can update status
-        if (!$user || (!$user->isEmployer() && !$user->isAdmin())) {
+
+        if (!$user) {
             return response()->json([
                 'success' => false,
-                'message' => 'Unauthorized'
-            ], 403);
+                'message' => 'Please login',
+                'requires_login' => true
+            ], 401);
+        }
+
+        // Get the seeker profile from the authenticated user
+        $seekerProfile = $user->seekerProfile;
+        if (!$seekerProfile) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Seeker profile not found'
+            ], 404);
         }
 
         $request->validate([
-            'seeker_profile_id' => 'required|exists:seeker_profiles,id',
             'status' => 'required|in:applied,interviewing,hired,rejected',
         ]);
 
+        // Find the job application for this seeker and job
         $jobSeekerJob = JobSeekerJob::where([
-            'seeker_profile_id' => $request->seeker_profile_id,
+            'seeker_profile_id' => $seekerProfile->id,
             'job_post_id' => $jobId,
         ])->first();
 
@@ -315,8 +331,9 @@ class JobActionController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Application status updated',
+            'message' => 'Application status updated successfully',
             'status' => $this->getApplicationStatus($jobSeekerJob),
         ]);
     }
+
 }
