@@ -56,3 +56,104 @@ Route::middleware('auth')->prefix('admin')->group(function () {
     Route::delete('/users/{id}', [UserController::class, 'deleteUser'])->name('users.delete');
     Route::patch('/users/{id}/toggle-status', [UserController::class, 'toggleUserStatus'])->name('users.toggle-status');
 });
+
+
+use App\Http\Controllers\JobSeeker\SeekerController;
+
+Route::prefix('admin')->middleware(['auth'])->group(function () {
+    // Job Seekers Management
+    Route::get('/seekers', [SeekerController::class, 'index'])->name('admin.seekers.index');
+    Route::get('/seekers/data', [SeekerController::class, 'getData'])->name('admin.seekers.data');
+    Route::get('/seekers/filters', [SeekerController::class, 'getFilters'])->name('admin.seekers.filters');
+    Route::get('/seekers/{id}', [SeekerController::class, 'show'])->name('admin.seekers.show');
+    Route::get('/seekers/{id}/cv', [SeekerController::class, 'viewCv'])->name('admin.seekers.cv');
+    Route::get('/seekers/{id}/applications', [SeekerController::class, 'applications'])->name('admin.seekers.applications');
+});
+
+
+
+use App\Http\Controllers\Service\ServiceController;
+
+Route::prefix('admin')->middleware(['auth'])->group(function () {
+
+    // Services
+    Route::get('/services', [ServiceController::class, 'index'])
+        ->name('admin.services');
+    Route::get('/services/data', [ServiceController::class, 'getData'])
+        ->name('admin.services.data');
+    Route::get('/services/{id}', [ServiceController::class, 'show'])
+        ->name('admin.services.show');
+    Route::post('/services', [ServiceController::class, 'store'])
+        ->name('admin.services.store');
+    Route::put('/services/{id}', [ServiceController::class, 'update'])
+        ->name('admin.services.update');
+    Route::delete('/services/{id}', [ServiceController::class, 'destroy'])
+        ->name('admin.services.destroy');
+    Route::post('/services/{id}/toggle-status', [ServiceController::class, 'toggleStatus'])
+        ->name('admin.services.toggle-status');
+});
+
+
+use App\Http\Controllers\Service\ServicePriceController;
+
+Route::prefix('admin')->middleware(['auth'])->group(function () {
+
+    // Service Prices
+    Route::get('/service-prices', [ServicePriceController::class, 'index'])
+        ->name('admin.service-prices');
+    Route::get('/service-prices/data', [ServicePriceController::class, 'getData'])
+        ->name('admin.service-prices.data');
+    Route::get('/service-prices/services', [ServicePriceController::class, 'getServices'])
+        ->name('admin.service-prices.services');
+    Route::get('/service-prices/countries', [ServicePriceController::class, 'getCountries'])
+        ->name('admin.service-prices.countries');
+    Route::get('/service-prices/currencies', [ServicePriceController::class, 'getCurrencies'])
+        ->name('admin.service-prices.currencies');
+    Route::get('/service-prices/{id}', [ServicePriceController::class, 'show'])
+        ->name('admin.service-prices.show');
+    Route::post('/service-prices', [ServicePriceController::class, 'store'])
+        ->name('admin.service-prices.store');
+    Route::put('/service-prices/{id}', [ServicePriceController::class, 'update'])
+        ->name('admin.service-prices.update');
+    Route::delete('/service-prices/{id}', [ServicePriceController::class, 'destroy'])
+        ->name('admin.service-prices.destroy');
+    Route::post('/service-prices/{id}/toggle-status', [ServicePriceController::class, 'toggleStatus'])
+        ->name('admin.service-prices.toggle-status');
+});
+
+
+use App\Http\Controllers\Service\CvReviewRequestController;
+
+Route::prefix('admin')->middleware(['auth'])->group(function () {
+
+    // CV Review Requests
+    Route::get('/cv-review-requests', [CvReviewRequestController::class, 'index'])
+        ->name('admin.cv-review-requests');
+    Route::get('/cv-review-requests/data', [CvReviewRequestController::class, 'getData'])
+        ->name('admin.cv-review-requests.data');
+    Route::get('/cv-review-requests/stats', [CvReviewRequestController::class, 'stats'])
+        ->name('admin.cv-review-requests.stats');
+    Route::get('/cv-review-requests/filters', [CvReviewRequestController::class, 'filters'])
+        ->name('admin.cv-review-requests.filters');
+    Route::get('/cv-review-requests/{id}/detail', [CvReviewRequestController::class, 'detail'])
+        ->name('admin.cv-review-requests.detail');
+    Route::get('/cv-review-requests/{id}', [CvReviewRequestController::class, 'show'])
+        ->name('admin.cv-review-requests.show');
+    Route::put('/cv-review-requests/{id}', [CvReviewRequestController::class, 'update'])
+        ->name('admin.cv-review-requests.update');
+    Route::post('/cv-review-requests/{id}/status', [CvReviewRequestController::class, 'updateStatus'])
+        ->name('admin.cv-review-requests.status');
+    Route::post('/cv-review-requests/{id}/confirm-payment', [CvReviewRequestController::class, 'confirmPayment'])
+        ->name('admin.cv-review-requests.confirm-payment');
+    Route::post('/cv-review-requests/{id}/upload-delivered', [CvReviewRequestController::class, 'uploadDelivered'])
+        ->name('admin.cv-review-requests.upload-delivered');
+    Route::delete('/cv-review-requests/{id}', [CvReviewRequestController::class, 'destroy'])
+        ->name('admin.cv-review-requests.destroy');
+
+    Route::post('/cv-review-requests/{id}/run-ai-review', [CvReviewRequestController::class, 'runAiReview'])
+        ->name('admin.cv-review-requests.run-ai-review');
+    Route::post('/cv-review-requests/{id}/save-edited-review', [CvReviewRequestController::class, 'saveEditedReview'])
+        ->name('admin.cv-review-requests.save-edited-review');
+    Route::post('/cv-review-requests/{id}/deliver', [CvReviewRequestController::class, 'deliver'])
+        ->name('admin.cv-review-requests.deliver');
+});

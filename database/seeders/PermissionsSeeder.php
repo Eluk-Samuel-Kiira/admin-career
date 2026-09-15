@@ -119,6 +119,30 @@ class PermissionsSeeder extends Seeder
             'edit blogs',
             'delete blogs',
 
+            
+            'view seekers',
+            'view seeker details',
+            'edit seekers',
+            'delete seekers',
+            'create seekers',
+
+            
+            'view services',
+            'create services',
+            'edit services',
+            'delete services',
+
+            
+            'view service prices',
+            'create service prices',
+            'edit service prices',
+            'delete service prices',
+
+            
+            'view cv review requests',
+            'edit cv review requests',
+            'delete cv review requests',
+
             // ============================================================
             // CANDIDATES / JOB SEEKERS
             // ============================================================

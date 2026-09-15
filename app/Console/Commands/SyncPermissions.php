@@ -34,16 +34,10 @@ class SyncPermissions extends Command
             // ============================================================
             // JOBS REPORTS PERMISSIONS
             // ============================================================
-            
-            'view social media platforms',
-            'create social media platforms',
-            'edit social media platforms',
-            'delete social media platforms',
 
-            'view blogs',
-            'create blogs',
-            'edit blogs',
-            'delete blogs',
+            'view cv review requests',
+            'edit cv review requests',
+            'delete cv review requests',
 
             // ============================================================
             // Add more permissions here as needed
