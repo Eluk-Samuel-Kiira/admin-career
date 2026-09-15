@@ -1465,4 +1465,117 @@ class AiService
         return $current;
     }
 
+    
+    /**
+     * Run the free AI gap review on a CV.
+     * Reuses getOrderedCvModels() / isModelUsable() / callAiApi() / parseJsonResponse().
+     *
+     * @throws \Exception  if all configured models fail
+     */
+    public function reviewCvGaps(string $resumeText, ?string $jobDescription = null): array
+    {
+        $prompt = $this->buildGapReviewPrompt($resumeText, $jobDescription);
+
+        $lastError = null;
+
+        foreach ($this->getOrderedCvModels() as $model) {
+            $apiKey = $this->getApiKeyFor($model);
+
+            if (!$this->isModelUsable($model, $apiKey)) {
+                Log::info("Gap review: skipping {$model} (no API key)");
+                continue;
+            }
+
+            try {
+                $raw = $this->callAiApi($model, $apiKey, $prompt);
+                $data = $this->parseJsonResponse(is_array($raw) ? json_encode($raw) : $raw);
+
+                if ($data !== null && !empty($data)) {
+                    // Sanity check: the AI must return an object with at least one of the expected keys
+                    if (isset($data['overall_score']) || isset($data['sections']) || isset($data['summary'])) {
+                        Log::info("Gap review succeeded with {$model}");
+                        return $data;
+                    }
+
+                    Log::warning("Gap review: {$model} returned JSON but shape looks wrong", [
+                        'keys' => array_keys($data),
+                    ]);
+                } else {
+                    Log::warning("Gap review: {$model} returned unparseable/empty response");
+                }
+            } catch (\Throwable $e) {
+                $lastError = $e->getMessage();
+                Log::warning("Gap review failed on {$model}: " . $e->getMessage());
+            }
+        }
+
+        throw new \Exception(
+            'CV gap review failed on all configured models. Last error: ' .
+            ($lastError ?? 'no usable response from any model.')
+        );
+    }
+
+    protected function buildGapReviewPrompt(string $resumeText, ?string $jobDescription = null): string
+    {
+        $jobContext = $jobDescription
+            ? "The candidate is targeting this specific job:\n\n{$jobDescription}\n\nEvaluate the CV against that role."
+            : "Evaluate this CV for general professional quality.";
+
+        return <<<PROMPT
+            You are a professional CV reviewer with 10+ years of HR experience.
+            {$jobContext}
+
+            Return ONLY a single valid JSON object. No markdown fences, no commentary before or after.
+
+            {
+            "overall_score": 0-100,
+            "summary": "2-3 sentence plain-English overview of the CV's strengths and biggest weaknesses",
+            "sections": [
+                {
+                    "section": "Contact Information",
+                    "status": "ok" | "weak" | "missing",
+                    "note": "one sentence explaining what you found or what is missing"
+                },
+                {
+                    "section": "Professional Summary",
+                    "status": "ok" | "weak" | "missing",
+                    "note": "..."
+                },
+                {
+                    "section": "Work Experience",
+                    "status": "ok" | "weak" | "missing",
+                    "note": "..."
+                },
+                {
+                    "section": "Education",
+                    "status": "ok" | "weak" | "missing",
+                    "note": "..."
+                },
+                {
+                    "section": "Skills",
+                    "status": "ok" | "weak" | "missing",
+                    "note": "..."
+                }
+            ],
+            "missing_fields": ["snake_case_field_name", "..."]
+            }
+
+            RULES:
+            - Use EXACTLY the 5 sections listed above. Do not add or remove sections.
+            - "status" must be one of: "ok", "weak", "missing" (lowercase).
+            - "missing_fields" should be a JSON array of snake_case strings naming concrete
+            things the candidate should provide to strengthen the CV — e.g. "certifications",
+            "achievements", "quantified_results", "professional_summary", "contact_email",
+            "linkedin_url". Return an empty array [] if nothing is missing.
+            - Do NOT invent details that are not in the CV.
+            - Do NOT wrap the response in markdown code fences.
+            - Do NOT include any text before or after the JSON object.
+
+            CV text:
+            ---
+            {$resumeText}
+            ---
+            PROMPT;
+    }
+
 }

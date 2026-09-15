@@ -38,6 +38,8 @@ class DatabaseSeeder extends Seeder
             JobTypeSeeder::class,
             PageSeeder::class,
             SocialMediaPlatformSeeder::class,
+            ServiceSeeder::class,
+            ServicePriceSeeder::class,
 
         ]);
     }

@@ -79,26 +79,38 @@
                         </span>
                         <div class="menu-sub menu-sub-accordion">
                             @php
-                                $countries = [
-                                    'AU' => '🇦🇺 Australia',
-                                    'UG' => '🇺🇬 Uganda',
-                                    'KE' => '🇰🇪 Kenya',
-                                    'TZ' => '🇹🇿 Tanzania',
-                                    'RW' => '🇷🇼 Rwanda',
-                                    'MW' => '🇲🇼 Malawi',
-                                    'ZM' => '🇿🇲 Zambia',
-                                    'SG' => '🇸🇬 Singapore',
-                                ];
+                                $countries = [];
+                                foreach (\App\Helpers\CountryHelper::getActiveCountries() as $country) {
+                                    $countries[$country->code] = [
+                                        'name' => $country->name,
+                                        'flag' => $country->flag_emoji,
+                                    ];
+                                }
                             @endphp
-                            @foreach($countries as $code => $name)
-                            <div class="menu-item">
-                                <a class="menu-link {{ request()->route('country') == $code ? 'active' : '' }}" 
-                                href="{{ route('admin.ai.job-posting', $code) }}">
-                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
-                                    <span class="menu-title">{{ $name }}</span>
-                                </a>
-                            </div>
-                            @endforeach
+
+                            @forelse($countries as $code => $info)
+                                <div class="menu-item">
+                                    <a class="menu-link {{ request()->route('country') == $code ? 'active' : '' }}"
+                                    href="{{ route('admin.ai.job-posting', $code) }}">
+                                        <span class="menu-bullet">
+                                            <span class="bullet bullet-dot"></span>
+                                        </span>
+                                        <span class="menu-title">
+                                            <span class="fs-5 me-1">{{ $info['flag'] }}</span>
+                                            {{ $info['name'] }}
+                                        </span>
+                                    </a>
+                                </div>
+                            @empty
+                                <div class="menu-item">
+                                    <span class="menu-link text-muted fs-7">
+                                        <span class="menu-bullet">
+                                            <span class="bullet bullet-dot"></span>
+                                        </span>
+                                        <span class="menu-title">No active countries</span>
+                                    </span>
+                                </div>
+                            @endforelse
                         </div>
                     </div>
                     @endcan
@@ -196,7 +208,106 @@
                             @endcan
                         </div>
                     </div>
-                    @endcanany     
+                    @endcanany  
+                    
+                    
+                    {{-- Services --}}
+                    <div class="menu-item pt-5">
+                        <div class="menu-content">
+                            <span class="menu-heading fw-bold text-uppercase fs-7">Job Seeker Services</span>
+                        </div>
+                    </div>
+
+                    {{-- Job Seekers --}}
+                    @canany(['view seekers'])
+                    <div data-kt-menu-trigger="click" class="menu-item menu-accordion {{ request()->routeIs('admin.seekers*') ? 'show here' : '' }}">
+                        <span class="menu-link">
+                            <span class="menu-icon">
+                                <i class="ki-duotone ki-profile-circle fs-2">
+                                    <span class="path1"></span>
+                                    <span class="path2"></span>
+                                    <span class="path3"></span>
+                                </i>
+                            </span>
+                            <span class="menu-title">Job Seekers</span>
+                            <span class="menu-arrow"></span>
+                        </span>
+                        <div class="menu-sub menu-sub-accordion">
+                            @can('view seekers')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.seekers.index') ? 'active' : '' }}" href="{{ route('admin.seekers.index') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">All Seekers</span>
+                                </a>
+                            </div>
+                            @endcan
+                            
+                            @can('view seekers')
+                            <div class="menu-item">
+                                <a class="menu-link" href="{{ route('admin.seekers.index') }}?status=has_cv">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">CV Uploaded</span>
+                                    <span class="badge badge-light-success ms-2">CV</span>
+                                </a>
+                            </div>
+                            @endcan
+                            
+                            @can('view seekers')
+                            <div class="menu-item">
+                                <a class="menu-link" href="{{ route('admin.seekers.index') }}?status=has_applied">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">With Applications</span>
+                                    <span class="badge badge-light-primary ms-2">Apps</span>
+                                </a>
+                            </div>
+                            @endcan
+                        </div>
+                    </div>
+                    @endcanany
+
+                    {{-- Services --}}
+                    @canany(['view services', 'view service prices'])
+                    <div data-kt-menu-trigger="click" class="menu-item menu-accordion {{ request()->routeIs('admin.services*', 'admin.service-prices*', 'admin.cv-review-requests*') ? 'show here' : '' }}">
+                        <span class="menu-link">
+                            <span class="menu-icon">
+                                <i class="ki-duotone ki-briefcase fs-2">
+                                    <span class="path1"></span>
+                                    <span class="path2"></span>
+                                </i>
+                            </span>
+                            <span class="menu-title">Services</span>
+                            <span class="menu-arrow"></span>
+                        </span>
+                        <div class="menu-sub menu-sub-accordion">
+                            @can('view cv review requests')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.cv-review-requests') ? 'active' : '' }}"
+                                href="{{ route('admin.cv-review-requests') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">CV Review Requests</span>
+                                </a>
+                            </div>
+                            @endcan
+                            @can('view services')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.services') ? 'active' : '' }}" href="{{ route('admin.services') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">All Services</span>
+                                </a>
+                            </div>
+                            @endcan
+                            @can('view service prices')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.service-prices') ? 'active' : '' }}"
+                                href="{{ route('admin.service-prices') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">Service Prices</span>
+                                </a>
+                            </div>
+                            @endcan
+                        </div>
+                    </div>
+                    @endcanany
 
                     {{-- Earnings --}}
                     <div class="menu-item pt-5">
