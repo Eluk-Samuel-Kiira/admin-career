@@ -175,7 +175,7 @@ class ServiceController extends Controller
             $service = Service::findOrFail($id);
 
             $validated = $request->validate([
-                'key'                      => ['nullable', 'string', 'max:100', 'alpha_dash', Rule::unique('services', 'key')->ignore($id)],
+                // 'key'                      => ['nullable', 'string', 'max:100', 'alpha_dash', Rule::unique('services', 'key')->ignore($id)],
                 'name'                     => 'required|string|max:255',
                 'description'              => 'nullable|string',
                 'default_turnaround_hours' => 'nullable|integer|min:1|max:8760',

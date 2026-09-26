@@ -19,12 +19,14 @@ class Service extends Model
         'is_active',
         'sort_order',
         'created_by',
+        'meta',   
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
         'default_turnaround_hours' => 'integer',
         'sort_order' => 'integer',
+        'meta'                       => 'array',
     ];
 
     // ---------------------------------------------------------------

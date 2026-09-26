@@ -8,8 +8,11 @@ use App\Http\Controllers\Api\Jobs\{ CountryController,CompanyController, JobCont
 use App\Http\Controllers\Api\Pages\PageController;
 use App\Http\Controllers\Api\Blog\{BlogController};
 
-use App\Http\Controllers\Api\Auth\{ LoginTokenController, ProfileController, CvController };
+use App\Http\Controllers\Api\Auth\{ LoginTokenController, ProfileController, CvController, EmployerProfileController };
 use App\Http\Controllers\Api\Service\{ CvReviewRequestController };
+
+
+use App\Http\Controllers\Api\Employer\{ ComplianceController, JobSubmissionController, AtsController };
 
 
 // ✅ TEST ROUTE
@@ -139,6 +142,55 @@ Route::middleware(['verifycountry'])->group(function () {
     // Payment gateway callback — unauthenticated, protected by signature in real life
     Route::post('/cv-review/payment-callback', [CvReviewRequestController::class, 'paymentCallback'])
         ->name('api.cv-review.callback');
+
+
+
+    Route::middleware(['auth:sanctum'])->prefix('employer')->group(function () {
+        Route::get('/profile',              [EmployerProfileController::class, 'show']);
+        Route::post('/profile',             [EmployerProfileController::class, 'update']);
+        Route::post('/profile/logo',        [EmployerProfileController::class, 'uploadLogo']);
+        Route::delete('/profile/logo',      [EmployerProfileController::class, 'deleteLogo']);
+    });
+
+
+
+    Route::middleware(['auth:sanctum'])->prefix('employer')->group(function () {
+        // ... existing profile routes
+
+        Route::get('/documents',              [ComplianceController::class, 'index']);
+        Route::post('/documents/{type}',      [ComplianceController::class, 'upload']);
+        Route::delete('/documents/{type}',    [ComplianceController::class, 'destroy']);
+        Route::post('/documents/submit',      [ComplianceController::class, 'submit']);
+    });
+
+
+
+    Route::middleware(['auth:sanctum'])->prefix('employer')->group(function () {
+        // ... existing profile + compliance routes
+
+        // Job Submissions
+        Route::get('/job-packages',         [JobSubmissionController::class, 'packages']);
+        Route::get('/job-submissions',      [JobSubmissionController::class, 'index']);
+        Route::get('/job-submissions/counts', [JobSubmissionController::class, 'counts']);
+        Route::post('/job-submissions',     [JobSubmissionController::class, 'store']);
+        Route::get('/job-submissions/{uuid}',    [JobSubmissionController::class, 'show']);
+        Route::post('/job-submissions/{uuid}/payment', [JobSubmissionController::class, 'recordPayment']);
+        Route::post('/job-submissions/{uuid}/cancel',  [JobSubmissionController::class, 'cancel']);
+        Route::delete('/job-submissions/{uuid}',       [JobSubmissionController::class, 'destroy']);
+    });
+
+
+    Route::middleware(['auth:sanctum'])->prefix('employer/ats')->group(function () {
+        Route::get('/batches/{uuid}',            [AtsController::class, 'batchStatus']);   // ← FIRST
+        Route::get('/{slug}/applicants',         [AtsController::class, 'index']);
+        Route::get('/{slug}/applicants/export',  [AtsController::class, 'export']);
+        Route::post('/{slug}/applicants/bulk',   [AtsController::class, 'bulkUpdate']);
+        Route::post('/{slug}/screen',            [AtsController::class, 'screen']);
+        Route::get('/{slug}/applicants/{id}',    [AtsController::class, 'show']);
+        Route::put('/{slug}/applicants/{id}',    [AtsController::class, 'update']);
+        Route::get('/{slug}/applicants/{id}/cv', [AtsController::class, 'downloadCv'])
+            ->name('api.employer.ats.download-cv');
+    });
 
 });
 

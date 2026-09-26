@@ -1578,4 +1578,118 @@ class AiService
             PROMPT;
     }
 
+    /**
+     * Screen a single CV against a job description.
+     *
+     * @return array{
+     *     score: int,
+     *     recommendation: string,
+     *     summary: string,
+     *     strengths: array,
+     *     gaps: array,
+     *     red_flags: array
+     * }
+     */
+    public function screenApplicant(string $cvText, array $jobContext): array
+    {
+        $prompt = $this->buildScreeningPrompt($cvText, $jobContext);
+
+        foreach ($this->getOrderedCvModels() as $model) {
+            $apiKey = $this->getApiKeyFor($model);
+
+            if (!$this->isModelUsable($model, $apiKey)) {
+                continue;
+            }
+
+            try {
+                $raw  = $this->callAiApi($model, $apiKey, $prompt);
+                $data = $this->parseJsonResponse(is_array($raw) ? json_encode($raw) : $raw);
+
+                if (is_array($data) && isset($data['score'])) {
+                    return [
+                        'score'          => max(0, min(100, (int) $data['score'])),
+                        'recommendation' => in_array($data['recommendation'] ?? '', ['strong_yes', 'maybe', 'no'], true)
+                            ? $data['recommendation']
+                            : 'maybe',
+                        'summary'   => (string) ($data['summary'] ?? ''),
+                        'strengths' => is_array($data['strengths'] ?? null) ? array_values(array_filter($data['strengths'])) : [],
+                        'gaps'      => is_array($data['gaps'] ?? null) ? array_values(array_filter($data['gaps'])) : [],
+                        'red_flags' => is_array($data['red_flags'] ?? null) ? array_values(array_filter($data['red_flags'])) : [],
+                    ];
+                }
+            } catch (\Throwable $e) {
+                Log::warning("Screening failed on {$model}: " . $e->getMessage());
+            }
+        }
+
+        throw new \Exception('AI screening failed on all configured models.');
+    }
+
+    protected function buildScreeningPrompt(string $cvText, array $jobContext): string
+    {
+        $jobTitle       = $jobContext['job_title'] ?? 'this role';
+        $jobDescription = strip_tags($jobContext['job_description'] ?? '');
+        $responsibilities = strip_tags($jobContext['responsibilities'] ?? '');
+        $qualifications   = strip_tags($jobContext['qualifications'] ?? '');
+        $skills           = $jobContext['skills'] ?? '';
+
+        return <<<PROMPT
+            You are an experienced HR screener evaluating a candidate's CV against a specific job opening.
+
+            JOB TITLE: {$jobTitle}
+
+            JOB DESCRIPTION:
+            {$jobDescription}
+
+            RESPONSIBILITIES:
+            {$responsibilities}
+
+            REQUIRED QUALIFICATIONS:
+            {$qualifications}
+
+            REQUIRED SKILLS:
+            {$skills}
+
+            CANDIDATE'S CV:
+            ---
+            {$cvText}
+            ---
+
+            Your task: score how well this candidate matches this specific role.
+
+            SCORING GUIDELINES (0-100):
+            - 85-100 → Excellent match. Meets all key requirements. Strong evidence in CV.
+            - 70-84  → Good match. Meets most requirements. Minor gaps.
+            - 55-69  → Reasonable match. Meets some requirements. Notable gaps.
+            - 40-54  → Weak match. Meets a few requirements. Significant gaps.
+            - 0-39   → Poor match. Doesn't meet core requirements.
+
+            BE FAIR AND OBJECTIVE:
+            - Do NOT penalise candidates for name, gender, nationality, age, religion, or other protected characteristics.
+            - Focus ONLY on skills, experience, education, and qualifications relevant to the role.
+            - If the CV is sparse, judge it as weak but don't invent facts.
+            - If the CV is strong but unorganised, still score it fairly.
+
+            RED FLAGS are serious concerns only: e.g., no relevant experience at all for a senior role, missing critical certifications, glaring inconsistencies. Do NOT call minor formatting issues a red flag.
+
+            Return ONLY this JSON object (no markdown, no commentary):
+
+            {
+            "score": 0-100,
+            "recommendation": "strong_yes" | "maybe" | "no",
+            "summary": "2-3 sentence verdict explaining the score",
+            "strengths": ["specific strength from the CV", "..."],
+            "gaps": ["specific missing skill or qualification", "..."],
+            "red_flags": ["serious concern if any", "..."]
+            }
+
+            recommendation rules:
+            - "strong_yes" → score >= 80
+            - "maybe"      → score 50-79
+            - "no"         → score < 50
+
+            Keep strengths, gaps, and red_flags arrays to 3-5 items each. Be specific and factual — quote from the CV where useful.
+            PROMPT;
+    }
+
 }

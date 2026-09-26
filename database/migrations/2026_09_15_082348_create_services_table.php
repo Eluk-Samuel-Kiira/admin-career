@@ -10,13 +10,17 @@ return new class extends Migration
     {
         Schema::create('services', function (Blueprint $table) {
             $table->id();
-            $table->string('key')->unique(); // cv_review, cv_rewrite, premium_alerts
+            $table->string('key')->unique();
             $table->string('name');
             $table->text('description')->nullable();
             $table->unsignedInteger('default_turnaround_hours')->default(24);
             $table->enum('billing_type', ['one_time', 'subscription', 'free']);
             $table->boolean('is_active')->default(true);
             $table->integer('sort_order')->default(0);
+
+            // Metadata — placed right here in the create order
+            $table->json('meta')->nullable();
+
             $table->foreignId('created_by')->nullable()->constrained('users')->nullOnDelete();
             $table->timestamps();
 

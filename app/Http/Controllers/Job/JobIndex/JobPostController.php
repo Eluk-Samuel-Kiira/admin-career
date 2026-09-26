@@ -16,6 +16,7 @@ use App\Models\Job\SalaryRange;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\DB;
 
 class JobPostController extends Controller
 {
@@ -357,4 +358,140 @@ class JobPostController extends Controller
             ], 500);
         }
     }
+
+    
+    /**
+     * Return submissions that can be linked to this job post.
+     * Same company, not already linked to another job.
+     */
+    public function linkable($id)
+    {
+        if (!auth()->user()->can('edit jobs')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        $job = JobPost::findOrFail($id);
+
+        if (!$job->company_id) {
+            return response()->json(['success' => false, 'message' => 'Assign a company to this job first.'], 422);
+        }
+
+        $submissions = \App\Models\Service\JobSubmission::where('company_id', $job->company_id)
+            ->where(function ($q) use ($job) {
+                $q->whereNull('job_post_id')
+                ->orWhere('job_post_id', $job->id);
+            })
+            ->orderByDesc('created_at')
+            ->limit(100)
+            ->get()
+            ->map(fn($s) => [
+                'id'              => $s->id,
+                'uuid'            => $s->uuid,
+                'job_title'       => $s->job_title,
+                'status_label'    => ucwords(str_replace('_', ' ', $s->status)),
+                'service_name'    => $s->service_name,
+                'is_linked_here'  => $s->job_post_id === $job->id,
+                'created_at'      => $s->created_at?->toISOString(),
+            ]);
+
+        return response()->json([
+            'success'     => true,
+            'job'         => [
+                'id'          => $job->id,
+                'job_title'   => $job->job_title,
+                'company'     => $job->company->name ?? '—',
+                'linked_id'   => $job->job_submission_id,
+            ],
+            'submissions' => $submissions,
+        ]);
+    }
+
+    /**
+     * Link a submission to this job post.
+     */
+    public function linkSubmission(Request $request, $id)
+    {
+        if (!auth()->user()->can('edit jobs')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        $request->validate([
+            'submission_id' => 'required|integer|exists:job_submissions,id',
+        ]);
+
+        $job = JobPost::findOrFail($id);
+        $submission = \App\Models\Service\JobSubmission::findOrFail($request->submission_id);
+
+        // Ownership check
+        if ($job->company_id !== $submission->company_id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'That submission belongs to a different company.',
+            ], 422);
+        }
+
+        $meta = $submission->package_meta ?? [];
+
+        DB::transaction(function () use ($job, $submission, $meta) {
+            $job->update([
+                'job_submission_id' => $submission->id,
+                'package_key'       => $submission->service_key,
+                'has_ats'           => (bool) ($meta['enterprise_ats'] ?? false),
+                'is_featured'       => (bool) ($meta['is_featured'] ?? $job->is_featured),
+                'is_urgent'         => (bool) ($meta['is_urgent'] ?? $job->is_urgent),
+            ]);
+
+            $submission->update([
+                'job_post_id' => $job->id,
+                'status'      => 'published',
+                'reviewed_by' => auth()->id(),
+                'reviewed_at' => now(),
+            ]);
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Submission linked successfully.',
+            'data'    => [
+                'job_submission_id'    => $submission->id,
+                'job_submission_uuid'  => $submission->uuid,
+                'job_submission_title' => $submission->job_title,
+                'package_key'          => $submission->service_key,
+                'has_ats'              => $job->fresh()->has_ats,
+            ],
+        ]);
+    }
+
+    /**
+     * Unlink the current submission.
+     */
+    public function unlinkSubmission($id)
+    {
+        if (!auth()->user()->can('edit jobs')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        $job = JobPost::findOrFail($id);
+
+        if (!$job->job_submission_id) {
+            return response()->json(['success' => true, 'message' => 'Nothing to unlink.']);
+        }
+
+        DB::transaction(function () use ($job) {
+            \App\Models\Service\JobSubmission::where('id', $job->job_submission_id)
+                ->update(['job_post_id' => null]);
+
+            $job->update([
+                'job_submission_id' => null,
+                'package_key'       => null,
+                'has_ats'           => false,
+            ]);
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Submission unlinked.',
+        ]);
+    }
+
 }

@@ -186,22 +186,7 @@ class CompanyController extends Controller
 
             // Handle logo upload after company is created
             if ($request->hasFile('logo')) {
-                $file = $request->file('logo');
-                $countryCode = strtolower($data['country_code'] ?? 'au');
-                $timestamp = time();
-                $extension = $file->getClientOriginalExtension();
-                $filename = Str::slug($data['name']) . '_' . $timestamp . '.' . $extension;
-                
-                $path = $file->storeAs(
-                    "{$countryCode}-companies/{$company->id}/logo",
-                    $filename,
-                    'public'
-                );
-                
-                $company->update([
-                    'logo' => $filename,
-                    'logo_path' => $path
-                ]);
+                $company->replaceLogo($request->file('logo'));
             }
 
             return response()->json([
@@ -306,24 +291,7 @@ class CompanyController extends Controller
             
             // Handle logo upload
             if ($request->hasFile('logo')) {
-                if ($company->logo_path && Storage::disk('public')->exists($company->logo_path)) {
-                    Storage::disk('public')->delete($company->logo_path);
-                }
-                
-                $file = $request->file('logo');
-                $countryCode = strtolower($data['country_code'] ?? $company->country_code ?? 'au');
-                $timestamp = time();
-                $extension = $file->getClientOriginalExtension();
-                $filename = Str::slug($data['name']) . '_' . $timestamp . '.' . $extension;
-                
-                $path = $file->storeAs(
-                    "{$countryCode}-companies/{$company->id}/logo",
-                    $filename,
-                    'public'
-                );
-                
-                $data['logo'] = $filename;
-                $data['logo_path'] = $path;
+                $company->replaceLogo($request->file('logo'));
             }
             
             if (empty($data['slug']) && $company->name !== $data['name']) {

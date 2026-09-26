@@ -152,6 +152,16 @@
                         </div>
                     </div>
 
+                    <div class="fv-row mb-7">
+                        <label class="fw-semibold fs-6 mb-2">Meta (JSON, optional)</label>
+                        <textarea class="form-control form-control-solid font-monospace" name="meta" rows="6"
+                            placeholder='{"family":"job_posting","tagline":"Popular Choice","badge":"popular","listing_days":30}'>{{ old('meta') }}</textarea>
+                        <div class="text-muted fs-7 mt-1">
+                            Advanced: package features (featured flags, duration, distribution). Leave blank if not needed.
+                            Must be valid JSON.
+                        </div>
+                    </div>
+
                     <div class="text-center pt-15">
                         <button type="button" class="btn btn-light me-3" data-bs-dismiss="modal">Discard</button>
                         <button type="submit" class="btn btn-primary" id="addServiceBtn">
@@ -187,14 +197,33 @@
                     </div>
 
                     <div class="fv-row mb-7">
-                        <label class="fw-semibold fs-6 mb-2">Key</label>
-                        <input type="text" class="form-control form-control-solid" name="key" id="edit_key" />
-                        <div class="text-muted fs-7 mt-1">Leave blank to regenerate from name.</div>
+                        <label class="fw-semibold fs-6 mb-2">
+                            <i class="ki-duotone ki-lock fs-5 me-1 text-muted">
+                                <span class="path1"></span><span class="path2"></span>
+                            </i>
+                            Key (locked)
+                        </label>
+                        <input type="text" class="form-control form-control-solid bg-light" name="key" id="edit_key"
+                            readonly disabled style="cursor:not-allowed;" />
+                        <div class="text-muted fs-7 mt-1">
+                            The key is <strong>permanent</strong>. It's used by the system, employers, and API to fetch this service.
+                            Cannot be changed after creation.
+                        </div>
                     </div>
 
                     <div class="fv-row mb-7">
                         <label class="fw-semibold fs-6 mb-2">Description</label>
                         <textarea class="form-control form-control-solid" name="description" id="edit_description" rows="3"></textarea>
+                    </div>
+
+                    <div class="fv-row mb-7">
+                        <label class="fw-semibold fs-6 mb-2">Meta (JSON)</label>
+                        <textarea class="form-control form-control-solid font-monospace" name="meta" id="edit_meta" rows="8"
+                            placeholder='{"family":"job_posting","tagline":"...","badge":"popular"}'></textarea>
+                        <div class="text-muted fs-7 mt-1">
+                            Package features. Must be valid JSON. Format the JSON, then save.
+                        </div>
+                        <div id="edit_meta_status" class="fs-7 mt-1"></div>
                     </div>
 
                     <div class="row mb-7">
@@ -224,6 +253,8 @@
                             </div>
                         </div>
                     </div>
+
+
 
                     <div class="text-center pt-15">
                         <button type="button" class="btn btn-light me-3" data-bs-dismiss="modal">Cancel</button>
@@ -417,15 +448,84 @@ window.editService = function (id) {
             document.getElementById('edit_service_id').value = data.id;
             document.getElementById('edit_name').value = data.name || '';
             document.getElementById('edit_key').value = data.key || '';
+
             document.getElementById('edit_description').value = data.description || '';
             document.getElementById('edit_billing_type').value = data.billing_type || '';
             document.getElementById('edit_default_turnaround_hours').value = data.default_turnaround_hours || 24;
             document.getElementById('edit_sort_order').value = data.sort_order || 0;
             document.getElementById('edit_is_active').checked = !!data.is_active;
+
+            // ── Meta as pretty-printed JSON ────────────────
+            const meta = data.meta ?? null;
+            document.getElementById('edit_meta').value = meta
+                ? JSON.stringify(meta, null, 2)
+                : '';
+
+            // Live validate on load
+            validateMetaJson();
+
             new bootstrap.Modal(document.getElementById('kt_modal_edit_service')).show();
         })
         .catch(() => window.showToast('error', 'Failed to load service details'));
 };
+
+// ---------------------------------------------------------------
+// Live JSON validation for the Meta field
+// ---------------------------------------------------------------
+function validateMetaJson() {
+    const el      = document.getElementById('edit_meta');
+    const status  = document.getElementById('edit_meta_status');
+    if (!el || !status) return true;
+
+    const value = el.value.trim();
+
+    // Empty → valid (nullable)
+    if (value === '') {
+        status.innerHTML = '<span class="text-muted">Empty — no meta will be saved.</span>';
+        el.classList.remove('is-invalid', 'is-valid');
+        return true;
+    }
+
+    try {
+        JSON.parse(value);
+        status.innerHTML = '<span class="text-success">✅ Valid JSON</span>';
+        el.classList.remove('is-invalid');
+        el.classList.add('is-valid');
+        return true;
+    } catch (err) {
+        status.innerHTML = '<span class="text-danger">❌ Invalid JSON: ' + escapeHtml(err.message) + '</span>';
+        el.classList.remove('is-valid');
+        el.classList.add('is-invalid');
+        return false;
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    document.getElementById('edit_meta')?.addEventListener('input', validateMetaJson);
+    document.getElementById('add_meta')?.addEventListener('input', validateAddMetaJson);
+});
+
+function validateAddMetaJson() {
+    const el = document.querySelector('#addServiceForm textarea[name="meta"]');
+    if (!el) return true;
+
+    const value = el.value.trim();
+    if (value === '') {
+        el.classList.remove('is-invalid', 'is-valid');
+        return true;
+    }
+
+    try {
+        JSON.parse(value);
+        el.classList.remove('is-invalid');
+        el.classList.add('is-valid');
+        return true;
+    } catch (err) {
+        el.classList.remove('is-valid');
+        el.classList.add('is-invalid');
+        return false;
+    }
+}
 
 window.deleteService = function (btn) {
     const id = btn.getAttribute('data-id');
@@ -457,6 +557,13 @@ window.deleteService = function (btn) {
 // ---------------------------------------------------------------
 document.getElementById('addServiceForm')?.addEventListener('submit', function (e) {
     e.preventDefault();
+
+    // Validate meta JSON before submitting
+    if (!validateAddMetaJson()) {
+        window.showToast('error', 'Invalid JSON in the Meta field. Please fix before saving.');
+        return;
+    }
+
     const btn = document.getElementById('addServiceBtn');
     window.showButtonSpinner(btn);
 
@@ -499,6 +606,13 @@ document.getElementById('addServiceForm')?.addEventListener('submit', function (
 // ---------------------------------------------------------------
 document.getElementById('editServiceForm')?.addEventListener('submit', function (e) {
     e.preventDefault();
+
+    // Validate meta JSON before submitting
+    if (!validateMetaJson()) {
+        window.showToast('error', 'Invalid JSON in the Meta field. Please fix before saving.');
+        return;
+    }
+
     const btn = document.getElementById('editServiceBtn');
     window.showButtonSpinner(btn);
     const id = document.getElementById('edit_service_id').value;
