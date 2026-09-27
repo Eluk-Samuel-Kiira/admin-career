@@ -61,10 +61,29 @@ class Company extends Model
         'hits' => 'integer',
     ];
 
+    protected static function booted(): void
+    {
+        static::saved(function (Company $company) {
+            // Keep linked employer profiles' company_logo in sync
+            \App\Models\EmployerProfile::where('company_id', $company->id)
+                ->update(['company_logo' => $company->logo_path]);
+        });
+    }
+
     // Relationships
     public function industry()
     {
         return $this->belongsTo(Industry::class);
+    }
+
+    public function jobPosts()
+    {
+        return $this->hasMany(\App\Models\Job\JobPost::class, 'company_id');
+    }
+
+    public function employerProfiles()
+    {
+        return $this->hasMany(\App\Models\EmployerProfile::class, 'company_id');
     }
 
     public function location()
@@ -229,4 +248,62 @@ class Company extends Model
     {
         return $query->whereNull('migrated_at');
     }
+
+    /**
+     * Where on the public disk does this company's logo live?
+     * Returns: "{country}-companies/{companyId}/logo"
+     */
+    public function logoFolder(): string
+    {
+        $country = strtolower($this->country_code ?? 'au');
+        return "{$country}-companies/{$this->id}/logo";
+    }
+
+    /**
+     * Build a full filename for a new logo (same convention as admin).
+     */
+    public function buildLogoFilename(string $extension): string
+    {
+        return \Illuminate\Support\Str::slug($this->name) . '_' . time() . '.' . $extension;
+    }
+
+    /**
+     * Replace the current logo with an uploaded file.
+     * Deletes the old file, stores the new one, and updates logo + logo_path.
+     * Used by both admin and employer controllers.
+     */
+    public function replaceLogo(\Illuminate\Http\UploadedFile $file): void
+    {
+        // Delete old file if it exists
+        if ($this->logo_path && \Storage::disk('public')->exists($this->logo_path)) {
+            \Storage::disk('public')->delete($this->logo_path);
+        }
+
+        $extension = $file->getClientOriginalExtension() ?: 'png';
+        $filename  = $this->buildLogoFilename($extension);
+
+        $path = $file->storeAs($this->logoFolder(), $filename, 'public');
+
+        $this->update([
+            'logo'      => $filename,
+            'logo_path' => $path,
+        ]);
+    }
+
+    /**
+     * Remove the current logo.
+     */
+    public function clearLogo(): void
+    {
+        if ($this->logo_path && \Storage::disk('public')->exists($this->logo_path)) {
+            \Storage::disk('public')->delete($this->logo_path);
+        }
+
+        $this->update([
+            'logo'      => null,
+            'logo_path' => null,
+        ]);
+    }
+
+
 }

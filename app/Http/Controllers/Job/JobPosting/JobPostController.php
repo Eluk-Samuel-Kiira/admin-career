@@ -16,6 +16,7 @@ use App\Models\Job\EducationLevel;
 use App\Models\Job\SalaryRange;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\DB;
 
 class JobPostController extends Controller
 {

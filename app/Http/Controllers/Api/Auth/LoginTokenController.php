@@ -4,7 +4,7 @@ namespace App\Http\Controllers\Api\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
-use App\Models\LoginToken;
+use App\Models\{LoginToken, EmployerProfile, SeekerProfile };
 use App\Mail\Auth\WebMagicLoginLink;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -20,85 +20,128 @@ class LoginTokenController extends Controller
      */
     public function registerApi(Request $request): JsonResponse
     {
-        $validated = $request->validate([
-            'first_name'   => 'required|string|max:255',
-            'last_name'    => 'required|string|max:255',
+        $accountType = $request->input('role', 'job_seeker') === 'employer' ? 'employer' : 'seeker';
+        $isEmployer  = $accountType === 'employer';
+
+        // ── Resolve names ───────────────────────────────────────────
+        $firstName = $request->input('first_name');
+        $lastName  = $request->input('last_name');
+
+        if ($isEmployer && trim((string) $firstName) === '') {
+            $contactName = trim((string) $request->input('contact_name', ''));
+            if ($contactName !== '') {
+                $parts     = preg_split('/\s+/', $contactName, 2);
+                $firstName = $parts[0] ?? 'Company';
+                $lastName  = $parts[1] ?? 'Owner';
+            } else {
+                $firstName = 'Company';
+                $lastName  = 'Owner';
+            }
+        }
+
+        // ── Validate ────────────────────────────────────────────────
+        $rules = [
             'email'        => 'required|email|max:255|unique:users,email',
             'phone'        => 'nullable|string|max:25',
             'role'         => 'nullable|string|in:job_seeker,employer',
             'country_code' => 'nullable|string|max:3',
-            'desired_title' => 'nullable|string|max:255',
-            'company_name' => 'nullable|string|max:255',
-            'company_size' => 'nullable|string|max:50',
             'terms'        => 'required|accepted',
-        ], [
+        ];
+
+        if ($isEmployer) {
+            $rules['company_name'] = 'required|string|max:255';
+            $rules['contact_name'] = 'required|string|max:255';
+            $rules['company_size'] = 'nullable|string|max:50';
+        } else {
+            $rules['first_name']    = 'required|string|max:255';
+            $rules['last_name']     = 'required|string|max:255';
+            $rules['desired_title'] = 'nullable|string|max:255';
+        }
+
+        $validated = $request->validate($rules, [
             'email.unique'   => 'An account with this email already exists. Try logging in instead.',
             'terms.accepted' => 'You must accept the Terms of Service to continue.',
         ]);
 
-        // Start database transaction
         DB::beginTransaction();
 
         try {
-            // ── 1. Resolve role — only job_seeker or employer allowed here ────
-            $roleName = $validated['role'] ?? 'job_seeker';
-            
-            // Check if role exists, if not create it
-            $role = Role::where('name', $roleName)->first();
-            if (!$role) {
-                $role = Role::create(['name' => $roleName]);
-            }
+            // ── 1. Role ─────────────────────────────────────────────
+            $roleName = $isEmployer ? 'employer' : 'job_seeker';
+            $role = Role::firstOrCreate(['name' => $roleName, 'guard_name' => 'web']);
 
-            // ── 2. Create user with confirmed role_id ─────────────────────────
+            // ── 2. User ─────────────────────────────────────────────
             $user = User::create([
-                'first_name'        => $request->first_name,
-                'last_name'         => $request->last_name,
-                'name'              => $request->first_name . ' ' . $request->last_name,
-                'email'             => $request->email,
-                'phone'             => $request->phone,
+                'first_name'        => $firstName,
+                'last_name'         => $lastName,
+                'name'              => trim("{$firstName} {$lastName}"),
+                'email'             => $validated['email'],
+                'phone'             => $validated['phone'] ?? null,
                 'role_id'           => $role->id,
-                'country_code'      => $request->country_code ?? 'UG',
+                'country_code'      => $validated['country_code'] ?? 'UG',
                 'is_active'         => true,
                 'email_verified_at' => now(),
                 'uuid'              => (string) Str::uuid(),
-                'password'          => Hash::make('1234567890'), // Default password
+                'password'          => Hash::make(Str::random(32)),
             ]);
 
-            // ── 3. Explicitly assign Spatie role ──────────────────────────────
             $user->syncRoles([$role->name]);
 
-            // Log::info('Web API user registered and Spatie role assigned', [
-            //     'user_id' => $user->id,
-            //     'email'   => $user->email,
-            //     'role'    => $role->name,
-            // ]);
+            // ── 3. Profile ──────────────────────────────────────────
+            if ($isEmployer) {
+                // ── 1. Find or create the Company record ────────────────
+                $companyName = $request->input('company_name');
+                $countryCode = $validated['country_code'] ?? 'UG';
 
-            // ── 4. Create employer or seeker profile ──────────────────────────
-            if ($roleName === 'employer' && $request->company_name) {
+                $company = \App\Models\Job\Company::where('name', $companyName)
+                    ->where('country_code', $countryCode)
+                    ->first();
+
+                if (!$company) {
+                    $company = \App\Models\Job\Company::create([
+                        'name'         => $companyName,
+                        'slug'         => \Illuminate\Support\Str::slug($companyName) . '-' . strtolower(\Illuminate\Support\Str::random(5)),
+                        'country_code' => $countryCode,
+                        'company_size' => $request->input('company_size'),
+                        'is_active'    => true,
+                        'is_verified'  => false,
+                        'is_gold'      => false,
+                        'is_featured'  => false,
+                        'created_by'   => $user->id,   // whoever triggered creation
+                    ]);
+                }
+
+                // ── 2. Create the EmployerProfile and link it ───────────
                 \App\Models\EmployerProfile::create([
-                    'user_id'      => $user->id,
-                    'company_name' => $request->company_name,
-                    'company_size' => $request->company_size,
-                    'contact_name' => $request->first_name . ' ' . $request->last_name,
+                    'user_id'             => $user->id,
+                    'company_id'          => $company->id,   // ⬅️ the link
+                    'company_name'        => $companyName,
+                    'company_size'        => $request->input('company_size'),
+                    'contact_name'        => $request->input('contact_name'),
+                    'contact_email'       => $validated['email'],
+                    'contact_phone'       => $validated['phone'] ?? null,
+                    'country_code'        => $countryCode,
+                    'is_active'           => true,
+                    'is_verified'         => false,
+                    'compliance_status'   => 'incomplete',
+                    'onboarding_complete' => false,
+                ]);
+            } else {
+                SeekerProfile::create([
+                    'user_id'            => $user->id,
+                    'first_name'         => $firstName,
+                    'last_name'          => $lastName,
+                    'email'              => $validated['email'],
+                    'phone'              => $validated['phone'] ?? null,
+                    'country'            => $validated['country_code'] ?? 'UG',
+                    'professional_title' => $request->input('desired_title'),
+                    'is_public'          => true,
+                    'is_active'          => true,
                 ]);
             }
 
-            if ($roleName === 'job_seeker') {
-                \App\Models\SeekerProfile::create([
-                    'user_id' => $user->id,
-                    'first_name' => $request->first_name,
-                    'last_name' => $request->last_name,
-                    'email' => $request->email,
-                    'phone' => $request->phone,
-                    'country' => $request->country_code ?? 'UG',
-                    'professional_title' => $request->desired_title,
-                    'is_public' => true,
-                    'is_active' => true,
-                ]);
-            }
-
-            // ── 5. Create magic link token ────────────────────────────────────
-            $token = Str::random(64);
+            // ── 4. Magic link ───────────────────────────────────────
+            $token     = Str::random(64);
             $expiresAt = now()->addHours(24);
 
             LoginToken::create([
@@ -108,49 +151,40 @@ class LoginTokenController extends Controller
             ]);
 
             $user->update([
-                'magic_link_token' => $token,
-                'magic_link_sent_at' => now(),
-                'magic_link_expires_at' => $expiresAt,
+                'magic_link_token'       => $token,
+                'magic_link_sent_at'     => now(),
+                'magic_link_expires_at'  => $expiresAt,
             ]);
 
-            // ── 6. Send magic link email ──────────────────────────────────────
-            // Use the unified WebMagicLoginLink for both job seekers and employers
+            // ── 5. Send magic link ──────────────────────────────────
             Mail::to($user->email)->send(new WebMagicLoginLink($user, $token, true));
 
-            // Commit the transaction if everything succeeded
             DB::commit();
-
-            // Log::info('Registration successful, magic link sent', [
-            //     'user_id' => $user->id,
-            //     'email'   => $user->email,
-            //     'role'    => $roleName,
-            // ]);
 
             return response()->json([
                 'success' => true,
                 'message' => 'Account created successfully! Check your email for the magic link.',
                 'user' => [
-                    'id' => $user->id,
-                    'email' => $user->email,
+                    'id'         => $user->id,
+                    'email'      => $user->email,
                     'first_name' => $user->first_name,
-                    'last_name' => $user->last_name,
-                    'role' => $roleName,
-                ]
+                    'last_name'  => $user->last_name,
+                    'role'       => $roleName,
+                ],
             ]);
 
-        } catch (\Exception $e) {
-            // Rollback the transaction on error
+        } catch (\Throwable $e) {
             DB::rollBack();
-            
-            Log::error('Web registration API error: ' . $e->getMessage(), [
+
+            Log::error('Registration API failed', [
+                'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
-                'request_data' => $request->except(['password']),
             ]);
 
             return response()->json([
                 'success' => false,
                 'message' => 'Unable to create account. Please try again.',
-                'errors' => ['general' => [$e->getMessage()]]
+                'errors'  => ['general' => [$e->getMessage()]],
             ], 500);
         }
     }

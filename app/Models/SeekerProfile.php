@@ -42,7 +42,18 @@ class SeekerProfile extends Model
         'cv_original_name',
         'job_preferences',
         'is_public',
-        'is_active'
+        'is_active',
+
+        'job_category_id',
+        'industry_id',
+        'job_type_id',
+        'job_location_id',
+        'preferred_country_code',
+        'experience_level_id',
+        'education_level_id',
+        'salary_range_id',
+        'profile_completed_at',
+
     ];
 
     protected $casts = [
@@ -58,7 +69,61 @@ class SeekerProfile extends Model
         'years_of_experience' => 'integer',
         'is_public' => 'boolean',
         'is_active' => 'boolean',
+
+        'job_category_id'       => 'integer',
+        'industry_id'           => 'integer',
+        'job_type_id'           => 'integer',
+        'job_location_id'       => 'integer',
+        'experience_level_id'   => 'integer',
+        'education_level_id'    => 'integer',
+        'salary_range_id'       => 'integer',
+        'profile_completed_at'  => 'datetime',
+
     ];
+
+    // =================================================================
+    // Filter relationships
+    // =================================================================
+    public function jobCategory()
+    {
+        return $this->belongsTo(\App\Models\Job\JobCategory::class, 'job_category_id');
+    }
+
+    public function industry()
+    {
+        return $this->belongsTo(\App\Models\Job\Industry::class, 'industry_id');
+    }
+
+    public function jobType()
+    {
+        return $this->belongsTo(\App\Models\Job\JobType::class, 'job_type_id');
+    }
+
+    public function jobLocation()
+    {
+        return $this->belongsTo(\App\Models\Job\JobLocation::class, 'job_location_id');
+    }
+
+    public function experienceLevel()
+    {
+        return $this->belongsTo(\App\Models\Job\ExperienceLevel::class, 'experience_level_id');
+    }
+
+    public function educationLevel()
+    {
+        return $this->belongsTo(\App\Models\Job\EducationLevel::class, 'education_level_id');
+    }
+
+    public function salaryRange()
+    {
+        return $this->belongsTo(\App\Models\Job\SalaryRange::class, 'salary_range_id');
+    }
+
+    public function preferredCountry()
+    {
+        return $this->belongsTo(\App\Models\Job\Country::class, 'preferred_country_code', 'code');
+    }
+
 
     /**
      * Get the user that owns the seeker profile
@@ -91,6 +156,17 @@ class SeekerProfile extends Model
     public function hasAppliedJob($jobPostId)
     {
         return $this->jobSeekerJobs()->where('job_post_id', $jobPostId)->where('is_applied', true)->exists();
+    }
+
+    public function getIsProfileCompleteAttribute(): bool
+    {
+        return $this->job_category_id
+            && $this->industry_id
+            && $this->job_location_id
+            && $this->experience_level_id
+            && $this->education_level_id
+            && $this->professional_title
+            && !empty($this->skills);
     }
 
     /**

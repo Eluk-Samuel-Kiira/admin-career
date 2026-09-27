@@ -299,6 +299,11 @@ Route::prefix('admin')->middleware(['auth'])->group(function () {
         // ============================================
         // DYNAMIC ROUTES (WITH PARAMETERS) - MUST BE LAST
         // ============================================
+        
+        Route::get('/{id}/linkable',       [App\Http\Controllers\Job\JobIndex\JobPostController::class, 'linkable'])->name('job-posts.linkable');
+        Route::post('/{id}/link-submission', [App\Http\Controllers\Job\JobIndex\JobPostController::class, 'linkSubmission'])->name('job-posts.link-submission');
+        Route::post('/{id}/unlink-submission', [App\Http\Controllers\Job\JobIndex\JobPostController::class, 'unlinkSubmission'])->name('job-posts.unlink-submission');
+        
         Route::get('/{id}', [App\Http\Controllers\Job\JobIndex\JobPostController::class, 'show'])
             ->name('admin.job-posts.show');
         Route::put('/{id}', [App\Http\Controllers\Job\JobPosting\JobPostController::class, 'update'])

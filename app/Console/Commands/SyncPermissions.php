@@ -35,9 +35,9 @@ class SyncPermissions extends Command
             // JOBS REPORTS PERMISSIONS
             // ============================================================
 
-            'view cv review requests',
-            'edit cv review requests',
-            'delete cv review requests',
+            'view job submissions',
+            'edit job submissions',
+            
 
             // ============================================================
             // Add more permissions here as needed

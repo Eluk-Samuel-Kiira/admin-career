@@ -143,6 +143,13 @@ class PermissionsSeeder extends Seeder
             'edit cv review requests',
             'delete cv review requests',
 
+            
+            'view job submissions',
+            'edit job submissions',
+            
+            'view employer compliance',
+            'edit employer compliance',
+
             // ============================================================
             // CANDIDATES / JOB SEEKERS
             // ============================================================

@@ -121,6 +121,10 @@ class JobPost extends Model
         'social_shares',
         'backlinks_count',
         'social_metrics',
+
+        'job_submission_id',
+        'package_key',
+        'has_ats',
         
         // Additional Legacy Fields
         'job_reference',
@@ -188,6 +192,11 @@ class JobPost extends Model
     public function industry()
     {
         return $this->belongsTo(Industry::class);
+    }
+
+    public function jobSubmission()
+    {
+        return $this->belongsTo(\App\Models\Service\JobSubmission::class, 'job_submission_id');
     }
 
     public function jobLocation()
@@ -447,5 +456,7 @@ class JobPost extends Model
     {
         return $this->seekerJobs()->where('seeker_profile_id', $seekerProfileId)->where('is_applied', true)->exists();
     }
+
+
 
 }

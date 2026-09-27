@@ -31,65 +31,110 @@ class SeekerController extends Controller
     public function getData(Request $request)
     {
         if (!auth()->user()->can('view seekers')) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unauthorized'
-            ], 403);
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
         }
 
-        $search = $request->get('search', '');
-        $country = $request->get('country', '');
-        $status = $request->get('status', '');
-        $page = $request->get('page', 1);
-        $perPage = $request->get('per_page', 10);
+        $search             = $request->get('search', '');
+        $country            = $request->get('country', '');
+        $status             = $request->get('status', '');
+        $jobCategoryId      = $request->get('job_category_id');
+        $industryId         = $request->get('industry_id');
+        $jobTypeId          = $request->get('job_type_id');
+        $jobLocationId      = $request->get('job_location_id');
+        $experienceLevelId  = $request->get('experience_level_id');
+        $educationLevelId   = $request->get('education_level_id');
+        $salaryRangeId      = $request->get('salary_range_id');
+        $minExperience      = $request->get('min_experience');
+        $profileComplete    = $request->get('profile_complete'); // '1' | '0' | ''
+        $page               = (int) $request->get('page', 1);
+        $perPage            = (int) $request->get('per_page', 15);
 
-        $query = SeekerProfile::with(['user'])
-            ->where('is_active', true);
+        $query = SeekerProfile::with([
+            'user',
+            'jobCategory:id,name',
+            'industry:id,name',
+            'jobType:id,name',
+            'jobLocation:id,district,city',
+            'experienceLevel:id,name,min_years,max_years',
+            'educationLevel:id,name',
+            'salaryRange:id,name,currency,min_salary,max_salary',
+        ])->where('is_active', true);
 
-        // Search
+        // ── Search ─────────────────────────────────────────────────────
         if (!empty($search)) {
-            $query->where(function($q) use ($search) {
-                $q->where('first_name', 'like', '%' . $search . '%')
-                  ->orWhere('last_name', 'like', '%' . $search . '%')
-                  ->orWhere('email', 'like', '%' . $search . '%')
-                  ->orWhere('phone', 'like', '%' . $search . '%')
-                  ->orWhere('professional_title', 'like', '%' . $search . '%')
-                  ->orWhere('skills', 'like', '%' . $search . '%')
-                  ->orWhereHas('user', function($uq) use ($search) {
-                      $uq->where('email', 'like', '%' . $search . '%')
-                         ->orWhere('first_name', 'like', '%' . $search . '%')
-                         ->orWhere('last_name', 'like', '%' . $search . '%');
-                  });
+            $query->where(function ($q) use ($search) {
+                $q->where('first_name', 'like', "%{$search}%")
+                ->orWhere('last_name', 'like', "%{$search}%")
+                ->orWhere('email', 'like', "%{$search}%")
+                ->orWhere('phone', 'like', "%{$search}%")
+                ->orWhere('professional_title', 'like', "%{$search}%")
+                ->orWhere('professional_summary', 'like', "%{$search}%")
+                ->orWhere('skills', 'like', "%{$search}%")
+                ->orWhere('city', 'like', "%{$search}%")
+                ->orWhereHas('user', function ($uq) use ($search) {
+                    $uq->where('email', 'like', "%{$search}%")
+                        ->orWhere('first_name', 'like', "%{$search}%")
+                        ->orWhere('last_name', 'like', "%{$search}%");
+                });
             });
         }
 
-        // Country filter
+        // ── Basic filters ──────────────────────────────────────────────
         if (!empty($country)) {
             $query->where('country', $country);
         }
 
-        // Status filter
         if (!empty($status)) {
             if ($status === 'has_cv') {
-                $query->whereNotNull('cv_file_path')
-                      ->orWhereNotNull('cv_files');
-            } elseif ($status === 'no_cv') {
-                $query->whereNull('cv_file_path')
-                      ->whereNull('cv_files');
-            } elseif ($status === 'has_applied') {
-                $query->whereHas('jobSeekerJobs', function($q) {
-                    $q->where('is_applied', true);
+                $query->where(function ($q) {
+                    $q->whereNotNull('cv_file_path')
+                    ->orWhereNotNull('cv_files');
                 });
+            } elseif ($status === 'no_cv') {
+                $query->whereNull('cv_file_path')->whereNull('cv_files');
+            } elseif ($status === 'has_applied') {
+                $query->whereHas('jobSeekerJobs', fn($q) => $q->where('is_applied', true));
             }
         }
 
-        $seekers = $query->orderBy('id', 'desc')
+        // ── Filter FK filters ──────────────────────────────────────────
+        if (!empty($jobCategoryId))     $query->where('job_category_id', $jobCategoryId);
+        if (!empty($industryId))        $query->where('industry_id', $industryId);
+        if (!empty($jobTypeId))         $query->where('job_type_id', $jobTypeId);
+        if (!empty($jobLocationId))     $query->where('job_location_id', $jobLocationId);
+        if (!empty($experienceLevelId)) $query->where('experience_level_id', $experienceLevelId);
+        if (!empty($educationLevelId))  $query->where('education_level_id', $educationLevelId);
+        if (!empty($salaryRangeId))     $query->where('salary_range_id', $salaryRangeId);
+
+        if ($minExperience !== null && $minExperience !== '') {
+            $query->where('years_of_experience', '>=', (int) $minExperience);
+        }
+
+        // ── Profile complete filter ────────────────────────────────────
+        if ($profileComplete === '1') {
+            $query->whereNotNull('job_category_id')
+                ->whereNotNull('industry_id')
+                ->whereNotNull('job_location_id')
+                ->whereNotNull('experience_level_id')
+                ->whereNotNull('education_level_id')
+                ->whereNotNull('professional_title')
+                ->whereNotNull('skills');
+        } elseif ($profileComplete === '0') {
+            $query->where(function ($q) {
+                $q->whereNull('job_category_id')
+                ->orWhereNull('industry_id')
+                ->orWhereNull('job_location_id')
+                ->orWhereNull('experience_level_id')
+                ->orWhereNull('education_level_id')
+                ->orWhereNull('professional_title')
+                ->orWhereNull('skills');
+            });
+        }
+
+        $seekers = $query->orderByDesc('id')
             ->paginate($perPage, ['*'], 'page', $page);
 
-        // Format the data for display
-        $seekers->getCollection()->transform(function ($item) {
-            return $this->formatSeekerData($item);
-        });
+        $seekers->getCollection()->transform(fn($item) => $this->formatSeekerData($item));
 
         return response()->json($seekers);
     }
@@ -197,21 +242,68 @@ class SeekerController extends Controller
      */
     public function getFilters(Request $request)
     {
-        // Get countries from the Country model
         $countries = Country::where('is_active', true)
             ->orderBy('name')
             ->get(['code', 'name', 'flag'])
-            ->map(function ($country) {
-                return [
-                    'code' => $country->code,
-                    'name' => $country->name,
-                    'flag' => $country->flag ?? '🌍',
-                ];
-            });
+            ->map(fn($c) => [
+                'code'  => $c->code,
+                'name'  => $c->name,
+                'flag'  => $c->flag ?? '',
+            ]);
+
+        $categories = \App\Models\Job\JobCategory::where('is_active', true)
+            ->orderBy('name')
+            ->get(['id', 'name'])
+            ->map(fn($c) => ['id' => $c->id, 'label' => $c->name]);
+
+        $industries = \App\Models\Job\Industry::where('is_active', true)
+            ->orderBy('name')
+            ->get(['id', 'name'])
+            ->map(fn($c) => ['id' => $c->id, 'label' => $c->name]);
+
+        $jobTypes = \App\Models\Job\JobType::where('is_active', true)
+            ->orderBy('name')
+            ->get(['id', 'name'])
+            ->map(fn($c) => ['id' => $c->id, 'label' => $c->name]);
+
+        $locations = \App\Models\Job\JobLocation::where('is_active', true)
+            ->orderBy('district')
+            ->get(['id', 'district', 'city'])
+            ->map(fn($c) => [
+                'id'    => $c->id,
+                'label' => $c->city ? "{$c->district} ({$c->city})" : $c->district,
+            ]);
+
+        $experienceLevels = \App\Models\Job\ExperienceLevel::where('is_active', true)
+            ->orderBy('sort_order')
+            ->get(['id', 'name', 'min_years', 'max_years'])
+            ->map(fn($c) => [
+                'id'    => $c->id,
+                'label' => $c->min_years !== null
+                    ? "{$c->name} ({$c->min_years}-" . ($c->max_years ?? '∞') . " yrs)"
+                    : $c->name,
+            ]);
+
+        $educationLevels = \App\Models\Job\EducationLevel::where('is_active', true)
+            ->orderBy('sort_order')
+            ->get(['id', 'name'])
+            ->map(fn($c) => ['id' => $c->id, 'label' => $c->name]);
+
+        $salaryRanges = \App\Models\Job\SalaryRange::where('is_active', true)
+            ->orderBy('min_salary')
+            ->get(['id', 'name', 'currency'])
+            ->map(fn($c) => ['id' => $c->id, 'label' => $c->name]);
 
         return response()->json([
             'success' => true,
-            'countries' => $countries,
+            'countries'         => $countries,
+            'categories'        => $categories,
+            'industries'        => $industries,
+            'job_types'         => $jobTypes,
+            'locations'         => $locations,
+            'experience_levels' => $experienceLevels,
+            'education_levels'  => $educationLevels,
+            'salary_ranges'     => $salaryRanges,
         ]);
     }
 
@@ -248,67 +340,83 @@ class SeekerController extends Controller
     private function formatSeekerData($seeker)
     {
         $user = $seeker->user;
-        $fullName = $seeker->first_name . ' ' . $seeker->last_name;
-        if (empty(trim($fullName)) && $user) {
+        $fullName = trim(($seeker->first_name ?? '') . ' ' . ($seeker->last_name ?? ''));
+        if ($fullName === '' && $user) {
             $fullName = $user->name ?? 'Unknown';
         }
 
-        // ✅ FIX: Get cv_files properly
         $cvFiles = $this->getCvFilesArray($seeker);
         $cvCount = count($cvFiles);
-        
-        // Check legacy cv_file_path too
-        $hasCv = !is_null($seeker->cv_file_path) || $cvCount > 0;
+        $hasCv   = !is_null($seeker->cv_file_path) || $cvCount > 0;
 
         $appliedCount = $seeker->jobSeekerJobs()->where('is_applied', true)->count();
-        $savedCount = $seeker->jobSeekerJobs()->where('is_saved', true)->count();
+        $savedCount   = $seeker->jobSeekerJobs()->where('is_saved', true)->count();
 
-        // Get country flag from Country model
-        $flag = '🌍';
+        $flag = '';
         if ($seeker->country) {
-            $country = Country::where('code', $seeker->country)->first();
-            $flag = $country->flag ?? '🌍';
+            $flag = Country::where('code', $seeker->country)->value('flag') ?? '';
         }
 
-        // ✅ Build CV file URLs
         $cvFilesWithUrls = [];
         foreach ($cvFiles as $cv) {
-            $cvFile = $cv;
             if (isset($cv['path'])) {
-                $cvFile['url'] = Storage::disk('public')->url($cv['path']);
+                $cv['url'] = Storage::disk('public')->url($cv['path']);
             }
-            $cvFilesWithUrls[] = $cvFile;
+            $cvFilesWithUrls[] = $cv;
         }
 
         return [
-            'id' => $seeker->id,
-            'user_id' => $seeker->user_id,
-            'avatar' => $user ? $user->avatar_url : asset('assets/media/avatars/blank.png'),
-            'full_name' => $fullName,
-            'email' => $seeker->email ?? ($user ? $user->email : 'N/A'),
-            'phone' => $seeker->phone ?? ($user ? $user->phone : 'N/A'),
-            'professional_title' => $seeker->professional_title ?? 'N/A',
-            'country' => $seeker->country ?? 'N/A',
-            'flag' => $flag,
-            'city' => $seeker->city ?? 'N/A',
-            'years_of_experience' => $seeker->years_of_experience ?? 0,
-            'skills' => $seeker->skills ? (is_array($seeker->skills) ? $seeker->skills : $seeker->skills) : 'N/A',
+            'id'            => $seeker->id,
+            'user_id'       => $seeker->user_id,
+            'avatar'        => $user ? $user->avatar_url : asset('assets/media/avatars/blank.png'),
+            'full_name'     => $fullName,
+            'email'         => $seeker->email ?? ($user->email ?? 'N/A'),
+            'phone'         => $seeker->phone ?? ($user->phone ?? 'N/A'),
+            'professional_title'   => $seeker->professional_title ?? 'N/A',
             'professional_summary' => $seeker->professional_summary ?? 'N/A',
-            'languages' => $seeker->languages ?? [],
-            'linkedin_url' => $seeker->linkedin_url ?? null,
-            'github_url' => $seeker->github_url ?? null,
-            'portfolio_url' => $seeker->portfolio_url ?? null,
-            'has_cv' => $hasCv,
-            'cv_count' => $cvCount,
-            'cv_file_path' => $seeker->cv_file_path,
-            'cv_files' => $cvFilesWithUrls, // ✅ Full array with URLs
+            'country'       => $seeker->country ?? 'N/A',
+            'flag'          => $flag,
+            'city'          => $seeker->city ?? 'N/A',
+            'years_of_experience' => $seeker->years_of_experience ?? 0,
+            'skills'        => $seeker->skills ?? [],
+            'languages'     => $seeker->languages ?? [],
+            'linkedin_url'  => $seeker->linkedin_url,
+            'github_url'    => $seeker->github_url,
+            'portfolio_url' => $seeker->portfolio_url,
+
+            'has_cv'        => $hasCv,
+            'cv_count'      => $cvCount,
+            'cv_file_path'  => $seeker->cv_file_path,
+            'cv_files'      => $cvFilesWithUrls,
+
             'applied_count' => $appliedCount,
-            'saved_count' => $savedCount,
-            'is_public' => $seeker->is_public,
-            'created_at' => $seeker->created_at,
-            'updated_at' => $seeker->updated_at,
-            'status_badge' => $this->getStatusBadge($seeker),
-            'cv_badge' => $this->getCvBadge($seeker),
+            'saved_count'   => $savedCount,
+            'is_public'     => $seeker->is_public,
+            'created_at'    => $seeker->created_at,
+            'updated_at'    => $seeker->updated_at,
+            'status_badge'  => $this->getStatusBadge($seeker),
+            'cv_badge'      => $this->getCvBadge($seeker),
+
+            // New: filter FK info
+            'job_category_id'     => $seeker->job_category_id,
+            'job_category'        => $seeker->jobCategory?->name,
+            'industry_id'         => $seeker->industry_id,
+            'industry'            => $seeker->industry?->name,
+            'job_type_id'         => $seeker->job_type_id,
+            'job_type'            => $seeker->jobType?->name,
+            'job_location_id'     => $seeker->job_location_id,
+            'job_location'        => $seeker->jobLocation
+                                        ? ($seeker->jobLocation->city
+                                            ? "{$seeker->jobLocation->district} ({$seeker->jobLocation->city})"
+                                            : $seeker->jobLocation->district)
+                                        : null,
+            'experience_level_id' => $seeker->experience_level_id,
+            'experience_level'    => $seeker->experienceLevel?->name,
+            'education_level_id'  => $seeker->education_level_id,
+            'education_level'     => $seeker->educationLevel?->name,
+            'salary_range_id'     => $seeker->salary_range_id,
+            'salary_range'        => $seeker->salaryRange?->name,
+            'profile_complete'    => (bool) $seeker->is_profile_complete,
         ];
     }
 

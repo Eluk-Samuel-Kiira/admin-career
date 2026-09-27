@@ -82,6 +82,16 @@ class JobActionController extends Controller
             ], 404);
         }
 
+        // ✅ Enforce profile completeness BEFORE tracking anything
+        if (!$seekerProfile->is_profile_complete) {
+            return response()->json([
+                'success' => false,
+                'code'    => 'profile_incomplete',
+                'message' => 'Please complete your profile (category, industry, location, experience, education, and skills) before applying.',
+                'redirect' => '/profile',
+            ], 422);
+        }
+
         $jobPost = JobPost::find($jobId);
         if (!$jobPost) {
             return response()->json([
@@ -92,7 +102,7 @@ class JobActionController extends Controller
 
         $jobSeekerJob = JobSeekerJob::firstOrNew([
             'seeker_profile_id' => $seekerProfile->id,
-            'job_post_id' => $jobId,
+            'job_post_id'       => $jobId,
         ]);
 
         if ($jobSeekerJob->is_applied) {
@@ -107,14 +117,7 @@ class JobActionController extends Controller
         $jobSeekerJob->applied_at = now();
         $jobSeekerJob->save();
 
-        // Increment application count on job post
         $jobPost->increment('application_count');
-
-        // Log::info('Job application tracked', [
-        //     'user_id' => $user->id,
-        //     'job_id' => $jobId,
-        //     'seeker_profile_id' => $seekerProfile->id,
-        // ]);
 
         return response()->json([
             'success' => true,

@@ -157,3 +157,35 @@ Route::prefix('admin')->middleware(['auth'])->group(function () {
     Route::post('/cv-review-requests/{id}/deliver', [CvReviewRequestController::class, 'deliver'])
         ->name('admin.cv-review-requests.deliver');
 });
+
+
+
+
+
+
+use App\Http\Controllers\Employer\AdminComplianceController;
+
+Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () {
+    Route::get('/compliance',               [AdminComplianceController::class, 'index'])->name('compliance.index');
+    Route::get('/compliance/data',          [AdminComplianceController::class, 'data'])->name('compliance.data');
+    Route::get('/compliance/stats',         [AdminComplianceController::class, 'stats'])->name('compliance.stats');   // ← before {id}
+    Route::get('/compliance/{id}',          [AdminComplianceController::class, 'show'])->name('compliance.show');
+    Route::post('/compliance/{id}/verify',  [AdminComplianceController::class, 'verify'])->name('compliance.verify');
+    Route::post('/compliance/{id}/reject',  [AdminComplianceController::class, 'reject'])->name('compliance.reject');
+});
+
+
+use App\Http\Controllers\Service\JobSubmissionController;
+
+Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () {
+    // ... existing
+
+    Route::get('/job-submissions',               [JobSubmissionController::class, 'index'])->name('job-submissions.index');
+    Route::get('/job-submissions/data',          [JobSubmissionController::class, 'data'])->name('job-submissions.data');
+    Route::get('/job-submissions/stats',         [JobSubmissionController::class, 'stats'])->name('job-submissions.stats');
+    Route::get('/job-submissions/{uuid}',        [JobSubmissionController::class, 'show'])->name('job-submissions.show');
+    Route::post('/job-submissions/{uuid}/mark-paid', [JobSubmissionController::class, 'markPaid'])->name('job-submissions.mark-paid');
+    Route::post('/job-submissions/{uuid}/mark-published', [JobSubmissionController::class, 'markPublished'])
+    ->name('job-submissions.mark-published');
+    Route::post('/job-submissions/{uuid}/reject',    [JobSubmissionController::class, 'reject'])->name('job-submissions.reject');
+});

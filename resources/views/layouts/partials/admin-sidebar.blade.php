@@ -241,26 +241,7 @@
                                 </a>
                             </div>
                             @endcan
-                            
-                            @can('view seekers')
-                            <div class="menu-item">
-                                <a class="menu-link" href="{{ route('admin.seekers.index') }}?status=has_cv">
-                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
-                                    <span class="menu-title">CV Uploaded</span>
-                                    <span class="badge badge-light-success ms-2">CV</span>
-                                </a>
-                            </div>
-                            @endcan
-                            
-                            @can('view seekers')
-                            <div class="menu-item">
-                                <a class="menu-link" href="{{ route('admin.seekers.index') }}?status=has_applied">
-                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
-                                    <span class="menu-title">With Applications</span>
-                                    <span class="badge badge-light-primary ms-2">Apps</span>
-                                </a>
-                            </div>
-                            @endcan
+                    
                         </div>
                     </div>
                     @endcanany
@@ -308,6 +289,96 @@
                         </div>
                     </div>
                     @endcanany
+
+                   {{-- Employers --}}
+                    <div class="menu-item pt-5">
+                        <div class="menu-content">
+                            <span class="menu-heading fw-bold text-uppercase fs-7">Companies/Employer</span>
+                        </div>
+                    </div>
+
+                    {{-- Employers (Compliance + Subscriptions + Job Submissions) --}}
+                    @canany(['view employer compliance', 'view subscriptions', 'view job submissions'])
+                    @php
+                        // Live counts (cheap single-column counts, indexed)
+                        $pendingComplianceCount = \App\Models\EmployerProfile::where('compliance_status', 'submitted')->count();
+                        $pendingJobsCount       = \App\Models\Service\JobSubmission::where('status', 'pending_payment')->count();
+                        $totalAlerts            = $pendingComplianceCount + $pendingJobsCount;
+                    @endphp
+
+                    <div data-kt-menu-trigger="click"
+                        class="menu-item menu-accordion {{ request()->routeIs('admin.compliance.*', 'admin.subscriptions.*', 'admin.job-submissions.*') ? 'show here' : '' }}">
+
+                        <span class="menu-link">
+                            <span class="menu-icon">
+                                <i class="ki-duotone ki-briefcase fs-2">
+                                    <span class="path1"></span><span class="path2"></span>
+                                </i>
+                            </span>
+                            <span class="menu-title">Employers</span>
+
+                            @if($totalAlerts > 0)
+                                <span class="badge badge-light-warning ms-2">{{ $totalAlerts }}</span>
+                            @endif
+
+                            <span class="menu-arrow"></span>
+                        </span>
+
+                        <div class="menu-sub menu-sub-accordion">
+
+                            {{-- 1. Compliance Review --}}
+                            @can('view employer compliance')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.compliance.*') ? 'active' : '' }}"
+                                href="{{ route('admin.compliance.index') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">Compliance Review</span>
+                                    @if($pendingComplianceCount > 0)
+                                        <span class="badge badge-light-warning ms-2">{{ $pendingComplianceCount }}</span>
+                                    @endif
+                                </a>
+                            </div>
+                            @endcan
+
+                            {{-- 2. Job Submissions --}}
+                            @can('view job submissions')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.job-submissions.*') ? 'active' : '' }}"
+                                href="{{ route('admin.job-submissions.index') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">Job Submissions</span>
+                                    @if($pendingJobsCount > 0)
+                                        <span class="badge badge-light-warning ms-2">{{ $pendingJobsCount }}</span>
+                                    @endif
+                                </a>
+                            </div>
+                            @endcan
+
+                            {{-- 3. Subscriptions --}}
+                            @can('view subscriptions')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.subscriptions.*') ? 'active' : '' }}"
+                                href="{{ route('admin.subscriptions.index') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">Subscriptions</span>
+                                </a>
+                            </div>
+                            @endcan
+
+                            {{-- Future: Employer Earnings, Reports, etc. --}}
+                            {{--
+                            <div class="menu-item">
+                                <a class="menu-link" href="#">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">Earnings</span>
+                                </a>
+                            </div>
+                            --}}
+
+                        </div>
+                    </div>
+                    @endcanany
+
 
                     {{-- Earnings --}}
                     <div class="menu-item pt-5">

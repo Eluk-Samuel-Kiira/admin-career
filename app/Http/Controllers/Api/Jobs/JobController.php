@@ -167,7 +167,37 @@ class JobController extends Controller
                 ], 404);
             }
 
-            $job->increment('view_count');
+            // $job->increment('view_count');
+
+            // Throttled view counting:
+            // - One count per visitor (by IP + user agent hash) per job
+            // - Window: 6 hours (adjust as needed)
+            // - Owner views not counted (employer viewing their own job)
+            $shouldCount = true;
+
+            // 1. Don't count the employer viewing their own job
+            $requestUser = request()->user();
+            if ($requestUser && $job->company && $job->company->owner_user_id === $requestUser->id) {
+                $shouldCount = false;
+            }
+
+            // 2. Throttle by visitor fingerprint
+            if ($shouldCount) {
+                $visitorKey = 'job_view.' . $job->id . '.' . sha1(
+                    request()->ip() . '|' . request()->userAgent()
+                );
+
+                if (cache()->has($visitorKey)) {
+                    $shouldCount = false;
+                } else {
+                    cache()->put($visitorKey, true, now()->addHours(6));
+                }
+            }
+
+            if ($shouldCount) {
+                $job->increment('view_count');
+            }
+
 
             return response()->json([
                 'success' => true,

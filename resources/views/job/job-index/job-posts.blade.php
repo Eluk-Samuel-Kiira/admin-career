@@ -250,6 +250,7 @@
 
 <!-- Include Edit Modal -->
 @include('job.job-index.edit-job-modal')
+@include('job.job-index.link-job')
 
 @endcan
 @endsection
@@ -458,6 +459,11 @@ function renderJobPostsTable(jobPosts) {
             <div class="d-flex justify-content-end gap-2">
                 <button class="btn btn-sm btn-icon btn-light" onclick="viewJob(${job.id})" title="View">
                     <i class="ki-duotone ki-eye fs-3"><span class="path1"></span><span class="path2"></span></i>
+                </button>
+                <button class="btn btn-sm btn-icon btn-light" onclick="openLinkModal(${job.id})" title="Link Submission For ATS">
+                    <i class="ki-duotone ki-paper-clip fs-3">
+                        <span class="path1"></span><span class="path2"></span><span class="path3"></span>
+                    </i>
                 </button>
                 <button class="btn btn-sm btn-icon btn-light" onclick="toggleStatus(${job.id}, ${job.is_active})" title="${job.is_active ? 'Deactivate' : 'Activate'}">
                     <i class="ki-duotone ki-${job.is_active ? 'disconnect' : 'check'} fs-3">

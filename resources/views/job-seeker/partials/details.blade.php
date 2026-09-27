@@ -32,6 +32,41 @@
         <div class="fw-bold text-muted fs-7">City</div>
         <div class="fw-semibold">{{ $formattedSeeker['city'] ?? 'N/A' }}</div>
     </div>
+
+    <div class="col-md-6">
+        <div class="fw-bold text-muted fs-7">Job Category</div>
+        <div class="fw-semibold">{{ $formattedSeeker['job_category'] ?? 'N/A' }}</div>
+    </div>
+    <div class="col-md-6">
+        <div class="fw-bold text-muted fs-7">Industry</div>
+        <div class="fw-semibold">{{ $formattedSeeker['industry'] ?? 'N/A' }}</div>
+    </div>
+    <div class="col-md-6">
+        <div class="fw-bold text-muted fs-7">Preferred Job Type</div>
+        <div class="fw-semibold">{{ $formattedSeeker['job_type'] ?? 'N/A' }}</div>
+    </div>
+    <div class="col-md-6">
+        <div class="fw-bold text-muted fs-7">Preferred Location</div>
+        <div class="fw-semibold">{{ $formattedSeeker['job_location'] ?? 'N/A' }}</div>
+    </div>
+    <div class="col-md-6">
+        <div class="fw-bold text-muted fs-7">Experience Level</div>
+        <div class="fw-semibold">{{ $formattedSeeker['experience_level'] ?? 'N/A' }}</div>
+    </div>
+    <div class="col-md-6">
+        <div class="fw-bold text-muted fs-7">Education Level</div>
+        <div class="fw-semibold">{{ $formattedSeeker['education_level'] ?? 'N/A' }}</div>
+    </div>
+    <div class="col-md-6">
+        <div class="fw-bold text-muted fs-7">Salary Expectation</div>
+        <div class="fw-semibold">{{ $formattedSeeker['salary_range'] ?? 'N/A' }}</div>
+    </div>
+    <div class="col-md-6">
+        <div class="fw-bold text-muted fs-7">Profile Status</div>
+        <span class="badge badge-light-{{ $formattedSeeker['profile_complete'] ? 'success' : 'warning' }}">
+            {{ $formattedSeeker['profile_complete'] ? 'Complete' : 'Incomplete' }}
+        </span>
+    </div>
     
     <div class="col-md-6">
         <div class="fw-bold text-muted fs-7">Applied Jobs</div>
