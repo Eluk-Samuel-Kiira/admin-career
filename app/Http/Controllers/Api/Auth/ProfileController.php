@@ -71,6 +71,14 @@ class ProfileController extends Controller
                 'cv_files' => $user->seekerProfile?->cv_files,
                 'is_public' => $user->seekerProfile?->is_public ?? true,
                 'job_preferences' => $user->seekerProfile?->job_preferences ?? [], // ✅ Fixed
+
+                'job_category_id'     => $user->seekerProfile?->job_category_id,
+                'industry_id'         => $user->seekerProfile?->industry_id,
+                'job_type_id'         => $user->seekerProfile?->job_type_id,
+                'job_location_id'     => $user->seekerProfile?->job_location_id,
+                'experience_level_id' => $user->seekerProfile?->experience_level_id,
+                'education_level_id'  => $user->seekerProfile?->education_level_id,
+                'salary_range_id'     => $user->seekerProfile?->salary_range_id,
                 
                 // Employer specific
                 'company_name' => $user->employerProfile?->company_name,
@@ -95,87 +103,91 @@ class ProfileController extends Controller
     {
         $user = $request->user();
 
-        // Make all fields optional for partial updates
         $validated = $request->validate([
             'first_name' => 'sometimes|required|string|max:255',
-            'last_name' => 'sometimes|required|string|max:255',
-            'phone' => 'nullable|string|max:25',
+            'last_name'  => 'sometimes|required|string|max:255',
+            'phone'      => 'nullable|string|max:25',
             'country_code' => 'nullable|string|max:3',
-            'bio' => 'nullable|string|max:500',
-            'professional_title' => 'nullable|string|max:255',
-            'years_of_experience' => 'nullable|integer|min:0',
-            'skills' => 'nullable|array',
-            'address' => 'nullable|string|max:500',
-            'city' => 'nullable|string|max:255',
-            'linkedin_url' => 'nullable|url|max:255',
-            'github_url' => 'nullable|url|max:255',
-            'portfolio_url' => 'nullable|url|max:255',
-            'country' => 'nullable|string|max:255',
-            'postal_code' => 'nullable|string|max:20',
-            'date_of_birth' => 'nullable|date',
-            'nationality' => 'nullable|string|max:255',
+            'bio'        => 'nullable|string|max:500',
+
+            'professional_title'   => 'nullable|string|max:255',
+            'years_of_experience'  => 'nullable|integer|min:0',
+            'skills'               => 'nullable|array',
+            'address'              => 'nullable|string|max:500',
+            'city'                 => 'nullable|string|max:255',
+            'linkedin_url'         => 'nullable|url|max:255',
+            'github_url'           => 'nullable|url|max:255',
+            'portfolio_url'        => 'nullable|url|max:255',
+            'country'              => 'nullable|string|max:255',
+            'postal_code'          => 'nullable|string|max:20',
+            'date_of_birth'        => 'nullable|date',
+            'nationality'          => 'nullable|string|max:255',
             'professional_summary' => 'nullable|string|max:2000',
-            'languages' => 'nullable|array',
-            'certifications' => 'nullable|array',
-            'education' => 'nullable|array',
-            'work_experience' => 'nullable|array',
-            'projects' => 'nullable|array',
-            'is_public' => 'nullable|boolean',
-            'job_preferences' => 'nullable|array', // ✅ Added
+            'languages'            => 'nullable|array',
+            'certifications'       => 'nullable|array',
+            'education'            => 'nullable|array',
+            'work_experience'      => 'nullable|array',
+            'projects'             => 'nullable|array',
+            'is_public'            => 'nullable|boolean',
+            'job_preferences'      => 'nullable|array',
+
+            'job_category_id'     => 'sometimes|nullable|integer|exists:job_categories,id',
+            'industry_id'         => 'sometimes|nullable|integer|exists:industries,id',
+            'job_type_id'         => 'sometimes|nullable|integer|exists:job_types,id',
+            'job_location_id'     => 'sometimes|nullable|integer|exists:job_locations,id',
+            'experience_level_id' => 'sometimes|nullable|integer|exists:experience_levels,id',
+            'education_level_id'  => 'sometimes|nullable|integer|exists:education_levels,id',
+            'salary_range_id'     => 'sometimes|nullable|integer|exists:salary_ranges,id',
         ]);
 
         try {
             DB::beginTransaction();
 
-            // ── 1. Update User table (only if fields are present) ──
+            // 1. User table
             $userData = [];
-            if ($request->has('first_name')) {
-                $userData['first_name'] = $validated['first_name'];
+            foreach (['first_name', 'last_name', 'phone', 'country_code', 'bio'] as $f) {
+                if ($request->has($f)) {
+                    $userData[$f] = $validated[$f];
+                }
             }
-            if ($request->has('last_name')) {
-                $userData['last_name'] = $validated['last_name'];
-            }
-            if ($request->has('phone')) {
-                $userData['phone'] = $validated['phone'];
-            }
-            if ($request->has('country_code')) {
-                $userData['country_code'] = $validated['country_code'];
-            }
-            if ($request->has('bio')) {
-                $userData['bio'] = $validated['bio'];
-            }
-            
             if (!empty($userData)) {
                 $user->update($userData);
             }
 
-            // ── 2. Update Seeker Profile ──
+            // 2. Seeker profile
             if ($user->seekerProfile) {
-                $seekerData = [];
-                
                 $seekerFields = [
-                    'professional_title', 
-                    'years_of_experience', 
-                    'skills', 
+                    'professional_title',
+                    'years_of_experience',
+                    'skills',
                     'address',
-                    'city', 
-                    'linkedin_url', 
-                    'github_url', 
+                    'city',
+                    'linkedin_url',
+                    'github_url',
                     'portfolio_url',
-                    'country', 
-                    'postal_code', 
-                    'date_of_birth', 
+                    'country',
+                    'postal_code',
+                    'date_of_birth',
                     'nationality',
-                    'professional_summary', 
-                    'languages', 
+                    'professional_summary',
+                    'languages',
                     'certifications',
-                    'education', 
-                    'work_experience', 
-                    'projects', 
+                    'education',
+                    'work_experience',
+                    'projects',
                     'is_public',
-                    'job_preferences' // ✅ Added
+                    'job_preferences',
+
+                    'job_category_id',
+                    'industry_id',
+                    'job_type_id',
+                    'job_location_id',
+                    'experience_level_id',
+                    'education_level_id',
+                    'salary_range_id',
                 ];
-                
+
+                $seekerData = [];
                 foreach ($seekerFields as $field) {
                     if ($request->has($field)) {
                         $seekerData[$field] = $validated[$field];
@@ -184,20 +196,22 @@ class ProfileController extends Controller
 
                 if (!empty($seekerData)) {
                     $user->seekerProfile->update($seekerData);
+
+                    // Stamp completion the first time the profile becomes complete
+                    if ($user->seekerProfile->is_profile_complete && !$user->seekerProfile->profile_completed_at) {
+                        $user->seekerProfile->update(['profile_completed_at' => now()]);
+                    }
                 }
             }
 
-            // ── 3. Update Employer Profile ──
+            // 3. Employer profile
             if ($user->employerProfile) {
                 $employerData = [];
-                
-                if ($request->has('address')) {
-                    $employerData['address'] = $validated['address'];
+                foreach (['address', 'city'] as $f) {
+                    if ($request->has($f)) {
+                        $employerData[$f] = $validated[$f];
+                    }
                 }
-                if ($request->has('city')) {
-                    $employerData['city'] = $validated['city'];
-                }
-
                 if (!empty($employerData)) {
                     $user->employerProfile->update($employerData);
                 }
@@ -205,7 +219,6 @@ class ProfileController extends Controller
 
             DB::commit();
 
-            // Reload user with relationships
             $user->refresh();
             $user->load(['seekerProfile', 'employerProfile']);
 
@@ -222,30 +235,37 @@ class ProfileController extends Controller
                     'avatar'       => $user->avatar_url,
                     'bio'          => $user->bio,
                     'role'         => $user->getRoleNameAttribute(),
-                    
-                    // Seeker specific
-                    'professional_title' => $user->seekerProfile?->professional_title,
-                    'years_of_experience' => $user->seekerProfile?->years_of_experience,
-                    'skills' => $user->seekerProfile?->skills,
-                    'address' => $user->seekerProfile?->address ?? $user->employerProfile?->address,
-                    'city' => $user->seekerProfile?->city ?? $user->employerProfile?->city,
-                    'linkedin_url' => $user->seekerProfile?->linkedin_url,
-                    'github_url' => $user->seekerProfile?->github_url,
-                    'portfolio_url' => $user->seekerProfile?->portfolio_url,
-                    'country' => $user->seekerProfile?->country,
-                    'postal_code' => $user->seekerProfile?->postal_code,
-                    'date_of_birth' => $user->seekerProfile?->date_of_birth,
-                    'nationality' => $user->seekerProfile?->nationality,
+
+                    'professional_title'   => $user->seekerProfile?->professional_title,
+                    'years_of_experience'  => $user->seekerProfile?->years_of_experience,
+                    'skills'               => $user->seekerProfile?->skills,
+                    'address'              => $user->seekerProfile?->address ?? $user->employerProfile?->address,
+                    'city'                 => $user->seekerProfile?->city ?? $user->employerProfile?->city,
+                    'linkedin_url'         => $user->seekerProfile?->linkedin_url,
+                    'github_url'           => $user->seekerProfile?->github_url,
+                    'portfolio_url'        => $user->seekerProfile?->portfolio_url,
+                    'country'              => $user->seekerProfile?->country,
+                    'postal_code'          => $user->seekerProfile?->postal_code,
+                    'date_of_birth'        => $user->seekerProfile?->date_of_birth,
+                    'nationality'          => $user->seekerProfile?->nationality,
                     'professional_summary' => $user->seekerProfile?->professional_summary,
-                    'languages' => $user->seekerProfile?->languages,
-                    'certifications' => $user->seekerProfile?->certifications,
-                    'education' => $user->seekerProfile?->education,
-                    'work_experience' => $user->seekerProfile?->work_experience,
-                    'projects' => $user->seekerProfile?->projects,
-                    'is_public' => $user->seekerProfile?->is_public ?? true,
-                    'job_preferences' => $user->seekerProfile?->job_preferences ?? [], // ✅ Fixed
-                    
-                    // Employer specific
+                    'languages'            => $user->seekerProfile?->languages,
+                    'certifications'       => $user->seekerProfile?->certifications,
+                    'education'            => $user->seekerProfile?->education,
+                    'work_experience'      => $user->seekerProfile?->work_experience,
+                    'projects'             => $user->seekerProfile?->projects,
+                    'is_public'            => $user->seekerProfile?->is_public ?? true,
+                    'job_preferences'      => $user->seekerProfile?->job_preferences ?? [],
+
+                    // Filter FK IDs — required for the profile form to preselect
+                    'job_category_id'     => $user->seekerProfile?->job_category_id,
+                    'industry_id'         => $user->seekerProfile?->industry_id,
+                    'job_type_id'         => $user->seekerProfile?->job_type_id,
+                    'job_location_id'     => $user->seekerProfile?->job_location_id,
+                    'experience_level_id' => $user->seekerProfile?->experience_level_id,
+                    'education_level_id'  => $user->seekerProfile?->education_level_id,
+                    'salary_range_id'     => $user->seekerProfile?->salary_range_id,
+
                     'company_name' => $user->employerProfile?->company_name,
                 ]
             ]);

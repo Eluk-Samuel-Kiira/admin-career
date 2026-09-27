@@ -295,33 +295,50 @@ class CvController extends Controller
         ]);
     }
 
+
     /**
      * Map extracted CV data to profile fields
      */
     private function mapToProfile(array $data): array
     {
         return [
+            // User table (mirrored on seeker profile fill)
             'first_name' => $data['first_name'] ?? null,
-            'last_name' => $data['last_name'] ?? null,
-            'phone' => $data['phone'] ?? null,
-            'address' => $data['address'] ?? null,
-            'city' => $data['city'] ?? null,
-            'country' => $data['country'] ?? null,
-            'postal_code' => $data['postal_code'] ?? null,
-            'date_of_birth' => $data['date_of_birth'] ?? null,
-            'nationality' => $data['nationality'] ?? null,
+            'last_name'  => $data['last_name']  ?? null,
+
+            // Seeker scalar fields
+            'phone'                => $data['phone']                ?? null,
+            'address'              => $data['address']              ?? null,
+            'city'                 => $data['city']                 ?? null,
+            'country'              => $data['country']              ?? null,
+            'postal_code'          => $data['postal_code']          ?? null,
+            'date_of_birth'        => $data['date_of_birth']        ?? null,
+            'nationality'          => $data['nationality']          ?? null,
             'professional_summary' => $data['professional_summary'] ?? null,
-            'professional_title' => $data['professional_title'] ?? null,
-            'years_of_experience' => $data['years_of_experience'] ?? null,
-            'linkedin_url' => $data['linkedin_url'] ?? null,
-            'github_url' => $data['github_url'] ?? null,
-            'portfolio_url' => $data['portfolio_url'] ?? null,
-            'skills' => $data['skills'] ?? [],
-            'languages' => $data['languages'] ?? [],
+            'professional_title'   => $data['professional_title']   ?? null,
+            'years_of_experience'  => $data['years_of_experience']  ?? null,
+            'linkedin_url'         => $data['linkedin_url']         ?? null,
+            'github_url'           => $data['github_url']           ?? null,
+            'portfolio_url'        => $data['portfolio_url']        ?? null,
+
+            // Arrays
+            'skills'         => $data['skills']         ?? [],
+            'languages'      => $data['languages']      ?? [],
             'certifications' => $data['certifications'] ?? [],
-            'education' => $data['education'] ?? [],
-            'work_experience' => $data['work_experience'] ?? [],
-            'projects' => $data['projects'] ?? [],
+            'education'      => $data['education']      ?? [],
+            'work_experience'=> $data['work_experience']?? [],
+            'projects'       => $data['projects']       ?? [],
+
+            // Filter FK IDs (optional — AI may or may not return these)
+            'job_category_id'     => $data['job_category_id']     ?? null,
+            'industry_id'         => $data['industry_id']         ?? null,
+            'job_type_id'         => $data['job_type_id']         ?? null,
+            'job_location_id'     => $data['job_location_id']     ?? null,
+            'experience_level_id' => $data['experience_level_id'] ?? null,
+            'education_level_id'  => $data['education_level_id']  ?? null,
+            'salary_range_id'     => $data['salary_range_id']     ?? null,
         ];
     }
+
+
 }

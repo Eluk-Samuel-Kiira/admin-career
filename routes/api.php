@@ -12,8 +12,7 @@ use App\Http\Controllers\Api\Auth\{ LoginTokenController, ProfileController, CvC
 use App\Http\Controllers\Api\Service\{ CvReviewRequestController };
 
 
-use App\Http\Controllers\Api\Employer\{ ComplianceController, JobSubmissionController, AtsController };
-
+use App\Http\Controllers\Api\Employer\{ AnalyticsController, ComplianceController, JobSubmissionController, AtsController, DashboardController };
 
 // ✅ TEST ROUTE
 Route::get('/ping', function () {
@@ -191,6 +190,41 @@ Route::middleware(['verifycountry'])->group(function () {
         Route::get('/{slug}/applicants/{id}/cv', [AtsController::class, 'downloadCv'])
             ->name('api.employer.ats.download-cv');
     });
+
+
+    Route::middleware(['auth:sanctum'])->prefix('dashboard')->group(function () {
+        Route::get('/employer', [DashboardController::class, 'index']);
+        Route::get('/seeker',   [DashboardController::class, 'seeker']);
+    });
+
+
+    
+    Route::middleware(['auth:sanctum'])->prefix('employer/analytics')->group(function () {
+        Route::get('/filters', [AnalyticsController::class, 'filters']);
+        Route::get('/data',    [AnalyticsController::class, 'data']);
+    });
+    Route::get('/filters/dropdowns', [\App\Http\Controllers\Api\Filters\FilterController::class, 'dropdowns']);
+
+
+    Route::get('/filters/dropdowns', [\App\Http\Controllers\Api\Filters\FilterController::class, 'dropdowns']);
+
+    // Employer CV filtering (country-scoped)
+    Route::prefix('seekers')->group(function () {
+        Route::get('/filter',        [\App\Http\Controllers\Api\Filters\SeekerCVFilterController::class, 'index']);
+        Route::get('/{id}',          [\App\Http\Controllers\Api\Filters\SeekerCVFilterController::class, 'show']);
+    });
+
+    Route::middleware(['auth:sanctum'])->prefix('letters')->group(function () {
+        Route::get('/',              [\App\Http\Controllers\Api\Service\LetterController::class, 'index']);
+        Route::get('/companies',     [\App\Http\Controllers\Api\Service\LetterController::class, 'companies']);
+        Route::get('/search-jobs',   [\App\Http\Controllers\Api\Service\LetterController::class, 'searchJobs']);
+        Route::post('/',             [\App\Http\Controllers\Api\Service\LetterController::class, 'store']);
+        Route::get('/{uuid}',        [\App\Http\Controllers\Api\Service\LetterController::class, 'show']);
+        Route::post('/{uuid}/pay',   [\App\Http\Controllers\Api\Service\LetterController::class, 'pay']);
+        Route::get('/{uuid}/download', [\App\Http\Controllers\Api\Service\LetterController::class, 'download']);
+        Route::delete('/{uuid}',     [\App\Http\Controllers\Api\Service\LetterController::class, 'destroy']);
+    });
+
 
 });
 

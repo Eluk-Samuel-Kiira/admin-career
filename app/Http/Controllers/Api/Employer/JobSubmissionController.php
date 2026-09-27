@@ -340,42 +340,48 @@ class JobSubmissionController extends Controller
     // =================================================================
     private function formatSubmission(JobSubmission $s): array
     {
+        $jobPost = $s->jobPost;   // already eager-loaded
+
         return [
-            'uuid'                => $s->uuid,
-            'job_title'           => $s->job_title,
-            'content_preview'     => \Illuminate\Support\Str::limit(strip_tags($s->content), 150),
-            'content'             => $s->content,
-            'target_country'      => $s->target_country,
+            'uuid'               => $s->uuid,
+            'job_title'          => $s->job_title,
+            'content_preview'    => \Illuminate\Support\Str::limit(strip_tags($s->content), 150),
+            'content'            => $s->content,
+            'target_country'     => $s->target_country,
 
-            'service_key'         => $s->service_key,
-            'service_name'        => $s->service_name,
-            'package_meta'        => $s->package_meta,          // ← #1 REQUIRED
+            'service_key'        => $s->service_key,
+            'service_name'       => $s->service_name,
+            'package_meta'       => $s->package_meta,
 
-            'amount_cents'        => $s->amount_cents,
-            'currency_code'       => $s->currency->code ?? null,
-            'formatted_amount'    => $s->formatted_amount,
-            'is_free'             => $s->is_free,
+            'amount_cents'       => $s->amount_cents,
+            'currency_code'      => $s->currency->code ?? null,
+            'formatted_amount'   => $s->formatted_amount,
+            'is_free'            => $s->is_free,
 
-            'payment_status'      => $s->payment_status,
-            'payment_badge'       => $s->payment_badge,
-            'payment_reference'   => $s->payment_reference,
-            'paid_at'             => $s->paid_at?->toISOString(),
+            'payment_status'     => $s->payment_status,
+            'payment_badge'      => $s->payment_badge,
+            'payment_reference'  => $s->payment_reference,
+            'paid_at'            => $s->paid_at?->toISOString(),
 
-            'status'              => $s->status,                // ← #2 REQUIRED
-            'status_badge'        => $s->status_badge,
-            'rejection_reason'    => $s->rejection_reason,
+            'status'             => $s->status,
+            'status_badge'       => $s->status_badge,
+            'rejection_reason'   => $s->rejection_reason,
 
-            'company_name'        => $s->company->name ?? null,
-            'company_logo'        => $s->company->logo_url ?? null,
+            'company_name'       => $s->company->name ?? null,
+            'company_logo'       => $s->company->logo_url ?? null,
 
-            'job_post_id'         => $s->job_post_id,           // ← #3 REQUIRED
-            'job_post_slug'       => $s->jobPost?->slug,        // ← #4 REQUIRED
+            'job_post_id'        => $s->job_post_id,
+            'job_post_slug'      => $jobPost?->slug,
 
-            'can_edit'            => $s->canBeEdited(),
-            'can_delete'          => $s->canBeDeleted(),
+            // ── LIVE JOB STATS ─────────────────────────────────────
+            'view_count'         => $jobPost?->view_count ?? 0,
+            'application_count'  => $jobPost?->application_count ?? 0,
 
-            'created_at'          => $s->created_at?->toISOString(),
-            'updated_at'          => $s->updated_at?->toISOString(),
+            'can_edit'           => $s->canBeEdited(),
+            'can_delete'         => $s->canBeDeleted(),
+
+            'created_at'         => $s->created_at?->toISOString(),
+            'updated_at'         => $s->updated_at?->toISOString(),
         ];
     }
 

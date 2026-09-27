@@ -241,26 +241,7 @@
                                 </a>
                             </div>
                             @endcan
-                            
-                            @can('view seekers')
-                            <div class="menu-item">
-                                <a class="menu-link" href="{{ route('admin.seekers.index') }}?status=has_cv">
-                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
-                                    <span class="menu-title">CV Uploaded</span>
-                                    <span class="badge badge-light-success ms-2">CV</span>
-                                </a>
-                            </div>
-                            @endcan
-                            
-                            @can('view seekers')
-                            <div class="menu-item">
-                                <a class="menu-link" href="{{ route('admin.seekers.index') }}?status=has_applied">
-                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
-                                    <span class="menu-title">With Applications</span>
-                                    <span class="badge badge-light-primary ms-2">Apps</span>
-                                </a>
-                            </div>
-                            @endcan
+                    
                         </div>
                     </div>
                     @endcanany
