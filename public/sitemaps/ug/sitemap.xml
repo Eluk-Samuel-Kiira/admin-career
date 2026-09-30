@@ -6,6 +6,72 @@
     <priority>1.0</priority>
   </url>
   <url>
+    <loc>http://127.0.0.1:8001/blog/ai-in-recruitment-how-machine-learning-is-transforming-hiring-in-uganda-ug</loc>
+    <lastmod>2026-09-30T20:58:19+00:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>http://127.0.0.1:8001/blog/from-application-to-offer-inside-ugandas-most-competitive-hiring-processes-ug</loc>
+    <lastmod>2026-09-30T20:58:22+00:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>http://127.0.0.1:8001/blog/how-to-land-your-dream-job-without-a-university-degree-in-uganda-ug</loc>
+    <lastmod>2026-09-30T20:58:22+00:00</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>http://127.0.0.1:8001/blog/how-to-write-a-cv-that-beats-ai-screening-systems-ats-friendly-guide-ug</loc>
+    <lastmod>2026-09-30T20:58:21+00:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>http://127.0.0.1:8001/blog/is-ai-coming-for-your-job-the-truth-about-automation-and-employment-in-uganda-ug</loc>
+    <lastmod>2026-09-30T20:58:21+00:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>http://127.0.0.1:8001/blog/linkedin-optimisation-guide-how-to-attract-recruiters-in-uganda-without-applying-ug</loc>
+    <lastmod>2026-09-30T20:58:22+00:00</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>http://127.0.0.1:8001/blog/remote-work-revolution-how-professionals-are-landing-international-jobs-from-uganda-ug</loc>
+    <lastmod>2026-09-30T20:58:23+00:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>http://127.0.0.1:8001/blog/shes-smart</loc>
+    <lastmod>2026-09-30T20:58:23+00:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>http://127.0.0.1:8001/blog/soft-skills-that-will-keep-you-employable-in-the-age-of-ai-ug</loc>
+    <lastmod>2026-09-30T20:58:22+00:00</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>http://127.0.0.1:8001/blog/the-psychology-of-hiring-what-recruiters-in-uganda-look-for-in-the-first-6-seconds-ug</loc>
+    <lastmod>2026-09-30T20:58:21+00:00</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>http://127.0.0.1:8001/blog/the-ultimate-guide-to-salary-negotiation-for-professionals-in-uganda-ug</loc>
+    <lastmod>2026-09-30T20:58:22+00:00</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
     <loc>http://127.0.0.1:8001/companies</loc>
     <changefreq>daily</changefreq>
     <priority>0.8</priority>
@@ -31,8 +97,8 @@
   <url>
     <loc>http://127.0.0.1:8001/job/field-engineer-tracer-operations-job-at-stardena-inc-in-kampala-ug</loc>
     <lastmod>2026-09-26T17:19:52+00:00</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
+    <changefreq>always</changefreq>
+    <priority>0.9</priority>
   </url>
   <url>
     <loc>http://127.0.0.1:8001/job/operations-executive-coordinator-job-at-airtel-uganda-in-kampala-ug</loc>

@@ -111,6 +111,9 @@ class SitemapService
         // 5. Job posts for this country
         $urls = array_merge($urls, $this->getJobUrls($frontendUrl, $countryCodeDb));
 
+        // 6. Blog posts for this country
+        $urls = array_merge($urls, $this->getBlogUrls($frontendUrl, $countryCodeDb));
+
         // Remove duplicates and sort
         $urls = array_unique($urls, SORT_REGULAR);
         usort($urls, function($a, $b) {
@@ -535,4 +538,161 @@ class SitemapService
             'ping_results' => $results,
         ];
     }
+
+    /**
+     * Bulk-ping unpublished/unpinged blog posts for a given country.
+     *
+     * Steps:
+     *   1. Mark all matching unpinged, active blogs as pinged + published.
+     *   2. Regenerate the country sitemap.
+     *   3. Ping search engines with the refreshed sitemap index.
+     *
+     * @param  string|null  $countryCode  Country code (e.g. 'UG'). Null = all enabled countries.
+     * @return array        Summary of what happened
+     */
+    public function pingBlogs(?string $countryCode = null): array
+    {
+        $results = [];
+
+        $countries = $countryCode
+            ? [$countryCode => $this->getCountry($countryCode)]
+            : $this->getCountries();
+
+        foreach ($countries as $code => $country) {
+            if (!$country || !($country['enabled'] ?? false)) {
+                $results[$code] = ['status' => 'skipped', 'reason' => 'country not enabled'];
+                continue;
+            }
+
+            $results[$code] = $this->pingBlogsForCountry($country['country_code']);
+        }
+
+        return $results;
+    }
+
+    /**
+     * Bulk-ping for a single country.
+     */
+    private function pingBlogsForCountry(string $countryCode): array
+    {
+        $country = $this->getCountry($countryCode);
+        if (!$country) {
+            return ['status' => 'error', 'message' => "Country {$countryCode} not supported"];
+        }
+
+        // STEP 1 — Update all unpinged, active blogs for this country
+        $updated = 0;
+        try {
+            $now = now();
+
+            $blogs = \App\Models\Job\Blog::where('is_active', true)
+                ->where('country_code', $country['country_code'])
+                ->where(function ($q) {
+                    $q->whereNull('is_pinged')->orWhere('is_pinged', false);
+                })
+                ->get();
+
+            foreach ($blogs as $blog) {
+                $blog->is_pinged        = true;
+                $blog->last_pinged_at   = $now;
+                $blog->is_published     = true;
+                $blog->is_active        = true;
+                if (empty($blog->published_at) || $blog->published_at->isFuture()) {
+                    $blog->published_at = $now;
+                }
+                $blog->save();
+                $updated++;
+            }
+
+            \Log::info("Pinged {$updated} blogs for country {$countryCode}");
+        } catch (\Exception $e) {
+            \Log::error("Failed to update unpinged blogs: " . $e->getMessage());
+            return [
+                'status'  => 'error',
+                'message' => 'Failed to update blogs: ' . $e->getMessage(),
+            ];
+        }
+
+        // STEP 2 — Regenerate the sitemap for this country (now includes blogs)
+        $sitemapResult = $this->generateCountrySitemap($countryCode);
+        if (isset($sitemapResult['error'])) {
+            return [
+                'status'         => 'error',
+                'message'        => 'Failed to generate sitemap: ' . $sitemapResult['error'],
+                'blogs_updated'  => $updated,
+            ];
+        }
+
+        // STEP 3 — Ping the search engines
+        $sitemapUrl = urlencode(
+            $country['frontend_url'] . '/sitemaps/' . $country['code'] . '/sitemap_index.xml'
+        );
+
+        $engines = [
+            'google' => "https://www.google.com/ping?sitemap={$sitemapUrl}",
+            'bing'   => "https://www.bing.com/ping?sitemap={$sitemapUrl}",
+            'yandex' => "https://webmaster.yandex.com/ping?sitemap={$sitemapUrl}",
+        ];
+
+        $pingResults = [];
+        $anySuccess  = false;
+
+        foreach ($engines as $name => $url) {
+            try {
+                $response = Http::timeout(10)->get($url);
+                $ok = $response->successful();
+                if ($ok) $anySuccess = true;
+
+                $pingResults[$name] = [
+                    'success' => $ok,
+                    'status'  => $response->status(),
+                ];
+            } catch (\Exception $e) {
+                $pingResults[$name] = [
+                    'success' => false,
+                    'error'   => $e->getMessage(),
+                ];
+            }
+        }
+
+        return [
+            'status'         => $anySuccess ? 'success' : 'partial',
+            'country'        => $countryCode,
+            'blogs_updated'  => $updated,
+            'sitemap'        => $sitemapResult,
+            'ping_results'   => $pingResults,
+        ];
+    }
+
+    /**
+     * Get blog URLs for a specific country.
+     * Only published, active blogs with a slug are included.
+     */
+    private function getBlogUrls(string $frontendUrl, string $countryCode): array
+    {
+        $urls = [];
+
+        $blogs = \App\Models\Job\Blog::query()
+            ->where('is_active', true)
+            ->where('is_published', true)
+            ->whereNotNull('published_at')
+            ->where('published_at', '<=', now())
+            ->where('country_code', $countryCode)
+            ->whereNotNull('slug')
+            ->where('slug', '!=', '')
+            ->get(['slug', 'updated_at', 'is_featured', 'published_at']);
+
+        foreach ($blogs as $blog) {
+            $urls[] = $this->makeUrl(
+                $frontendUrl . '/blog/' . $blog->slug,
+                $blog->is_featured ? 'weekly' : 'monthly',
+                $blog->is_featured ? '0.7' : '0.6',
+                ($blog->updated_at ?? $blog->published_at)?->toAtomString()
+            );
+        }
+
+        return $urls;
+    }
+
+
 }
