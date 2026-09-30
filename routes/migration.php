@@ -452,6 +452,9 @@ Route::prefix('admin')->middleware(['auth'])->group(function () {
     Route::get('/blogs/countries', [BlogController::class, 'getCountries'])->name('admin.blogs.countries');
     Route::post('/blogs/upload-cover', [BlogController::class, 'uploadCover'])->name('admin.blogs.upload-cover');
 
+    Route::get('/blogs/unpinged-count', [BlogController::class, 'getUnpingedCount'])->name('admin.blogs.unpinged-count');
+    Route::post('/blogs/bulk-ping',     [BlogController::class, 'bulkPing'])->name('admin.blogs.bulk-ping');
+
     // CRUD routes
     Route::get('/blogs/create', [BlogController::class, 'create'])->name('admin.blogs.create');
     Route::get('/blogs/{id}/edit', [BlogController::class, 'edit'])->name('admin.blogs.edit');

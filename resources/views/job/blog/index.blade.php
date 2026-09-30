@@ -53,13 +53,22 @@
                 </select>
             </div>
         </div>
-        @can('create blogs')
-        <div class="card-toolbar">
+        @can('edit blogs')
+        <div class="card-toolbar gap-2">
+            <button type="button" id="bulkPingBtn" class="btn btn-light-success">
+                <i class="ki-duotone ki-rocket fs-2">
+                    <span class="path1"></span><span class="path2"></span>
+                </i>
+                Ping Unpinged Blogs
+                <span class="badge badge-light-success ms-2" id="unpingedBadge">0</span>
+            </button>
+            @can('create blogs')
             <a href="{{ route('admin.blogs.create') }}" class="btn btn-primary">
                 <i class="ki-duotone ki-plus-square fs-2">
                     <span class="path1"></span><span class="path2"></span><span class="path3"></span>
                 </i> Add Blog
             </a>
+            @endcan
         </div>
         @endcan
     </div>
@@ -464,5 +473,82 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
+
+// Load the unpinged count on page load and when country changes
+async function loadUnpingedCount() {
+    const country = document.getElementById('countryFilter')?.value || '';
+    const badge = document.getElementById('unpingedBadge');
+    if (!badge) return;
+
+    try {
+        const res = await fetch(`/admin/blogs/unpinged-count?country=${encodeURIComponent(country)}`, {
+            headers: { 'Accept': 'application/json' }
+        });
+        const data = await res.json();
+        if (data.success) {
+            badge.textContent = data.count;
+            badge.classList.toggle('badge-light-secondary', data.count === 0);
+            badge.classList.toggle('badge-light-success', data.count > 0);
+        }
+    } catch (err) {
+        console.error('Failed to load unpinged count:', err);
+    }
+}
+
+// Hook into the existing country change handler, and initial load
+document.addEventListener('DOMContentLoaded', function () {
+    loadUnpingedCount();
+
+    document.getElementById('countryFilter')?.addEventListener('change', loadUnpingedCount);
+});
+
+// Bulk ping
+document.getElementById('bulkPingBtn')?.addEventListener('click', async function () {
+    const country = document.getElementById('countryFilter')?.value || '';
+
+    const scope = country ? `country "${country}"` : 'all countries';
+    if (!confirm(`Ping all unpinged blogs for ${scope}?\n\nThis will:\n- Mark them as published\n- Add them to the sitemap\n- Notify Google, Bing, and Yandex\n\nThis cannot be undone.`)) {
+        return;
+    }
+
+    const btn = this;
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Pinging...';
+
+    try {
+        const res = await fetch('/admin/blogs/bulk-ping', {
+            method: 'POST',
+            headers: {
+                'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify({ country: country || null }),
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('success', data.message, 'Ping Complete');
+            }
+            loadBlogs();
+            loadUnpingedCount();
+        } else {
+            if (typeof window.showToast === 'function') {
+                window.showToast('error', data.message || 'Bulk ping failed.', 'Error');
+            }
+        }
+    } catch (err) {
+        console.error('Bulk ping error:', err);
+        if (typeof window.showToast === 'function') {
+            window.showToast('error', 'Network error. Please try again.', 'Error');
+        }
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = original;
+    }
+});
+
 </script>
 @endpush

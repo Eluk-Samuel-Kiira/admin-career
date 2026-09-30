@@ -10,6 +10,7 @@ use App\Models\Job\Company;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
+use Laravel\Sanctum\PersonalAccessToken;
 
 class JobController extends Controller
 {
@@ -428,6 +429,13 @@ class JobController extends Controller
                     || trim(strip_tags($job->qualifications ?? '')) !== ''
                     || trim($job->skills ?? '') !== ''
                 ),
+                'package_key'   => $job->package_key,
+                'has_ats'       => (bool) ($job->has_ats ?? false),
+                'easy_apply'    => (bool) ($job->has_ats ?? false)
+                                    && strtolower((string) $job->package_key) === 'job_post_enterprise',
+
+                'is_applied' => $this->resolveIsApplied($job),
+                'is_saved'   => $this->resolveIsSaved($job),
             ];
 
             $baseData['formatted_salary'] = $this->formatSalary($job);
@@ -517,6 +525,42 @@ class JobController extends Controller
                 'formatted_salary' => 'Negotiable',
             ];
         }
+    }
+
+    private function currentUser()
+    {
+        $user = request()->user();
+        if ($user) return $user;
+
+        $bearer = request()->bearerToken();
+        if (!$bearer) return null;
+
+        $token = PersonalAccessToken::findToken($bearer);
+        return $token?->tokenable;
+    }
+
+    private function resolveIsApplied($job): bool
+    {
+        $user = $this->currentUser();
+        if (!$user || !$user->seekerProfile) return false;
+
+        return \App\Models\Job\JobSeekerJob::where([
+            'seeker_profile_id' => $user->seekerProfile->id,
+            'job_post_id'       => $job->id,
+            'is_applied'        => true,
+        ])->exists();
+    }
+
+    private function resolveIsSaved($job): bool
+    {
+        $user = $this->currentUser();
+        if (!$user || !$user->seekerProfile) return false;
+
+        return \App\Models\Job\JobSeekerJob::where([
+            'seeker_profile_id' => $user->seekerProfile->id,
+            'job_post_id'       => $job->id,
+            'is_saved'          => true,
+        ])->exists();
     }
 
     /**

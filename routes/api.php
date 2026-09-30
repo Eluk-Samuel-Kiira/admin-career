@@ -225,6 +225,7 @@ Route::middleware(['verifycountry'])->group(function () {
         Route::delete('/{uuid}',     [\App\Http\Controllers\Api\Service\LetterController::class, 'destroy']);
     });
 
+    Route::get('/services/pricing', [\App\Http\Controllers\Api\Service\PricingController::class, 'index']);
 
 });
 

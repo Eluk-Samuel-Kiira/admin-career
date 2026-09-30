@@ -9,7 +9,9 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\{ Auth, DB, Storage, Validator };
 use Illuminate\Support\Str;
-use Illuminate\Validation\ValidationException; // <-- was missing, caused fatal errors on validation failure
+use Illuminate\Validation\ValidationException; 
+use App\Services\Indexing\SitemapService;
+
 
 class BlogController extends Controller
 {
@@ -564,4 +566,84 @@ class BlogController extends Controller
 
         return $text;
     }
+
+
+    /**
+     * How many blogs are pending a ping, optionally scoped to a country.
+     * Used to badge the Bulk Ping button.
+     */
+    public function getUnpingedCount(Request $request)
+    {
+        if (!auth()->user()->can('edit blogs')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        $country = $request->get('country');
+
+        $query = Blog::where('is_active', true)
+            ->where(function ($q) {
+                $q->whereNull('is_pinged')->orWhere('is_pinged', false);
+            });
+
+        if (!empty($country)) {
+            $query->where('country_code', $country);
+        }
+
+        return response()->json([
+            'success' => true,
+            'count'   => $query->count(),
+        ]);
+    }
+
+    /**
+     * Bulk-ping all unpinged blogs and publish them.
+     *
+     * Body (optional):
+     *   - country: 2-letter code to scope the ping. Omit to ping all countries.
+     */
+    public function bulkPing(Request $request, SitemapService $sitemap)
+    {
+        if (!auth()->user()->can('edit blogs')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to ping blogs.'], 403);
+        }
+
+        $country = $request->input('country');
+        if ($country && strlen($country) !== 2) {
+            return response()->json(['success' => false, 'message' => 'Invalid country code.'], 422);
+        }
+
+        try {
+            $summary = $sitemap->pingBlogs($country ? strtoupper($country) : null);
+
+            // Reduce the summary to a single number for the toast
+            $totalBlogs = 0;
+            $countries = 0;
+            foreach ($summary as $code => $result) {
+                $totalBlogs += (int) ($result['blogs_updated'] ?? 0);
+                if (($result['status'] ?? '') !== 'skipped') {
+                    $countries++;
+                }
+            }
+
+            $message = $totalBlogs > 0
+                ? "Pinged {$totalBlogs} blog post(s) across {$countries} country(s). Sitemap regenerated and search engines notified."
+                : "No unpinged blogs found. Nothing to do.";
+
+            return response()->json([
+                'success' => true,
+                'message' => $message,
+                'summary' => $summary,
+                'total'   => $totalBlogs,
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Blog bulk ping failed: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Bulk ping failed: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+
 }
