@@ -651,23 +651,44 @@ window.revokePermission = function(permission) {
 
 document.getElementById('addUserForm')?.addEventListener('submit', function(e) {
     e.preventDefault();
+    console.log('Form submitted');
+    
     const btn = document.getElementById('addUserBtn');
-    window.showButtonSpinner(btn);
+    const formData = new FormData(this);
+    
+    // Log form data
+    for (let [key, value] of formData.entries()) {
+        console.log(key, value);
+    }
     
     fetch('{{ route("users.store") }}', {
         method: 'POST',
-        headers: { 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
-        body: new FormData(this)
-    }).then(res => res.json()).then(data => {
+        headers: { 
+            'X-CSRF-TOKEN': '{{ csrf_token() }}',
+            'Accept': 'application/json'
+        },
+        body: formData
+    })
+    .then(res => {
+        console.log('Response status:', res.status);
+        return res.json();
+    })
+    .then(data => {
+        console.log('Response data:', data);
         if (data.success) {
             window.showToast('success', data.message);
             bootstrap.Modal.getInstance(document.getElementById('kt_modal_add_user'))?.hide();
-            this.reset();
+            document.getElementById('addUserForm').reset();
             loadUsers();
         } else {
-            window.showToast('error', data.message);
+            window.showToast('error', data.message || 'Unknown error');
         }
-    }).catch(err => window.showToast('error', 'Failed to create user')).finally(() => window.hideButtonSpinner(btn));
+    })
+    .catch(err => {
+        console.error('Fetch error:', err);
+        window.showToast('error', 'Failed to create user: ' + err.message);
+    })
+    .finally(() => window.hideButtonSpinner(btn));
 });
 
 document.getElementById('editUserForm')?.addEventListener('submit', function(e) {
