@@ -723,10 +723,11 @@ class AiService
                 written by an experienced HR copywriter, not a template.
                 - Naturally weave in the job title and relevant industry, skill, and location keywords so the
                 content is well-optimized for search engines, without keyword-stuffing or awkward repetition.
-                - If the final job_description (verbatim, generated, or a mix) would end up under roughly 15 words,
-                treat that as too thin for SEO: expand it with additional relevant, natural, role-appropriate detail
-                so the description is substantive (several sentences across a few short paragraphs), even if that
-                means supplementing sparse source content with reasonable extra detail about the role.
+                - If the final job_description (verbatim, generated, or a mix) would end up under roughly 120 words, 
+                    treat that as too thin for SEO: expand it with additional relevant, natural, role-appropriate 
+                    detail — concrete responsibilities, the working environment, and what success in the role looks like. 
+                    Vary sentence length and avoid repeating the same opener. Do not pad with filler or restate the same point in 
+                    different words.
 
                 SKILLS FORMAT:
                 - Skills should be a comma-separated list, e.g. "Communication, Teamwork, Problem Solving, Time Management"
@@ -819,7 +820,7 @@ class AiService
             . "If an application URL is visible, put it in application_link (do not embed the raw link in "
             . "application_procedure). Any content you write rather than copy from the image must read as "
             . "natural, human-written, SEO-friendly copy (not generic or repetitive AI phrasing), and if the "
-            . "resulting job_description would be under roughly 15 words, expand it with reasonable "
+            . "resulting job_description would be under roughly 120 words, expand it with reasonable "
             . "role-appropriate detail so it's substantive enough for search engines. "
             . "Return ONLY a single valid JSON object with the same fields as a standard job extraction "
             . "(job_title, company_name, job_description, responsibilities, qualifications, skills, "
@@ -859,8 +860,9 @@ class AiService
 
             Write natural, human-sounding, SEO-optimized copy - vary sentence structure and wording, avoid
             generic or repetitive AI-sounding phrasing, and naturally include the job title and relevant
-            industry/skill/location keywords. The job_description must be substantive (well over 15 words,
-            several sentences across a few short paragraphs) - never generate a thin one-liner.
+            industry/skill/location keywords. The job_description must be substantive — roughly 120-180 words across 3-4 short paragraphs. 
+            Each paragraph should cover a distinct angle (the role's purpose, day-to-day scope, the team/environment, 
+            and what the employer is looking for). Do not repeat the same idea in different words to hit the length.
 
             Return ONLY a valid JSON object - no explanation, no markdown, no code blocks. Do not use any HTML
             attributes (no style="...") on any tag - plain <p>/<ul>/<li> only, so nothing can break the JSON. Do not
@@ -887,12 +889,21 @@ class AiService
 
     protected function buildEnhancePrompt(string $fieldName, string $content, string $instruction): string
     {
+        $fieldLabel = ucwords(str_replace('_', ' ', $fieldName));
+
         return <<<PROMPT
         You are an expert HR copywriter. Your task: {$instruction}
 
+        FIELD BEING IMPROVED: {$fieldLabel}
+
         RULES:
         - Preserve the original meaning and any facts present; improve clarity and professionalism only.
-        - Write natural, human-sounding copy - avoid generic or repetitive AI-sounding phrasing.
+        - Write natural, human-sounding copy. Avoid: repeated sentence openers, the phrases
+        "In today's fast-paced world", "We are looking for a dynamic individual",
+        "This is an exciting opportunity", "leverage", "synergy", and any phrasing that
+        reads as machine-generated. Prefer concrete verbs and specific detail over adjectives.
+        - Match the register to the field: descriptions and procedures should read as flowing
+        paragraphs; responsibilities and qualifications should read as crisp, scannable lists.
         - Return ONLY the improved content as clean HTML using <p> and <ul><li> - no attributes on any tag.
         - Do NOT include explanations, markdown fences, or code blocks.
         - Do NOT wrap the response in JSON - return plain HTML text only.
@@ -1002,7 +1013,8 @@ class AiService
     {
         $wordCount = str_word_count(strip_tags($description));
 
-        if ($wordCount >= 15) {
+        // 🔽 Raised from 15 → 120 (SEO-safe minimum without forcing bloat)
+        if ($wordCount >= 120) {
             return $description;
         }
 
@@ -1015,24 +1027,49 @@ class AiService
 
     protected function generateFallbackDescription(string $title, ?string $company, ?string $location): string
     {
-        $companyText = $company ? " at {$company}" : '';
+        $companyText  = $company  ? " at {$company}"  : '';
         $locationText = $location ? " based in {$location}" : '';
-        return "<p>We are recruiting a <strong>{$title}</strong>{$companyText}{$locationText}.</p>
-            <p>This is an exciting opportunity for a qualified professional to join our team and make a significant impact.</p>
-            <p>If you have the right qualifications and experience, we encourage you to apply for this position.</p>";
-                }
 
-                protected function generateFallbackResponsibilities(string $title, ?string $company): string
-                {
-                    $companyText = $company ? " at {$company}" : '';
-                    return "<ul>
-            <li>Perform all duties related to the <strong>{$title}</strong> role{$companyText}.</li>
-            <li>Collaborate with team members to achieve organizational goals.</li>
+        // Rotate openers so repeated generations don't look templated
+        $openers = [
+            "<p>We are currently recruiting a <strong>{$title}</strong>{$companyText}{$locationText} to join our growing team.</p>",
+            "<p>An opportunity has arisen for a <strong>{$title}</strong>{$companyText}{$locationText}.</p>",
+            "<p>Our organisation is seeking a suitably qualified <strong>{$title}</strong>{$companyText}{$locationText}.</p>",
+        ];
+
+        $bodies = [
+            "The successful candidate will take ownership of day-to-day responsibilities, work closely with colleagues across departments, and contribute to the continued success of the organisation. This role suits someone who is reliable, detail-oriented, and comfortable working both independently and as part of a team.",
+            "Working within a supportive team, the post-holder will be expected to plan and prioritise their own workload, communicate clearly with stakeholders, and maintain high standards in every task. Previous experience in a comparable position is highly desirable.",
+            "This position offers the right candidate a chance to develop their career in a professional environment, with opportunities to build on existing skills and take on new challenges as the role evolves.",
+        ];
+
+        $closers = [
+            "<p>If you meet the requirements and are looking for a rewarding new role, we would like to hear from you.</p>",
+            "<p>Applications are welcome from candidates who can demonstrate the skills and experience outlined below.</p>",
+            "<p>To be considered, please submit your application before the closing date.</p>",
+        ];
+
+        // Deterministic-but-varied pick based on the title, so the same job always
+        // gets the same text (idempotent re-runs), but different jobs differ.
+        $seed = crc32($title);
+
+        return $openers[$seed % count($openers)]
+            . '<p>' . $bodies[$seed % count($bodies)] . '</p>'
+            . $closers[$seed % count($closers)];
+    }
+
+    protected function generateFallbackResponsibilities(string $title, ?string $company): string
+    {
+        $companyText = $company ? " at {$company}" : '';
+
+        return "<ul>
+            <li>Carry out all duties related to the <strong>{$title}</strong> role{$companyText}.</li>
+            <li>Collaborate with team members to achieve organisational goals.</li>
             <li>Ensure timely delivery of assigned tasks and projects.</li>
             <li>Maintain high standards of quality and professionalism.</li>
             <li>Communicate effectively with stakeholders and team members.</li>
             <li>Contribute to the continuous improvement of processes.</li>
-            </ul>";
+        </ul>";
     }
 
     protected function generateFallbackQualifications(string $title): string

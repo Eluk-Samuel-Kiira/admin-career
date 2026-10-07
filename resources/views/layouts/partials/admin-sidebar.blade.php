@@ -117,7 +117,8 @@
 
                     {{-- Jobs Index --}}
                     @can('view jobs')
-                    <div data-kt-menu-trigger="click" class="menu-item menu-accordion {{ request()->routeIs('admin.companies*', 'admin.job-locations*', 'admin.job-posts*', 'admin.job-applications*', 'admin.sitemap*') ? 'show here' : '' }}">
+                    <div data-kt-menu-trigger="click" class="menu-item menu-accordion {{ request()->routeIs('admin.companies*', 'admin.job-locations*', 'admin.job-posts*', 'admin.job-applications*',
+                         'admin.sitemap*', 'admin.job-sharing*') ? 'show here' : '' }}">
                         <span class="menu-link">
                             <span class="menu-icon">
                                 <i class="ki-duotone ki-briefcase fs-2">
@@ -175,6 +176,17 @@
                                 <a class="menu-link {{ request()->routeIs('admin.social-media*') ? 'active' : '' }}" href="{{ route('admin.social-media') }}">
                                     <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
                                     <span class="menu-title">Social Media</span>
+                                </a>
+                            </div>
+                            @endcan
+
+                            {{-- Job Sharing --}}
+                            @can('view jobs')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.job-sharing*') ? 'active' : '' }}"
+                                href="{{ route('admin.job-sharing.index') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">Job Sharing</span>
                                 </a>
                             </div>
                             @endcan

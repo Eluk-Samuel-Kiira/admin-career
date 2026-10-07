@@ -7,7 +7,7 @@
   </url>
   <url>
     <loc>http://127.0.0.1:8001/blog/ai-in-recruitment-how-machine-learning-is-transforming-hiring-in-uganda-ug</loc>
-    <lastmod>2026-09-30T20:58:19+00:00</lastmod>
+    <lastmod>2026-09-30T21:02:31+00:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.7</priority>
   </url>
@@ -67,13 +67,19 @@
   </url>
   <url>
     <loc>http://127.0.0.1:8001/blog/the-ultimate-guide-to-salary-negotiation-for-professionals-in-uganda-ug</loc>
-    <lastmod>2026-09-30T20:58:22+00:00</lastmod>
+    <lastmod>2026-10-06T22:49:08+00:00</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>http://127.0.0.1:8001/companies</loc>
     <changefreq>daily</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>http://127.0.0.1:8001/job/administrator-backoffice-call-centre-job-at-airtel-uganda-in-kampala-ug</loc>
+    <lastmod>2026-10-07T22:11:05+00:00</lastmod>
+    <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
