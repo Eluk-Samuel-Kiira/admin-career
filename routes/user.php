@@ -57,6 +57,12 @@ Route::middleware('auth')->prefix('admin')->group(function () {
     Route::patch('/users/{id}/toggle-status', [UserController::class, 'toggleUserStatus'])->name('users.toggle-status');
 });
 
+Route::prefix('admin')->middleware(['auth'])->group(function () {
+    // Job Sharing
+    Route::get('/job-sharing',           [\App\Http\Controllers\Job\JobSharingController::class, 'index'])->name('admin.job-sharing.index');
+    Route::get('/job-sharing/data',      [\App\Http\Controllers\Job\JobSharingController::class, 'data'])->name('admin.job-sharing.data');
+    Route::get('/job-sharing/batch/{n}', [\App\Http\Controllers\Job\JobSharingController::class, 'batch'])->name('admin.job-sharing.batch');
+});
 
 use App\Http\Controllers\JobSeeker\SeekerController;
 
