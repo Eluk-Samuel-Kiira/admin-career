@@ -135,7 +135,9 @@ class GoogleIndexingService
                 default => "HTTP {$status}: " . ($body['error']['message'] ?? 'Unknown'),
             };
 
-            // Log::info("GOOGLE INDEXING: HTTP {$status} — {$url}");
+            if (!$success) {
+                Log::warning("GOOGLE INDEXING: HTTP {$status} for {$url}", ['body' => $body]);
+            }
 
             return [
                 'success' => $success,

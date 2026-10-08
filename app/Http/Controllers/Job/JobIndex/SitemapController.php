@@ -267,6 +267,14 @@ class SitemapController extends Controller
 
     private function buildIndexingMessage(array $result): string
     {
+        if (!empty($result['failed'])) {
+            $msg .= ", {$result['failed']} failed";
+            $firstFail = collect($result['results'])->firstWhere('success', false);
+            if ($firstFail) {
+                $msg .= " (e.g. {$firstFail['status']}: {$firstFail['message']} — {$firstFail['url']})";
+            }
+        }
+
         if (isset($result['message']) && ($result['submitted'] ?? 0) === 0 && empty($result['results'])) {
             return $result['message']; // quota exhausted / not configured
         }
