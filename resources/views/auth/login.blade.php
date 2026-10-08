@@ -60,7 +60,7 @@
             </button>
         </div>
 
-        {{-- Test Login Button --}}
+        {{-- Test Login Button
         <div class="d-grid mb-5">
             <button type="button" class="btn btn-light-warning" id="testLoginBtn">
                 <i class="ki-duotone ki-magic-star fs-2 me-2">
@@ -70,6 +70,7 @@
                 Test Login (Demo)
             </button>
         </div>
+        --}}
 
         {{--
         @if (Route::has('register'))
