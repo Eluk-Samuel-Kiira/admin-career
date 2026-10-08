@@ -54,7 +54,8 @@ function makeDropHandle(prefix) {
     };
 }
 
-['f_company', 'f_category', 'f_industry', 'f_location', 'f_jobtype', 'f_experience', 'f_education', 'f_salaryrange']
+['f_company', 'f_category', 'f_industry', 'f_location', 'f_jobtype', 'f_experience', 'f_education', 'f_salaryrange',
+ 'qac_industry', 'qac_location']
     .forEach(prefix => { drops[prefix] = makeDropHandle(prefix); });
 
 

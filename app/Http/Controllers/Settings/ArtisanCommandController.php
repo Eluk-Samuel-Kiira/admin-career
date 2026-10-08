@@ -28,7 +28,7 @@ class ArtisanCommandController extends Controller
         'sitemap:generate'     => 'Generate sitemap',
         'permissions:sync'     => 'Add new permissions',
         // 'import:job-categories --force'     => 'Import Job Categories For all countries',
-        // 'import:job-locations --force'     => 'Import locations',
+        'import:job-locations --force'     => 'Import locations',   
         // 'import:salary-ranges --force'     => 'Import salary range',
         'db:seed --class=BlogSeeder'     => 'Blog articles',
         // 'migrate:fresh --seed' => '⚠️ DANGER: Migrate and Seed fresh (force required)',
