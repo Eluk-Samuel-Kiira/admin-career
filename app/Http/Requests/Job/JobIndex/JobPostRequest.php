@@ -41,7 +41,7 @@ class JobPostRequest extends FormRequest
             'skills'                => 'nullable|string',
             'qualifications'        => 'nullable|string',
             'deadline'              => "{$required}|date",
-            'application_procedure' => 'nullable|string|max:600',
+            'application_procedure' => 'nullable|string|max:1000',
             'email'                 => 'nullable|string|max:255',
             'telephone'             => 'nullable|string|max:255',
 

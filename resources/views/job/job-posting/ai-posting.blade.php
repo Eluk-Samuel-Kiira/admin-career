@@ -423,11 +423,24 @@
                         </div>
                         <div class="col-md-6">
                             <label class="form-label fw-semibold required">Company</label>
-                            <div class="searchable-select">
-                                <input type="text" class="form-control form-control-solid searchable-select-input"
-                                    id="f_company_search" placeholder="Type to search company..." autocomplete="off">
-                                <input type="hidden" name="company_id" id="f_company_id" value="">
-                                <div class="searchable-select-dropdown" id="f_company_dropdown"></div>
+                            <div class="input-group">
+                                <div class="searchable-select flex-grow-1">
+                                    <input type="text" class="form-control form-control-solid searchable-select-input"
+                                        id="f_company_search" placeholder="Type to search company..." autocomplete="off">
+                                    <input type="hidden" name="company_id" id="f_company_id" value="">
+                                    <div class="searchable-select-dropdown" id="f_company_dropdown"></div>
+                                </div>
+                                <button type="button" class="btn btn-icon btn-light-primary"
+                                        id="btnQuickAddCompany"
+                                        title="Company not in the list? Add it"
+                                        onclick="openQuickAddCompanyModal()">
+                                    <i class="ki-duotone ki-plus fs-2">
+                                        <span class="path1"></span><span class="path2"></span>
+                                    </i>
+                                </button>
+                            </div>
+                            <div class="text-muted fs-8 mt-1">
+                                Can't find the company? Click <strong>+</strong> to add it without leaving this page.
                             </div>
                         </div>
                         <div class="col-md-6">
@@ -960,4 +973,5 @@
 @include('job.job-posting.ai-posting-scripts')
 @include('job.job-posting.ai-extraction')
 @include('job.job-posting.ai-validator')
+@include('job.job-posting.company-modal')
 @endpush
