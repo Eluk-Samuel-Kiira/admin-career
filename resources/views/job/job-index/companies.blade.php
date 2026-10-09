@@ -451,7 +451,7 @@
                                 <i class="ki-duotone ki-cross fs-2"></i> Remove
                             </button>
                         </div>
-                        <input type="file" class="form-control form-control-solid" name="logo" id="edit_logo_input" accept="image/*" required/>
+                        <input type="file" class="form-control form-control-solid" name="logo" id="edit_logo_input" accept="image/*"/>
                         <div class="text-muted fs-7 mt-1">Upload new logo to replace existing (JPEG, PNG, JPG, GIF, SVG, WEBP - Max 2MB)</div>
                     </div>
                     
