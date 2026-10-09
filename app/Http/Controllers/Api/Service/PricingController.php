@@ -13,10 +13,10 @@ class PricingController extends Controller
     /**
      * GET /api/services/pricing
      *
-     * Returns all active services with their effective price for the
-     * current country (falling back to GLOBAL/XX where no country price exists).
+     * Returns all active services that have an effective price for the
+     * current country (falling back to GLOBAL where no country price exists).
      *
-     * Only the fields needed by the public pricing page are returned.
+     * Services without any active price are skipped entirely.
      */
     public function index(Request $request): JsonResponse
     {
@@ -26,37 +26,43 @@ class PricingController extends Controller
             ->ordered()
             ->get();
 
-        $data = $services->map(function (Service $service) use ($countryCode) {
-            $price = ServicePrice::resolve($service->key, $countryCode);
+        $data = $services
+            ->map(function (Service $service) use ($countryCode) {
+                $price = ServicePrice::resolve($service->key, $countryCode);
 
-            return [
-                'key'               => $service->key,
-                'name'              => $service->name,
-                'description'       => $service->description,
-                'billing_type'      => $service->billing_type,
-                'billing_label'     => $service->billing_type_label,
-                'turnaround_label'  => $service->turnaround_label,
-                'family'            => $service->meta['family']        ?? 'other',
-                'tagline'           => $service->meta['tagline']       ?? null,
-                'badge'             => $service->meta['badge']         ?? null,
-                'icon'              => $service->meta['icon']          ?? null,
+                // Skip services that have no active price at all
+                if (!$price) {
+                    return null;
+                }
 
-                // Price info (may be null for a service with no active price)
-                'price'             => $price ? [
-                    'amount_cents'  => $price->amount_cents,
-                    'amount'        => $price->amount,              // float
-                    'formatted'     => $price->formatted_amount,    // e.g. "USh 95,000"
-                    'currency'      => $price->currency?->code,
-                    'currency_sym'  => $price->currency?->symbol,
-                    'interval'      => $price->interval,
-                    'country_code'  => $price->country_code,
-                    'is_global'     => $price->country_code === ServicePrice::GLOBAL_CODE,
-                ] : null,
+                return [
+                    'key'              => $service->key,
+                    'name'             => $service->name,
+                    'description'      => $service->description,
+                    'billing_type'     => $service->billing_type,
+                    'billing_label'    => $service->billing_type_label,
+                    'turnaround_label' => $service->turnaround_label,
+                    'family'           => $service->meta['family']  ?? 'other',
+                    'tagline'          => $service->meta['tagline'] ?? null,
+                    'badge'            => $service->meta['badge']   ?? null,
+                    'icon'             => $service->meta['icon']    ?? null,
 
-                // Everything else the pricing page might want, grouped under "features"
-                'features'          => $this->extractFeatures($service),
-            ];
-        });
+                    'price' => [
+                        'amount_cents' => $price->amount_cents,
+                        'amount'       => $price->amount,
+                        'formatted'    => $price->formatted_amount,
+                        'currency'     => $price->currency?->code,
+                        'currency_sym' => $price->currency?->symbol,
+                        'interval'     => $price->interval,
+                        'country_code' => $price->country_code,
+                        'is_global'    => $price->country_code === ServicePrice::GLOBAL_CODE,
+                    ],
+
+                    'features' => $this->extractFeatures($service),
+                ];
+            })
+            ->filter()          // drop the nulls
+            ->values();         // re-index so JSON is a clean array, not an object
 
         return response()->json([
             'success'      => true,
@@ -144,10 +150,6 @@ class PricingController extends Controller
                 }
             }
             return $features;
-        }
-
-        if ($family === 'free_service') {
-            return ['Free forever'];
         }
 
         return [];
