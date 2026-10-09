@@ -28,9 +28,12 @@ class ArtisanCommandController extends Controller
         'sitemap:generate'     => 'Generate sitemap',
         'permissions:sync'     => 'Add new permissions',
         // 'import:job-categories --force'     => 'Import Job Categories For all countries',
-        'import:job-locations --force'     => 'Import locations',   
+        // 'import:job-locations --force'     => 'Import locations',   
         // 'import:salary-ranges --force'     => 'Import salary range',
-        'db:seed --class=BlogSeeder'     => 'Blog articles',
+        'db:seed --class=PageSeeder'     => 'page Seeders',
+        'db:seed --class=ServiceSeeder'     => 'Service Seeders',
+        'db:seed --class=ServicePriceSeeder'     => 'ServicePrice',
+        'db:seed --class=SocialMediaPlatformSeeder'     => 'Social Media Seeders',
         // 'migrate:fresh --seed' => '⚠️ DANGER: Migrate and Seed fresh (force required)',
     ];
 
