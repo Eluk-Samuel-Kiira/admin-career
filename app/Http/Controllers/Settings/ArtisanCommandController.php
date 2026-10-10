@@ -21,6 +21,7 @@ class ArtisanCommandController extends Controller
         'view:clear'           => 'Clear compiled views',
         'optimize:clear'       => 'Clear all cached data',
         'optimize'             => 'Cache config, routes & views',
+        'queue:work --queue=default,ai-screening' => 'Triger Queuing Jobs for bulk processing',
         'queue:restart'        => 'Restart queue workers',
         'migrate'              => 'Run database migrations (forced in production)',
         'migrate:status'       => 'Show migration status',

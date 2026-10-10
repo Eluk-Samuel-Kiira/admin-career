@@ -1868,4 +1868,120 @@ class AiService
         return trim($clean);
     }
 
+
+    /**
+     * Screen a single uploaded CV against a job description.
+     *
+     * Returns the match score, verdict, reasons, and extracted candidate
+     * identity fields so the shortlist table can show real names.
+     */
+    public function screenUploadedCv(string $cvText, array $jobContext): array
+    {
+        $prompt = $this->buildUploadedScreeningPrompt($cvText, $jobContext);
+
+        foreach ($this->getOrderedCvModels() as $model) {
+            $apiKey = $this->getApiKeyFor($model);
+
+            if (!$this->isModelUsable($model, $apiKey)) continue;
+
+            try {
+                $raw  = $this->callAiApi($model, $apiKey, $prompt);
+                $data = $this->parseJsonResponse(is_array($raw) ? json_encode($raw) : $raw);
+
+                if (is_array($data) && isset($data['score'])) {
+                    return [
+                        'score'               => max(0, min(100, (int) $data['score'])),
+                        'recommendation'      => in_array($data['recommendation'] ?? '', ['strong_yes', 'maybe', 'no'], true)
+                                                    ? $data['recommendation']
+                                                    : 'maybe',
+                        'summary'             => (string) ($data['summary'] ?? ''),
+                        'strengths'           => (array) ($data['strengths'] ?? []),
+                        'gaps'                => (array) ($data['gaps'] ?? []),
+                        'red_flags'           => (array) ($data['red_flags'] ?? []),
+                        'matched_skills'      => (array) ($data['matched_skills'] ?? []),
+                        'missing_skills'      => (array) ($data['missing_skills'] ?? []),
+                        'candidate_name'      => $data['candidate_name']      ?? null,
+                        'candidate_email'     => $data['candidate_email']     ?? null,
+                        'candidate_phone'     => $data['candidate_phone']     ?? null,
+                        'current_title'       => $data['current_title']       ?? null,
+                        'years_of_experience' => isset($data['years_of_experience'])
+                                                    ? (int) $data['years_of_experience']
+                                                    : null,
+                        'highest_education'   => $data['highest_education']   ?? null,
+                    ];
+                }
+            } catch (\Throwable $e) {
+                Log::warning("Uploaded CV screening failed on {$model}: " . $e->getMessage());
+            }
+        }
+
+        throw new \Exception('AI screening failed on all configured models.');
+    }
+
+    protected function buildUploadedScreeningPrompt(string $cvText, array $jobContext): string
+    {
+        $title = $jobContext['job_title'] ?? 'this role';
+        $jd    = strip_tags($jobContext['job_description'] ?? '');
+
+        return <<<PROMPT
+            You are an experienced HR screener evaluating one CV against a job.
+
+            JOB TITLE: {$title}
+
+            JOB DESCRIPTION:
+            {$jd}
+
+            CANDIDATE CV:
+            ---
+            {$cvText}
+            ---
+
+            TASK:
+            1. Extract the candidate's identity from the CV.
+            2. Score how well the CV matches the job (0-100).
+            3. Explain the score with concrete strengths, gaps, red flags,
+            and a skill-by-skill comparison.
+
+            SCORING:
+            - 85-100  Excellent match. Meets all core requirements with strong evidence.
+            - 70-84   Good match. Meets most requirements with minor gaps.
+            - 55-69   Reasonable match. Meets some requirements, notable gaps.
+            - 40-54   Weak match. Meets a few requirements, significant gaps.
+            - 0-39    Poor match. Does not meet core requirements.
+
+            RULES:
+            - Score only on skills, experience, education, and qualifications.
+            - Do NOT score on name, gender, nationality, age, or other protected traits.
+            - If the CV is sparse, mark it weak but do not invent facts.
+            - Red flags are only serious concerns: wrong domain entirely, missing a required license, or a glaring inconsistency.
+
+            Return ONLY this JSON object (no markdown, no commentary):
+
+            {
+            "candidate_name": "Full name as written on the CV, or null",
+            "candidate_email": "Email from the CV, or null",
+            "candidate_phone": "Phone from the CV, or null",
+            "current_title": "Their most recent job title, or null",
+            "years_of_experience": <integer or null>,
+            "highest_education": "e.g. Bachelor's, Diploma, MSCE, or null",
+            "score": <0-100>,
+            "recommendation": "strong_yes" | "maybe" | "no",
+            "summary": "2-3 sentence verdict explaining the score",
+            "strengths": ["specific strength from the CV", "..."],
+            "gaps": ["specific missing skill or qualification", "..."],
+            "red_flags": ["serious concern if any"],
+            "matched_skills": ["skill required by the job and present in the CV"],
+            "missing_skills": ["skill required by the job and missing from the CV"]
+            }
+
+            Recommendation rule:
+            - "strong_yes" -> score >= 80
+            - "maybe"      -> score 50-79
+            - "no"         -> score < 50
+
+            Keep strengths, gaps, and red_flags to 3-5 items each. Be specific — quote the CV where useful.
+            PROMPT;
+    }
+
+
 }

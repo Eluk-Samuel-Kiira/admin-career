@@ -12,7 +12,7 @@ use App\Http\Controllers\Api\Auth\{ LoginTokenController, ProfileController, CvC
 use App\Http\Controllers\Api\Service\{ CvReviewRequestController };
 
 
-use App\Http\Controllers\Api\Employer\{ AnalyticsController, ComplianceController, JobSubmissionController, AtsController, DashboardController };
+use App\Http\Controllers\Api\Employer\{ HiringRunController, AnalyticsController, ComplianceController, JobSubmissionController, AtsController, DashboardController };
 
 // ✅ TEST ROUTE
 Route::get('/ping', function () {
@@ -226,6 +226,16 @@ Route::middleware(['verifycountry'])->group(function () {
     });
 
     Route::get('/services/pricing', [\App\Http\Controllers\Api\Service\PricingController::class, 'index']);
+
+    Route::middleware(['auth:sanctum'])->prefix('employer/hiring')->group(function () {
+        Route::get('/my-job-posts',   [HiringRunController::class, 'myJobPosts']);
+        Route::get('/',                    [HiringRunController::class, 'index']);
+        Route::post('/',                   [HiringRunController::class, 'store']);
+        Route::get('/{uuid}/status',       [HiringRunController::class, 'status']);
+        Route::get('/{uuid}/results',      [HiringRunController::class, 'results']);
+        Route::get('/{uuid}/export',       [HiringRunController::class, 'export']);
+        Route::delete('/{uuid}',           [HiringRunController::class, 'destroy']);
+    });
 
 });
 
