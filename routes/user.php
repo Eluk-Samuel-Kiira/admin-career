@@ -195,3 +195,16 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     ->name('job-submissions.mark-published');
     Route::post('/job-submissions/{uuid}/reject',    [JobSubmissionController::class, 'reject'])->name('job-submissions.reject');
 });
+
+
+use App\Http\Controllers\Employer\HiringRunsAdminController;
+
+Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () {
+
+    Route::get('/hiring-runs',               [HiringRunsAdminController::class, 'index'])->name('hiring-runs.index');
+    Route::get('/hiring-runs/data',          [HiringRunsAdminController::class, 'data'])->name('hiring-runs.data');
+    Route::get('/hiring-runs/stats',         [HiringRunsAdminController::class, 'stats'])->name('hiring-runs.stats');
+    Route::get('/hiring-runs/{uuid}',        [HiringRunsAdminController::class, 'show'])->name('hiring-runs.show');
+    Route::get('/hiring-runs/{uuid}/detail', [HiringRunsAdminController::class, 'detail'])->name('hiring-runs.detail');
+    Route::get('/hiring-runs/{uuid}/export', [HiringRunsAdminController::class, 'export'])->name('hiring-runs.export');
+});

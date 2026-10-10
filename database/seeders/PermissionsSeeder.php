@@ -146,6 +146,10 @@ class PermissionsSeeder extends Seeder
             
             'view job submissions',
             'edit job submissions',
+            'view employer',
+            'create employer',
+            'edit employer',
+            'delete employer',
             
             'view employer compliance',
             'edit employer compliance',

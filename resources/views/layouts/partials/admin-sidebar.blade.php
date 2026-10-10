@@ -310,7 +310,7 @@
                     </div>
 
                     {{-- Employers (Compliance + Subscriptions + Job Submissions) --}}
-                    @canany(['view employer compliance', 'view subscriptions', 'view job submissions'])
+                    @canany(['view employer compliance', 'view job submissions', 'view employer'])
                     @php
                         // Live counts (cheap single-column counts, indexed)
                         $pendingComplianceCount = \App\Models\EmployerProfile::where('compliance_status', 'submitted')->count();
@@ -319,7 +319,7 @@
                     @endphp
 
                     <div data-kt-menu-trigger="click"
-                        class="menu-item menu-accordion {{ request()->routeIs('admin.compliance.*', 'admin.subscriptions.*', 'admin.job-submissions.*') ? 'show here' : '' }}">
+                        class="menu-item menu-accordion {{ request()->routeIs('admin.compliance.*', 'admin.subscriptions.*', 'admin.job-submissions.*', 'admin.hiring-runs.*') ? 'show here' : '' }}">
 
                         <span class="menu-link">
                             <span class="menu-icon">
@@ -366,8 +366,20 @@
                             </div>
                             @endcan
 
-                            {{-- 3. Subscriptions --}}
-                            @can('view subscriptions')
+                            {{-- 3. CV Shortlisting Runs --}}
+                            @can('view employer')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.hiring-runs.*') ? 'active' : '' }}"
+                                href="{{ route('admin.hiring-runs.index') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">CV Shortlisting Runs</span>
+                                </a>
+                            </div>
+                            @endcan
+
+                            {{-- 4. Subscriptions --}}
+                            {{--
+                            @can('view employer')
                             <div class="menu-item">
                                 <a class="menu-link {{ request()->routeIs('admin.subscriptions.*') ? 'active' : '' }}"
                                 href="{{ route('admin.subscriptions.index') }}">
@@ -376,6 +388,7 @@
                                 </a>
                             </div>
                             @endcan
+                            --}}
 
                             {{-- Future: Employer Earnings, Reports, etc. --}}
                             {{--
