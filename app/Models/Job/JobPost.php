@@ -219,6 +219,7 @@ class JobPost extends Model
         return $this->belongsTo(EducationLevel::class);
     }
 
+
     public function salaryRange()
     {
         return $this->belongsTo(SalaryRange::class);

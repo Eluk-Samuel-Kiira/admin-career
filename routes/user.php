@@ -208,3 +208,16 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     Route::get('/hiring-runs/{uuid}/detail', [HiringRunsAdminController::class, 'detail'])->name('hiring-runs.detail');
     Route::get('/hiring-runs/{uuid}/export', [HiringRunsAdminController::class, 'export'])->name('hiring-runs.export');
 });
+
+
+use App\Http\Controllers\Admin\AlertDispatchController;
+
+Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () {
+
+    Route::get('/alerts',            [AlertDispatchController::class, 'index'])->name('alerts.index');
+    Route::post('/alerts/preview',   [AlertDispatchController::class, 'preview'])->name('alerts.preview');
+    Route::post('/alerts/dispatch',  [AlertDispatchController::class, 'dispatch'])->name('alerts.dispatch');
+    Route::get('/alerts/log',        [AlertDispatchController::class, 'log'])->name('alerts.log');
+    Route::post('/alerts/bulk-delete', [AlertDispatchController::class, 'bulkDelete'])->name('alerts.bulk-delete');
+    
+});

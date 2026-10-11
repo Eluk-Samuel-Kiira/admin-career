@@ -237,6 +237,9 @@ Route::middleware(['verifycountry'])->group(function () {
         Route::delete('/{uuid}',           [HiringRunController::class, 'destroy']);
     });
 
+    Route::middleware(['auth:sanctum'])->prefix('seeker/auto-apply')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Api\Seeker\AutoApplyController::class, 'index']);
+    });
 });
 
 // Route to test middleware

@@ -11,11 +11,38 @@ class SubscriptionGate
      * Stub for now — replace with a real lookup once billing is live.
      */
     protected const FEATURES_BY_PLAN = [
-        'free'       => [],
-        'standard'   => ['cv_screening' => 200],     // 200 CVs per month
-        'premium'    => ['cv_screening' => 1000],
-        'enterprise' => ['cv_screening' => null],    // unlimited
+        'free' => [
+            'auto_apply' => 0,
+        ],
+        'standard' => [
+            'cv_screening'    => 200,
+            'whatsapp_alerts' => true,
+            'telegram_alerts' => true,
+            'auto_apply'      => 30,
+        ],
+        'premium' => [
+            'cv_screening'    => 1000,
+            'whatsapp_alerts' => true,
+            'telegram_alerts' => true,
+            'auto_apply'      => 100,
+        ],
+        'enterprise' => [
+            'cv_screening'    => null,
+            'whatsapp_alerts' => true,
+            'telegram_alerts' => true,
+            'auto_apply'      => null,   // unlimited
+        ],
     ];
+
+    public function canWhatsApp(User $user): bool
+    {
+        return (bool) (self::FEATURES_BY_PLAN[$this->planFor($user)]['whatsapp_alerts'] ?? false);
+    }
+
+    public function canTelegram(User $user): bool
+    {
+        return (bool) (self::FEATURES_BY_PLAN[$this->planFor($user)]['telegram_alerts'] ?? false);
+    }
 
     public function planFor(User $user): string
     {
@@ -37,5 +64,22 @@ class SubscriptionGate
     {
         $plan = $this->planFor($user);
         return self::FEATURES_BY_PLAN[$plan]['cv_screening'] ?? 0;
+    }
+
+    /**
+     * Is auto-apply enabled on this user's plan?
+     */
+    public function hasAutoApply(User $user): bool
+    {
+        return $this->autoApplyQuota($user) !== 0;
+    }
+
+    /**
+     * Monthly auto-apply quota. Null = unlimited, 0 = disabled.
+     */
+    public function autoApplyQuota(User $user): ?int
+    {
+        $plan = $this->planFor($user);
+        return self::FEATURES_BY_PLAN[$plan]['auto_apply'] ?? 0;
     }
 }
