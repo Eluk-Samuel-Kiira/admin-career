@@ -2,84 +2,78 @@
 
 namespace App\Services\Subscription;
 
+use App\Models\Subscription\Subscription;
 use App\Models\User;
 
 class SubscriptionGate
 {
+    protected array $cache = [];
+
+    public function activeSubscription(User $user): ?Subscription
+    {
+        $key = 'sub.' . $user->id;
+
+        if (array_key_exists($key, $this->cache)) {
+            return $this->cache[$key];
+        }
+
+        $subscription = Subscription::with('service')
+            ->where('user_id', $user->id)
+            ->whereIn('status', ['trialing', 'active'])
+            ->where('current_period_end', '>', now())
+            ->latest('id')
+            ->first();
+
+        return $this->cache[$key] = $subscription;
+    }
+
     /**
-     * Which plan features are unlocked for this user.
-     * Stub for now — replace with a real lookup once billing is live.
+     * Plan identifier for display purposes. Returns the service_key of the
+     * active subscription, or 'free' when there is none.
      */
-    protected const FEATURES_BY_PLAN = [
-        'free' => [
-            'auto_apply' => 0,
-        ],
-        'standard' => [
-            'cv_screening'    => 200,
-            'whatsapp_alerts' => true,
-            'telegram_alerts' => true,
-            'auto_apply'      => 30,
-        ],
-        'premium' => [
-            'cv_screening'    => 1000,
-            'whatsapp_alerts' => true,
-            'telegram_alerts' => true,
-            'auto_apply'      => 100,
-        ],
-        'enterprise' => [
-            'cv_screening'    => null,
-            'whatsapp_alerts' => true,
-            'telegram_alerts' => true,
-            'auto_apply'      => null,   // unlimited
-        ],
-    ];
-
-    public function canWhatsApp(User $user): bool
-    {
-        return (bool) (self::FEATURES_BY_PLAN[$this->planFor($user)]['whatsapp_alerts'] ?? false);
-    }
-
-    public function canTelegram(User $user): bool
-    {
-        return (bool) (self::FEATURES_BY_PLAN[$this->planFor($user)]['telegram_alerts'] ?? false);
-    }
-
     public function planFor(User $user): string
     {
-        // TODO: replace with real plan lookup
-        // return $user->company?->subscription?->plan ?? 'free';
-        return 'enterprise';
+        return $this->activeSubscription($user)?->service_key ?? 'free';
     }
 
     public function hasFeature(User $user, string $feature): bool
     {
-        $plan = $this->planFor($user);
-        return array_key_exists($feature, self::FEATURES_BY_PLAN[$plan] ?? []);
+        return $this->activeSubscription($user)?->hasFeature($feature) ?? false;
     }
 
-    /**
-     * Monthly CV quota. Null = unlimited.
-     */
+    public function quota(User $user, string $feature): ?int
+    {
+        return $this->activeSubscription($user)?->featureQuota($feature) ?? 0;
+    }
+
+    public function canWhatsApp(User $user): bool
+    {
+        return $this->hasFeature($user, 'whatsapp_alerts');
+    }
+
+    public function canTelegram(User $user): bool
+    {
+        return $this->hasFeature($user, 'telegram_alerts');
+    }
+
     public function cvScreeningQuota(User $user): ?int
     {
-        $plan = $this->planFor($user);
-        return self::FEATURES_BY_PLAN[$plan]['cv_screening'] ?? 0;
+        return $this->quota($user, 'cv_screening');
     }
 
-    /**
-     * Is auto-apply enabled on this user's plan?
-     */
     public function hasAutoApply(User $user): bool
     {
-        return $this->autoApplyQuota($user) !== 0;
+        return ($this->autoApplyQuota($user) ?? 0) !== 0;
     }
 
-    /**
-     * Monthly auto-apply quota. Null = unlimited, 0 = disabled.
-     */
     public function autoApplyQuota(User $user): ?int
     {
-        $plan = $this->planFor($user);
-        return self::FEATURES_BY_PLAN[$plan]['auto_apply'] ?? 0;
+        return $this->quota($user, 'auto_apply');
+    }
+
+    public function forget(?User $user = null): void
+    {
+        if ($user) { unset($this->cache['sub.' . $user->id]); return; }
+        $this->cache = [];
     }
 }

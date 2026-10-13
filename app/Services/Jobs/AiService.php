@@ -309,7 +309,18 @@ class AiService
     protected function callWithFallback(string $primaryModel, string $prompt, callable $callFn, bool $expectJson = true): array|string
     {
         $errors = [];
-        $models = array_unique(array_merge([$primaryModel], $this->fallbackModels));
+
+        // Build the chain: the requested primary model first, then the standard
+        // fallback order (gemini → claude → openai → cohere). Cohere is ALWAYS
+        // appended as the final attempt, regardless of what the config says.
+        $chain = array_merge(
+            [$primaryModel],
+            ['gemini', 'claude', 'openai'],
+            ['grok', 'mistral'],   // only tried if enabled — filtered below
+            ['cohere'],            // guaranteed last resort
+        );
+
+        $models = array_values(array_unique($chain));
 
         foreach ($models as $model) {
             if (!$this->isModelEnabled($model)) {
@@ -1179,12 +1190,32 @@ class AiService
     }
 
     /**
-     * Get ordered models for CV extraction - default first, then fallbacks
+     * The order in which models are tried for all CV work.
+     *
+     * Design intent:
+     *   gemini  → primary (fast, cheap, usually available)
+     *   claude  → first fallback (better on long-form writing)
+     *   openai  → second fallback (reliable structured output)
+     *   cohere  → LAST RESORT (always tried, even if all the above fail)
+     *
+     * cohere is appended at the very end unconditionally, so a config change
+     * can never accidentally remove it from the chain.
      */
     protected function getOrderedCvModels(): array
     {
-        $default = env('AI_DEFAULT_MODEL', 'gemini');
-        return array_values(array_unique(array_merge([$default], $this->cvFallbackOrder)));
+        $ordered = ['gemini', 'claude', 'openai'];
+
+        // Add optional middle-tier models if they are configured.
+        foreach (['grok', 'mistral'] as $model) {
+            if ($this->isModelEnabled($model)) {
+                $ordered[] = $model;
+            }
+        }
+
+        // Guaranteed final fallback.
+        $ordered[] = 'cohere';
+
+        return array_values(array_unique($ordered));
     }
 
     /**

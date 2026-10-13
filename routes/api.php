@@ -240,6 +240,16 @@ Route::middleware(['verifycountry'])->group(function () {
     Route::middleware(['auth:sanctum'])->prefix('seeker/auto-apply')->group(function () {
         Route::get('/', [\App\Http\Controllers\Api\Seeker\AutoApplyController::class, 'index']);
     });
+
+    Route::middleware(['auth:sanctum'])->prefix('user')->group(function () {
+        Route::get('/subscriptions', [\App\Http\Controllers\Api\Subscription\UserSubscriptionController::class, 'index']);
+    });
+
+    Route::middleware(['auth:sanctum'])->prefix('seeker')->group(function () {
+        Route::get('/alert-log', [\App\Http\Controllers\Api\Seeker\AlertLogController::class, 'index']);
+    });
+
+    
 });
 
 // Route to test middleware

@@ -18,3 +18,7 @@ Schedule::command('auto-apply:run')
 
 // Every day at 04:00: prune failed jobs older than 7 days
 Schedule::command('queue:prune-failed --hours=168')->dailyAt('04:00');
+
+Schedule::command('subscriptions:renew')->hourly();
+Schedule::command('subscriptions:expire')->daily();
+

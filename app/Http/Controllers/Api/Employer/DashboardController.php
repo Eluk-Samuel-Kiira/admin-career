@@ -12,6 +12,8 @@ use App\Models\SeekerProfile;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use App\Models\Subscription\Subscription;
+use App\Models\Subscription\SubscriptionPayment;
 
 class DashboardController extends Controller
 {
@@ -29,6 +31,7 @@ class DashboardController extends Controller
                 'needsOnboarding' => true,
                 'stats'           => null,
                 'recentActivity'  => [],
+                'subscription'    => null,
             ]);
         }
 
@@ -192,6 +195,7 @@ class DashboardController extends Controller
                 'tier_label'              => $profile->tier_label,
             ],
             'recentActivity' => $recentActivity,
+            'subscription' => $this->subscriptionBlock($user),
         ]);
     }
 
@@ -209,6 +213,7 @@ class DashboardController extends Controller
                 'needsOnboarding' => true,
                 'stats'           => null,
                 'recentActivity'  => [],
+                'subscription'    => null,
             ]);
         }
 
@@ -364,6 +369,7 @@ class DashboardController extends Controller
                 'is_profile_complete'=> $profile->is_profile_complete,
             ],
             'recentActivity' => $recentActivity,
+            'subscription'    => $this->subscriptionBlock($user),
         ]);
     }
 
@@ -403,4 +409,77 @@ class DashboardController extends Controller
 
         return (int) round(($filled / count($fields)) * 100);
     }
+
+    /**
+     * Build the subscription block for the dashboard.
+     * Returns null when the user has no subscription yet.
+     */
+    private function subscriptionBlock($user): ?array
+    {
+        $sub = Subscription::with('service:id,key,name')
+            ->where('user_id', $user->id)
+            ->whereIn('status', ['trialing', 'active', 'past_due'])
+            ->orderByDesc('id')
+            ->first();
+
+        if (!$sub) {
+            return null;
+        }
+
+        // Recent payments on this subscription
+        $recentPayments = SubscriptionPayment::where('subscription_id', $sub->id)
+            ->orderByDesc('created_at')
+            ->limit(5)
+            ->get()
+            ->map(fn($p) => [
+                'uuid'             => $p->uuid,
+                'amount_formatted' => strtoupper($p->currency) . ' ' . number_format($p->amount_cents / 100, $p->currency === 'UGX' ? 0 : 2),
+                'status'           => $p->status,
+                'status_label'     => ucfirst($p->status),
+                'failure_reason'   => $p->failure_reason,
+                'paid_at'          => $p->paid_at?->toISOString(),
+                'created_at'       => $p->created_at?->toISOString(),
+            ]);
+
+        // Days remaining in the current period
+        $daysRemaining = $sub->current_period_end
+            ? max(0, (int) now()->diffInDays($sub->current_period_end, false))
+            : null;
+
+        return [
+            'uuid'                 => $sub->uuid,
+            'service_key'          => $sub->service_key,
+            'service_name'         => $sub->service?->name ?? $sub->service_key,
+            'status'               => $sub->status,
+            'status_label'         => $this->subscriptionStatusLabel($sub->status, $sub->cancel_at_period_end),
+            'is_active'            => $sub->isActive(),
+            'currency'             => $sub->currency,
+            'amount_formatted'     => strtoupper($sub->currency) . ' ' . number_format($sub->amount_cents / 100, $sub->currency === 'UGX' ? 0 : 2),
+            'interval'             => $sub->interval,
+            'starts_at'            => $sub->starts_at?->toISOString(),
+            'trial_ends_at'        => $sub->trial_ends_at?->toISOString(),
+            'current_period_end'   => $sub->current_period_end?->toISOString(),
+            'cancel_at_period_end' => (bool) $sub->cancel_at_period_end,
+            'days_remaining'       => $daysRemaining,
+            'recent_payments'      => $recentPayments,
+        ];
+    }
+
+    private function subscriptionStatusLabel(string $status, bool $cancelAtPeriodEnd = false): string
+    {
+        if ($status === 'active' && $cancelAtPeriodEnd) {
+            return 'Cancels at period end';
+        }
+
+        return match ($status) {
+            'trialing'  => 'Free trial',
+            'active'    => 'Active',
+            'past_due'  => 'Payment failed',
+            'cancelled' => 'Cancelled',
+            'expired'   => 'Expired',
+            default     => ucfirst($status),
+        };
+    }
+
+
 }

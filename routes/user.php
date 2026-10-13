@@ -221,3 +221,14 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     Route::post('/alerts/bulk-delete', [AlertDispatchController::class, 'bulkDelete'])->name('alerts.bulk-delete');
     
 });
+
+use App\Http\Controllers\Employer\EmployerSubscriptionController;
+
+Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () {
+    // ... existing
+
+    Route::get('/employer-subscriptions',              [EmployerSubscriptionController::class, 'index'])->name('employer-subscriptions.index');
+    Route::get('/employer-subscriptions/stats',        [EmployerSubscriptionController::class, 'stats'])->name('employer-subscriptions.stats');
+    Route::get('/employer-subscriptions/data',         [EmployerSubscriptionController::class, 'data'])->name('employer-subscriptions.data');
+    Route::get('/employer-subscriptions/{uuid}',       [EmployerSubscriptionController::class, 'show'])->name('employer-subscriptions.show');
+});

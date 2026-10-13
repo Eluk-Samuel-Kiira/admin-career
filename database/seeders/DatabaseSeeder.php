@@ -40,6 +40,7 @@ class DatabaseSeeder extends Seeder
             SocialMediaPlatformSeeder::class,
             ServiceSeeder::class,
             ServicePriceSeeder::class,
+            SubscriptionTransactionsSeeder::class,
 
         ]);
     }
