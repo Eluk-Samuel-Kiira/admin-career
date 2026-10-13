@@ -153,6 +153,11 @@ class PermissionsSeeder extends Seeder
             
             'view employer compliance',
             'edit employer compliance',
+            
+            'view subscriptions',
+            'create subscriptions',
+            'edit subscriptions',
+            'delete subscriptions',
 
             // ============================================================
             // CANDIDATES / JOB SEEKERS

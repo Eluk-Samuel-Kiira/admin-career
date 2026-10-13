@@ -231,8 +231,10 @@
                     </div>
 
                     {{-- Job Seekers --}}
-                    @canany(['view seekers'])
-                    <div data-kt-menu-trigger="click" class="menu-item menu-accordion {{ request()->routeIs('admin.seekers*') ? 'show here' : '' }}">
+                    @canany(['view seekers', 'manage job alerts', 'send job alerts'])
+                    <div data-kt-menu-trigger="click" class="menu-item menu-accordion {{ request()->routeIs('admin.seekers*', 'admin.alerts.*', 'admin.auto-apply.*')
+                        || (request()->routeIs('admin.employer-subscriptions.*') && request('role') === 'seeker')
+                            ? 'show here' : '' }}">
                         <span class="menu-link">
                             <span class="menu-icon">
                                 <i class="ki-duotone ki-profile-circle fs-2">
@@ -250,6 +252,37 @@
                                 <a class="menu-link {{ request()->routeIs('admin.seekers.index') ? 'active' : '' }}" href="{{ route('admin.seekers.index') }}">
                                     <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
                                     <span class="menu-title">All Seekers</span>
+                                </a>
+                            </div>
+                            @endcan
+
+                            @can('manage job alerts')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.auto-apply.*') ? 'active' : '' }}"
+                                href="{{ route('admin.auto-apply.index') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">Auto Apply Agent</span>
+                                </a>
+                            </div>
+                            @endcan
+                            
+                            @can('send job alerts')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.alerts.*') ? 'active' : '' }}"
+                                href="{{ route('admin.alerts.index') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">Job Alerts</span>
+                                </a>
+                            </div>
+                            @endcan
+
+                            {{-- Seeker Subscriptions --}}
+                            @can('view subscriptions')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.employer-subscriptions.*') && request('role') === 'seeker' ? 'active' : '' }}"
+                                href="{{ route('admin.employer-subscriptions.index', ['role' => 'seeker']) }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">Subscriptions &amp; Payments</span>
                                 </a>
                             </div>
                             @endcan
@@ -319,7 +352,9 @@
                     @endphp
 
                     <div data-kt-menu-trigger="click"
-                        class="menu-item menu-accordion {{ request()->routeIs('admin.compliance.*', 'admin.subscriptions.*', 'admin.job-submissions.*', 'admin.hiring-runs.*') ? 'show here' : '' }}">
+                        class="menu-item menu-accordion {{ request()->routeIs('admin.compliance.*', 'admin.job-submissions.*', 'admin.hiring-runs.*')
+                            || (request()->routeIs('admin.employer-subscriptions.*') && request('role') === 'employer')
+                                ? 'show here' : '' }}">
 
                         <span class="menu-link">
                             <span class="menu-icon">
@@ -377,28 +412,16 @@
                             </div>
                             @endcan
 
-                            {{-- 4. Subscriptions --}}
-                            {{--
-                            @can('view employer')
+                            {{-- Employer Subscriptions --}}
+                            @can('view subscriptions')
                             <div class="menu-item">
-                                <a class="menu-link {{ request()->routeIs('admin.subscriptions.*') ? 'active' : '' }}"
-                                href="{{ route('admin.subscriptions.index') }}">
+                                <a class="menu-link {{ request()->routeIs('admin.employer-subscriptions.*') && request('role') === 'employer' ? 'active' : '' }}"
+                                href="{{ route('admin.employer-subscriptions.index', ['role' => 'employer']) }}">
                                     <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
-                                    <span class="menu-title">Subscriptions</span>
+                                    <span class="menu-title">Subscriptions &amp; Payments</span>
                                 </a>
                             </div>
                             @endcan
-                            --}}
-
-                            {{-- Future: Employer Earnings, Reports, etc. --}}
-                            {{--
-                            <div class="menu-item">
-                                <a class="menu-link" href="#">
-                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
-                                    <span class="menu-title">Earnings</span>
-                                </a>
-                            </div>
-                            --}}
 
                         </div>
                     </div>

@@ -38,10 +38,10 @@ class SyncPermissions extends Command
             'view job submissions',
             'edit job submissions',
 
-            'view employer',
-            'create employer',
-            'edit employer',
-            'delete employer',
+            'view subscriptions',
+            'create subscriptions',
+            'edit subscriptions',
+            'delete subscriptions',
             
 
             // ============================================================

@@ -117,6 +117,12 @@ class Service extends Model
         ];
     }
 
+    // In Service model
+    public function getTierAttribute(): string
+    {
+        return $this->meta['tier'] ?? 'standard';
+    }
+
 
 
 }

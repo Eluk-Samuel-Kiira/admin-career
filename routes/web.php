@@ -278,6 +278,18 @@ Route::middleware('auth')->prefix('admin')->group(function () {
 });
 
 
+Route::get('/auto-apply/download', [\App\Http\Controllers\AutoApply\DownloadController::class, 'show'])
+    ->name('auto-apply.cv.download')
+    ->middleware('signed');
+
+use App\Http\Controllers\AutoApply\AutoApplyController;
+
+Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () {
+    Route::get('/auto-apply',             [AutoApplyController::class, 'index'])->name('auto-apply.index');
+    Route::get('/auto-apply/stats',       [AutoApplyController::class, 'stats'])->name('auto-apply.stats');
+    Route::get('/auto-apply/runs',        [AutoApplyController::class, 'runs'])->name('auto-apply.runs');
+    Route::get('/auto-apply/relays',      [AutoApplyController::class, 'relays'])->name('auto-apply.relays');
+});
 
 
 require __DIR__.'/auth.php';

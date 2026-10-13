@@ -309,7 +309,18 @@ class AiService
     protected function callWithFallback(string $primaryModel, string $prompt, callable $callFn, bool $expectJson = true): array|string
     {
         $errors = [];
-        $models = array_unique(array_merge([$primaryModel], $this->fallbackModels));
+
+        // Build the chain: the requested primary model first, then the standard
+        // fallback order (gemini → claude → openai → cohere). Cohere is ALWAYS
+        // appended as the final attempt, regardless of what the config says.
+        $chain = array_merge(
+            [$primaryModel],
+            ['gemini', 'claude', 'openai'],
+            ['grok', 'mistral'],   // only tried if enabled — filtered below
+            ['cohere'],            // guaranteed last resort
+        );
+
+        $models = array_values(array_unique($chain));
 
         foreach ($models as $model) {
             if (!$this->isModelEnabled($model)) {
@@ -1179,12 +1190,32 @@ class AiService
     }
 
     /**
-     * Get ordered models for CV extraction - default first, then fallbacks
+     * The order in which models are tried for all CV work.
+     *
+     * Design intent:
+     *   gemini  → primary (fast, cheap, usually available)
+     *   claude  → first fallback (better on long-form writing)
+     *   openai  → second fallback (reliable structured output)
+     *   cohere  → LAST RESORT (always tried, even if all the above fail)
+     *
+     * cohere is appended at the very end unconditionally, so a config change
+     * can never accidentally remove it from the chain.
      */
     protected function getOrderedCvModels(): array
     {
-        $default = env('AI_DEFAULT_MODEL', 'gemini');
-        return array_values(array_unique(array_merge([$default], $this->cvFallbackOrder)));
+        $ordered = ['gemini', 'claude', 'openai'];
+
+        // Add optional middle-tier models if they are configured.
+        foreach (['grok', 'mistral'] as $model) {
+            if ($this->isModelEnabled($model)) {
+                $ordered[] = $model;
+            }
+        }
+
+        // Guaranteed final fallback.
+        $ordered[] = 'cohere';
+
+        return array_values(array_unique($ordered));
     }
 
     /**
@@ -1983,5 +2014,106 @@ class AiService
             PROMPT;
     }
 
+    /**
+     * Tailor a CV to a specific job description.
+     *
+     * Returns clean HTML (only <p>, <ul>, <li>, <strong> tags, no attributes).
+     */
+    public function tailorCv(string $cvText, array $jobContext): string
+    {
+        $prompt = $this->buildTailorCvPrompt($cvText, $jobContext);
 
+        $lastError = null;
+
+        foreach ($this->getOrderedCvModels() as $model) {
+            $apiKey = $this->getApiKeyFor($model);
+            if (!$this->isModelUsable($model, $apiKey)) continue;
+
+            try {
+                $raw = $this->callAiApi($model, $apiKey, $prompt);
+
+                if (!is_string($raw) || trim($raw) === '') {
+                    Log::warning("CV tailoring: empty response from {$model}");
+                    continue;
+                }
+
+                $clean = $this->cleanCvHtml($raw);
+
+                if (str_word_count(strip_tags($clean)) < 120) {
+                    Log::warning("CV tailoring: too short from {$model}", [
+                        'word_count' => str_word_count(strip_tags($clean)),
+                    ]);
+                    continue;
+                }
+
+                return $clean;
+            } catch (\Throwable $e) {
+                $lastError = $e->getMessage();
+                Log::warning("CV tailoring failed on {$model}: " . $e->getMessage());
+            }
+        }
+
+        throw new \Exception(
+            'CV tailoring failed on all models. Last error: ' . ($lastError ?? 'none')
+        );
+    }
+
+    protected function buildTailorCvPrompt(string $cvText, array $jobContext): string
+    {
+        $title       = $jobContext['job_title']       ?? 'this role';
+        $company     = $jobContext['company_name']    ?? 'the company';
+        $description = strip_tags($jobContext['job_description'] ?? '');
+        $skills      = $jobContext['skills']          ?? '';
+
+        return <<<PROMPT
+            You are an expert CV writer. Your task is to produce a tailored CV that
+            positions the candidate as a strong match for the specific job below.
+
+            TARGET ROLE:
+            Job Title: {$title}
+            Company: {$company}
+            Description: {$description}
+            Required Skills: {$skills}
+
+            ORIGINAL CV TEXT:
+            ---
+            {$cvText}
+            ---
+
+            RULES:
+            - Never invent employers, dates, degrees, or achievements. Only reframe,
+            reorder, and rewrite what is already in the CV.
+            - Reorder sections so the most relevant experience is first.
+            - Rewrite bullet points to emphasize the skills and outcomes the job needs.
+            - Add a short professional summary (3-4 sentences) tailored to this role.
+            - Add a "Key Skills" section listing the top 8-12 skills most relevant to
+            the job, only from skills already present in the CV.
+            - Use clean HTML: <h2>, <h3>, <p>, <ul>, <li>, <strong>.
+            No attributes on any tag. No <style>, no <div>, no classes.
+            - Do NOT include the candidate's address, date, or a letter.
+            - Do NOT include a cover letter. The cover letter is generated separately.
+            - Aim for 350-600 words.
+            - Return ONLY the HTML. No markdown, no code fences, no commentary.
+
+            Return the tailored CV HTML now.
+            PROMPT;
+    }
+
+    protected function cleanCvHtml(string $raw): string
+    {
+        $clean = preg_replace('/^```(?:html|HTML)?\s*/', '', trim($raw));
+        $clean = preg_replace('/\s*```\s*$/m', '', $clean);
+        $clean = preg_replace('#</?(html|head|body|meta|title)\b[^>]*>#i', '', $clean);
+
+        // Strip attributes from all tags
+        $clean = preg_replace_callback('/<([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/', function ($m) {
+            $tag = strtolower($m[1]);
+            $selfClosing = in_array($tag, ['br', 'hr'], true);
+            return $selfClosing ? "<{$tag} />" : "<{$tag}>";
+        }, $clean);
+
+        return trim($clean);
+    }
+
+    
 }
