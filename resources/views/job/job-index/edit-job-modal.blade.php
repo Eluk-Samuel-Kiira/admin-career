@@ -178,7 +178,7 @@
                     <div class="row mb-7">
                         <div class="col-md-6">
                             <label class="fw-semibold fs-6 mb-2">Email</label>
-                            <input type="email" class="form-control form-control-solid" name="email" id="edit_email" />
+                            <input type="text" class="form-control form-control-solid" name="email" id="edit_email" />
                         </div>
                         <div class="col-md-6">
                             <label class="fw-semibold fs-6 mb-2">Telephone</label>

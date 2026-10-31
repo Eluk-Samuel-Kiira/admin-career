@@ -2,15 +2,37 @@
 
 namespace App\Http\Controllers\Job;
 
+use App\Helpers\CountryHelper;
 use App\Http\Controllers\Controller;
 use App\Models\Job\JobPost;
 use Illuminate\Http\Request;
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 
 class JobSharingController extends Controller
 {
-    private const PER_BATCH = 10;
+    private const PER_BATCH        = 10;
+    private const MAX_SKILLS       = 4;   // show at most 4 skills per job
+    private const SKILLS_MAX_CHARS = 60;  // and keep the skills line short
+    private const BRAND            = 'Stardena Careers';
+    private const CONTACT_PHONE    = '+256 754 428612';
+    private const CONTACT_EMAIL    = 'stardenacareers@gmail.com';
+    private const DIVIDER          = '━━━━━━━━━━━━━━━';
+    private const JOB_DIVIDER      = '=========================';
+
+    // Rotated by day and part so repeated posts don't read the same
+    private const CTA_HOOKS = [
+        '"Recruiters spend seconds on a CV. Let\'s make yours count."',
+        '"The best job on this list could be yours, with the right CV."',
+        '"Great jobs get hundreds of applicants. A sharp CV gets the interview."',
+        '"Don\'t just apply. Apply to stand out."',
+        '"Your skills are ready. Is your CV?"',
+    ];
+
+    private const KEYCAPS = [
+        1 => '1️⃣', 2 => '2️⃣', 3 => '3️⃣', 4 => '4️⃣', 5 => '5️⃣',
+        6 => '6️⃣', 7 => '7️⃣', 8 => '8️⃣', 9 => '9️⃣', 10 => '🔟',
+    ];
 
     public function index()
     {
@@ -24,8 +46,8 @@ class JobSharingController extends Controller
     /**
      * GET /admin/job-sharing/data?range=today|yesterday|last3|week|all&country=UG
      *
-     * Returns jobs grouped into batches of 10. Each batch has the ready-to-share
-     * WhatsApp text pre-rendered so the copy button is a one-liner.
+     * Jobs are grouped by country first, then split into batches of 10,
+     * so every WhatsApp message is about one country only.
      */
     public function data(Request $request)
     {
@@ -33,47 +55,38 @@ class JobSharingController extends Controller
             return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
         }
 
-        [$from, $to] = $this->resolveRange($request->get('range', 'today'));
+        [$from, $to] = $this->resolveRange((string) $request->get('range', 'today'));
+        $batches = $this->buildBatches($request);
 
-        $country = strtoupper((string) $request->get('country', ''));
-
-        $query = JobPost::with(['company:id,name'])
-            ->where('is_active', true)
-            ->whereNotNull('published_at')
-            ->whereBetween('published_at', [$from, $to]);
-
-        if ($country !== '') {
-            $query->where('country_code', $country);
-        }
-
-        $jobs = $query->orderByDesc('published_at')->get();
-
-        // Group into batches of 10
-        $batches = $jobs->chunk(self::PER_BATCH)->values()->map(function ($chunk, $index) use ($from, $to) {
-            $part = $index + 1;
+        $data = $batches->map(function (array $b) {
+            $info = $this->countryInfo($b['country_code']);
 
             return [
-                'part'        => $part,
-                'count'       => $chunk->count(),
-                'jobs'        => $chunk->map(fn($j) => $this->formatJobRow($j))->values(),
-                'share_text'  => $this->buildBatchShareText($chunk, $part, $from, $to),
+                'part'          => $b['part'],
+                'country_code'  => $b['country_code'],
+                'country_label' => trim($info['flag'] . ' ' . ($info['name'] ?: 'Other')),
+                'country_part'  => $b['country_part'],
+                'country_parts' => $b['country_parts'],
+                'count'         => $b['jobs']->count(),
+                'jobs'          => $b['jobs']->map(fn($j) => $this->formatJobRow($j))->values(),
+                'share_text'    => $this->buildBatchShareText($b),
             ];
-        });
+        })->values();
 
         return response()->json([
-            'success'      => true,
-            'from'         => $from->toIso8601String(),
-            'to'           => $to->toIso8601String(),
-            'total_jobs'   => $jobs->count(),
-            'total_batches'=> $batches->count(),
-            'per_batch'    => self::PER_BATCH,
-            'data'         => $batches,
+            'success'       => true,
+            'from'          => $from->toIso8601String(),
+            'to'            => $to->toIso8601String(),
+            'total_jobs'    => $batches->sum(fn($b) => $b['jobs']->count()),
+            'total_batches' => $batches->count(),
+            'per_batch'     => self::PER_BATCH,
+            'data'          => $data,
         ]);
     }
 
     /**
      * GET /admin/job-sharing/batch/{n}
-     * Returns the plain-text batch for a single part.
+     * Returns the plain-text message for a single part.
      */
     public function batch(Request $request, int $n)
     {
@@ -81,10 +94,39 @@ class JobSharingController extends Controller
             return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
         }
 
-        [$from, $to] = $this->resolveRange($request->get('range', 'today'));
+        $batch = $this->buildBatches($request)->firstWhere('part', $n);
+
+        if (!$batch) {
+            return response()->json(['success' => false, 'message' => 'Batch not found'], 404);
+        }
+
+        return response()->json([
+            'success'    => true,
+            'part'       => $n,
+            'share_text' => $this->buildBatchShareText($batch),
+        ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Batching
+    // ─────────────────────────────────────────────────────────────
+
+    /**
+     * Query the jobs, group by country, chunk each country into batches of 10.
+     * `part` is a global, stable index used by the copy button.
+     */
+    private function buildBatches(Request $request): Collection
+    {
+        [$from, $to] = $this->resolveRange((string) $request->get('range', 'today'));
         $country = strtoupper((string) $request->get('country', ''));
 
-        $query = JobPost::with(['company:id,name'])
+        // load the location relation only if the model defines it
+        $with = ['company:id,name'];
+        if (method_exists(JobPost::class, 'jobLocation')) {
+            $with[] = 'jobLocation';
+        }
+
+        $query = JobPost::with($with)
             ->where('is_active', true)
             ->whereNotNull('published_at')
             ->whereBetween('published_at', [$from, $to]);
@@ -95,27 +137,27 @@ class JobSharingController extends Controller
 
         $jobs = $query->orderByDesc('published_at')->get();
 
-        $chunks = $jobs->chunk(self::PER_BATCH)->values();
+        $batches = collect();
+        $part    = 0;
 
-        if (!isset($chunks[$n - 1])) {
-            return response()->json(['success' => false, 'message' => 'Batch not found'], 404);
+        foreach ($jobs->groupBy(fn($j) => $j->country_code ?: 'XX')->sortKeys() as $code => $group) {
+            $chunks = $group->chunk(self::PER_BATCH)->values();
+
+            foreach ($chunks as $i => $chunk) {
+                $part++;
+                $batches->push([
+                    'part'          => $part,
+                    'country_code'  => (string) $code,
+                    'country_part'  => $i + 1,
+                    'country_parts' => $chunks->count(),
+                    'jobs'          => $chunk->values(),
+                ]);
+            }
         }
 
-        return response()->json([
-            'success'    => true,
-            'part'       => $n,
-            'share_text' => $this->buildBatchShareText($chunks[$n - 1], $n, $from, $to),
-        ]);
+        return $batches;
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // Helpers
-    // ─────────────────────────────────────────────────────────────
-
-    /**
-     * Returns [Carbon $from, Carbon $to] for the requested range.
-     * 'to' is always now (end of the current day for today).
-     */
     private function resolveRange(string $range): array
     {
         $now = now();
@@ -125,144 +167,221 @@ class JobSharingController extends Controller
                 $now->copy()->subDay()->startOfDay(),
                 $now->copy()->subDay()->endOfDay(),
             ],
-            'last3'     => [
+            'last3' => [
                 $now->copy()->subDays(3)->startOfDay(),
                 $now->copy()->endOfDay(),
             ],
-            'week'      => [
+            'week' => [
                 $now->copy()->subDays(7)->startOfDay(),
                 $now->copy()->endOfDay(),
             ],
-            'all'       => [
+            'all' => [
                 $now->copy()->subYear()->startOfDay(),
                 $now->copy()->endOfDay(),
             ],
-            default     => [ // today
+            default => [ // today
                 $now->copy()->startOfDay(),
                 $now->copy()->endOfDay(),
             ],
         };
     }
 
-    /**
-     * Shape the job for the table and for building share text.
-     */
+    // ─────────────────────────────────────────────────────────────
+    // Table rows (admin screen)
+    // ─────────────────────────────────────────────────────────────
+
     private function formatJobRow(JobPost $job): array
     {
         return [
             'id'        => $job->id,
             'title'     => $job->job_title,
             'company'   => $job->company?->name ?? 'Company',
-            'url'       => $this->buildJobUrl($job),
-            'deadline'  => $job->deadline?->format('l, F j Y'),
+            'url'       => $job->generateUrl(), // same country-correct URL the indexer uses
+            'location'  => $this->locationText($job),
+            'skills'    => $this->formatSkills($job->skills),
+            'deadline'  => $job->deadline?->format('D, j M Y'),
             'published' => $job->published_at?->format('Y-m-d H:i'),
         ];
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // WhatsApp message
+    // ─────────────────────────────────────────────────────────────
+
     /**
-     * Build the public URL exactly the way the site serves it.
-     * Matches the pattern used by the sitemap: /job/{slug}
+     * Layout:
+     *   header (country + brand + date)
+     *   10 jobs (title, company/location, top skills, deadline, link)
+     *   CV / cover letter call at the very end
      */
-    private function buildJobUrl(JobPost $job): string
+    private function buildBatchShareText(array $batch): string
     {
-        $base = rtrim(config('app.url'), '/');
+        $jobs  = $batch['jobs'];
+        $info  = $this->countryInfo($batch['country_code']);
+        $name  = $info['name'];
+        $flag  = $info['flag'];
+        $count = $jobs->count();
 
-        // If the job knows its own country domain, prefer that (multi-country setup).
-        if ($job->country_code) {
-            $countryDomain = Cache::remember(
-                'country_domain_' . $job->country_code,
-                now()->addHour(),
-                fn() => \App\Models\Job\Country::where('code', $job->country_code)->value('domain')
-            );
-            if ($countryDomain) {
-                $scheme = str_starts_with($countryDomain, 'http') ? '' : 'https://';
-                $base = rtrim($scheme . $countryDomain, '/');
-            }
-        }
-
-        return $base . '/job/' . $job->slug;
-    }
-
-    
-    /**
-     * Build the full batch text in the WhatsApp format you supplied.
-     *
-     * The intro and outro blocks bracket the batch of 10 jobs so the reader
-     * sees the call to action on both ends of the message.
-     */
-    private function buildBatchShareText($jobs, int $part, Carbon $from, Carbon $to): string
-    {
-        $header = sprintf(
-            "*JOBS SHARED ON %s PART %d*",
-            now()->format('Y-m-d H:i:s'),
-            $part
-        );
-
-        $intro = $this->buildPromoBlock();
-        $outro = $this->buildPromoBlock();
+        $heading = $name !== '' ? mb_strtoupper($name) . ' JOB ALERT' : 'JOB ALERT';
+        $partTxt = $batch['country_parts'] > 1
+            ? " • Part {$batch['country_part']} of {$batch['country_parts']}"
+            : '';
 
         $lines = [
-            $header,
+            trim("{$flag} *{$heading}* {$flag}"),
+            '_' . self::BRAND . ' • ' . now()->format('D, j M Y') . '_',
+            "📌 *{$count} new " . ($count === 1 ? 'opening' : 'openings') . "{$partTxt}*",
+            '_Tap a link to read the full details and apply._',
             '',
-            $intro,
-            '',
-            '=========================================',
+            self::DIVIDER,
             '',
         ];
 
-        foreach ($jobs as $job) {
-            $title    = $this->cleanTitle($job->job_title, $job->company?->name);
-            $url      = $this->buildJobUrl($job);
-            $deadline = $job->deadline?->format('l, F j Y') ?? 'Open';
+        $firstUrl = null;
 
-            $lines[] = "*{$title}*";
-            $lines[] = $url;
-            $lines[] = 'Deadline of this Job: "' . $deadline . '"';
+        foreach ($jobs as $i => $job) {
+            $n      = $i + 1;
+            $key    = self::KEYCAPS[$n] ?? "{$n}.";
+            $title  = $this->cleanTitle($job->job_title);
+            $co     = $job->company?->name ? $this->cleanTitle($job->company->name) : null;
+            $where  = $this->locationText($job);
+            $skills = $this->formatSkills($job->skills);
+            $url    = $job->generateUrl();
+            $firstUrl ??= $url;
+
+            $lines[] = "{$key} *{$title}*";
+
+            if ($co)    $lines[] = "🏢 {$co}";
+            if ($where) $lines[] = "📍 {$where}";
+            if ($skills !== '') $lines[] = "🛠 {$skills}";
+
+            $lines[] = '⏳ Apply by: ' . $this->deadlineText($job);
+            $lines[] = "👉 {$url}";
+            $lines[] = self::JOB_DIVIDER;
             $lines[] = '';
         }
 
-        $lines[] = '=========================================';
+        $hook = self::CTA_HOOKS[(now()->dayOfYear + $batch['part']) % count(self::CTA_HOOKS)];
+
+        $lines[] = '📄 *CV & COVER LETTER BOOST*';
+        $lines[] = "✨ _{$hook}_";
         $lines[] = '';
-        $lines[] = $outro;
+        $lines[] = '🔹 *Elevate* your CV so it works for any job you go after';
+        $lines[] = '🎯 *Tailor* your CV and cover letter to any job listed above';
+        $lines[] = '';
+        $lines[] = '💬 Message us today and get noticed:';
+        $lines[] = '📞 Call / WhatsApp: ' . self::CONTACT_PHONE;
+        $lines[] = '✉️ ' . self::CONTACT_EMAIL;
+
+        if ($firstUrl && ($p = parse_url($firstUrl)) && !empty($p['host'])) {
+            $lines[] = '';
+            $lines[] = '🔎 More jobs daily: ' . ($p['scheme'] ?? 'https') . '://' . $p['host'] . '/jobs';
+        }
 
         return rtrim(implode("\n", $lines));
     }
 
     /**
-     * The promotional block shown at the top and bottom of every batch.
-     * Kept short, punchy, and WhatsApp-friendly (no markdown tables).
+     * Location line: the job's own duty_station first; if empty, fall back to
+     * the linked JobLocation (district, then city, then region).
      */
-    private function buildPromoBlock(): string
+    private function locationText(JobPost $job): ?string
     {
-        return <<<TEXT
-            *Elevate Your Career with Professional Branding Solutions!*
+        $candidates = [$job->duty_station];
 
-            • CV / Resume Writing – UGX 15000
-            Stand out with an ATS-compliant, professionally structured resume tailored to highlight your core strengths and achievements.
+        $loc = $job->relationLoaded('jobLocation') ? $job->jobLocation : null;
+        if ($loc) {
+            $candidates[] = $loc->district;
+            $candidates[] = $loc->city;
+            $candidates[] = $loc->region;
+        }
 
-            • Targeted Cover Letter – UGX 5000
-            Get a compelling cover letter customized to communicate your value proposition to prospective employers.
+        foreach ($candidates as $value) {
+            $value = trim((string) $value);
+            if ($value !== '') {
+                return Str::limit($this->cleanTitle($value), 40, '');
+            }
+        }
 
-            *Contact Us Today:*
-            Call / WhatsApp: 0754428612
-            Email: stardenacareers@gmail.com
-            TEXT;
+        return null;
+    }
+
+    private function deadlineText(JobPost $job): string
+    {
+        if (!$job->deadline) {
+            return 'Open until filled';
+        }
+
+        return $job->deadline->format('D, j M Y');
     }
 
     /**
-     * Build a display title like the sample:
-     *   "Request For Comments ... tender at Uganda Communications Commission"
-     * If the DB title already contains " at ", keep it as-is.
-     * Otherwise append " at {company}".
+     * Skills are stored as messy rich-text HTML ("A, B, C"). Strip the markup
+     * and return the first few short skills as "A • B • C".
      */
-    private function cleanTitle(string $title, ?string $company): string
+    private function formatSkills($raw): string
     {
-        $title = trim($title);
-
-        if ($company && !str_contains(strtolower($title), ' at ')) {
-            $title .= ' at ' . trim($company);
+        if (is_array($raw)) {
+            $raw = implode(',', $raw);
         }
 
-        return $title;
+        // regex first: the stored HTML has broken attributes that confuse strip_tags
+        $text = preg_replace('/<[^>]*>/u', ' ', (string) $raw);
+        $text = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = str_replace("\xC2\xA0", ' ', $text);
+
+        $out = [];
+        $len = 0;
+
+        foreach (preg_split('/[,;\n\r•|]+/u', $text) as $part) {
+            $part = trim(preg_replace('/\s+/u', ' ', $part), " \t.-–—");
+
+            if ($part === '' || mb_strlen($part) > 28) {
+                continue;
+            }
+
+            $next = $len + mb_strlen($part) + ($out ? 3 : 0);
+            // too long to fit: skip it and try the next (shorter) skill
+            if ($next > self::SKILLS_MAX_CHARS) {
+                continue;
+            }
+
+            $out[] = $part;
+            $len   = $next;
+
+            if (count($out) >= self::MAX_SKILLS) {
+                break;
+            }
+        }
+
+        return implode(' • ', $out);
+    }
+
+    /** Keep WhatsApp bold (*) from breaking, collapse whitespace, cap length. */
+    private function cleanTitle(string $text): string
+    {
+        $text = trim(preg_replace('/\s+/u', ' ', str_replace('*', '', $text)));
+
+        return Str::limit($text, 90, '…');
+    }
+
+    /** code => ['name' => ..., 'flag' => ...] */
+    private function countryInfo(string $code): array
+    {
+        static $map = null;
+
+        if ($map === null) {
+            $map = [];
+            foreach (CountryHelper::getCountriesWithFlags() as $c) {
+                $map[strtoupper($c['code'])] = [
+                    'name' => $c['name'] ?? '',
+                    'flag' => $c['flag'] ?? '',
+                ];
+            }
+        }
+
+        $code = strtoupper($code);
+
+        return $map[$code] ?? ['name' => $code === 'XX' ? '' : $code, 'flag' => ''];
     }
 }

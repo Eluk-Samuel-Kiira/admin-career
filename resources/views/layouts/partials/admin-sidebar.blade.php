@@ -231,8 +231,9 @@
                     </div>
 
                     {{-- Job Seekers --}}
-                    @canany(['view seekers', 'manage job alerts', 'send job alerts'])
-                    <div data-kt-menu-trigger="click" class="menu-item menu-accordion {{ request()->routeIs('admin.seekers*', 'admin.alerts.*', 'admin.auto-apply.*')
+                    @canany(['view seekers', 'manage job alerts', 'send job alerts', 'view cv review requests'])
+                    <div data-kt-menu-trigger="click" class="menu-item menu-accordion {{ request()->routeIs('admin.seekers*', 'admin.alerts.*',
+                        'admin.auto-apply.*',  'admin.cv-review-requests*')
                         || (request()->routeIs('admin.employer-subscriptions.*') && request('role') === 'seeker')
                             ? 'show here' : '' }}">
                         <span class="menu-link">
@@ -252,6 +253,16 @@
                                 <a class="menu-link {{ request()->routeIs('admin.seekers.index') ? 'active' : '' }}" href="{{ route('admin.seekers.index') }}">
                                     <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
                                     <span class="menu-title">All Seekers</span>
+                                </a>
+                            </div>
+                            @endcan
+
+                            @can('view cv review requests')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.cv-review-requests') ? 'active' : '' }}"
+                                href="{{ route('admin.cv-review-requests') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">CV Review Requests</span>
                                 </a>
                             </div>
                             @endcan
@@ -287,50 +298,6 @@
                             </div>
                             @endcan
                     
-                        </div>
-                    </div>
-                    @endcanany
-
-                    {{-- Services --}}
-                    @canany(['view services', 'view service prices'])
-                    <div data-kt-menu-trigger="click" class="menu-item menu-accordion {{ request()->routeIs('admin.services*', 'admin.service-prices*', 'admin.cv-review-requests*') ? 'show here' : '' }}">
-                        <span class="menu-link">
-                            <span class="menu-icon">
-                                <i class="ki-duotone ki-briefcase fs-2">
-                                    <span class="path1"></span>
-                                    <span class="path2"></span>
-                                </i>
-                            </span>
-                            <span class="menu-title">Services</span>
-                            <span class="menu-arrow"></span>
-                        </span>
-                        <div class="menu-sub menu-sub-accordion">
-                            @can('view cv review requests')
-                            <div class="menu-item">
-                                <a class="menu-link {{ request()->routeIs('admin.cv-review-requests') ? 'active' : '' }}"
-                                href="{{ route('admin.cv-review-requests') }}">
-                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
-                                    <span class="menu-title">CV Review Requests</span>
-                                </a>
-                            </div>
-                            @endcan
-                            @can('view services')
-                            <div class="menu-item">
-                                <a class="menu-link {{ request()->routeIs('admin.services') ? 'active' : '' }}" href="{{ route('admin.services') }}">
-                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
-                                    <span class="menu-title">All Services</span>
-                                </a>
-                            </div>
-                            @endcan
-                            @can('view service prices')
-                            <div class="menu-item">
-                                <a class="menu-link {{ request()->routeIs('admin.service-prices') ? 'active' : '' }}"
-                                href="{{ route('admin.service-prices') }}">
-                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
-                                    <span class="menu-title">Service Prices</span>
-                                </a>
-                            </div>
-                            @endcan
                         </div>
                     </div>
                     @endcanany
@@ -929,6 +896,41 @@
                                 <a class="menu-link {{ request()->routeIs('admin.permissions', 'admin.permissions.*') ? 'active' : '' }}" href="{{ route('admin.permissions') }}">
                                     <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
                                     <span class="menu-title">Permissions</span>
+                                </a>
+                            </div>
+                            @endcan
+                        </div>
+                    </div>
+                    @endcanany
+
+                    {{-- Services --}}
+                    @canany(['view services', 'view service prices'])
+                    <div data-kt-menu-trigger="click" class="menu-item menu-accordion {{ request()->routeIs('admin.services*', 'admin.service-prices*') ? 'show here' : '' }}">
+                        <span class="menu-link">
+                            <span class="menu-icon">
+                                <i class="ki-duotone ki-briefcase fs-2">
+                                    <span class="path1"></span>
+                                    <span class="path2"></span>
+                                </i>
+                            </span>
+                            <span class="menu-title">Services</span>
+                            <span class="menu-arrow"></span>
+                        </span>
+                        <div class="menu-sub menu-sub-accordion">
+                            @can('view services')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.services') ? 'active' : '' }}" href="{{ route('admin.services') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">All Services</span>
+                                </a>
+                            </div>
+                            @endcan
+                            @can('view service prices')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.service-prices') ? 'active' : '' }}"
+                                href="{{ route('admin.service-prices') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">Service Prices</span>
                                 </a>
                             </div>
                             @endcan
