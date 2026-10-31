@@ -406,13 +406,13 @@ class JobPostRequest extends FormRequest
             
             // Also ensure job description doesn't have links for regular jobs
             // (Links should be in application_procedure, not job description)
-            $description = $this->input('job_description');
-            if (!empty($description) && preg_match($urlPattern, $description)) {
-                $validator->errors()->add(
-                    'job_description',
-                    'For regular job posts, please do not include application links in the job description. Use the "Application Procedure" field instead.'
-                );
-            }
+            // $description = $this->input('job_description');
+            // if (!empty($description) && preg_match($urlPattern, $description)) {
+            //     $validator->errors()->add(
+            //         'job_description',
+            //         'For regular job posts, please do not include application links in the job description. Use the "Application Procedure" field instead.'
+            //     );
+            // }
         }
     }
 
