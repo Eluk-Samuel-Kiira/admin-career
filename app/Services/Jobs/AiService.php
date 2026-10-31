@@ -249,8 +249,171 @@ class AiService
             $data['telephone'] = $this->normalizeTelephone($data['telephone']);
         }
 
+        // Every job gets a "never pay for this job" warning in the application procedure,
+        // worded and placed differently from job to job.
+        $data = $this->applyPaymentWarning($data);
+
         unset($data['application_link']); // not a real form field - already folded into application_procedure
         return $data;
+    }
+
+    /**
+     * Pools of "do not pay" warnings. All CAPITALS, all different in voice, so a
+     * page full of jobs never repeats one stock sentence. The meaning is always:
+     * do not pay money for this advert or for any part of the recruitment process.
+     */
+    protected function paymentWarningVariants(): array
+    {
+        return [
+            'DO NOT PAY ANY MONEY FOR THIS JOB ADVERT OR ANY PART OF THE RECRUITMENT PROCESS.',
+            'NEVER PAY ANYONE TO GET THIS JOB. RECRUITMENT FOR THIS POSITION IS FREE.',
+            'BEWARE OF FAKE RECRUITERS. NO GENUINE EMPLOYER ASKS FOR MONEY TO APPLY, TO BE INTERVIEWED OR TO BE HIRED.',
+            'THIS ADVERT AND THE WHOLE HIRING PROCESS ARE FREE OF CHARGE. PLEASE DO NOT SEND MONEY TO ANYONE.',
+            'IF ANYONE ASKS YOU TO PAY FOR THIS JOB, FOR AN INTERVIEW OR FOR "PROCESSING", DO NOT PAY. IT IS A SCAM.',
+            'A WORD OF CAUTION: DO NOT PAY ANY FEE TO APPLY FOR THIS JOB OR TO BE CONSIDERED FOR IT.',
+            'NO PAYMENT IS REQUIRED AT ANY STAGE OF THIS RECRUITMENT. DO NOT PAY ANYONE FOR THIS JOB.',
+            'PLEASE NOTE: YOU SHOULD NEVER PAY MONEY FOR A JOB ADVERT OR FOR ANY RECRUITMENT STEP. KEEP YOUR MONEY.',
+            'APPLICATION IS FREE. DO NOT PAY FOR FORMS, INTERVIEWS, MEDICALS, UNIFORMS OR ANY OTHER "REQUIREMENT" TO GET THIS JOB.',
+            'STAY SAFE: DO NOT PAY MONEY FOR THIS JOB ADVERT OR ANY RECRUITMENT PROCESS, NOT EVEN A SMALL AMOUNT.',
+            'BE WARNED: ANYONE COLLECTING MONEY FROM JOB SEEKERS FOR THIS VACANCY IS NOT TO BE TRUSTED. DO NOT PAY.',
+            'REMEMBER, YOU DO NOT PAY TO GET A JOB. DO NOT SEND MONEY FOR THIS ADVERT OR ANY RECRUITMENT PROCESS.',
+            'DO NOT BE CONNED. NOBODY SHOULD CHARGE YOU ANYTHING FOR THIS VACANCY OR ITS RECRUITMENT PROCESS.',
+            'DO NOT PAY MONEY TO ANYONE CLAIMING THEY CAN GET YOU THIS JOB OR HELP YOU PASS THE RECRUITMENT PROCESS.',
+        ];
+    }
+
+    /**
+     * Adds one warning to application_procedure (and writes a short, plain
+     * procedure if there wasn't one). The warning is picked from the job's own
+     * details, so the same job always gets the same wording on re-runs but
+     * neighbouring jobs differ. Position (before/after) and styling vary too.
+     */
+    protected function applyPaymentWarning(array $data): array
+    {
+        $procedure = (string) ($data['application_procedure'] ?? '');
+        $plain     = trim(strip_tags($procedure));
+
+        // Source already carries a capitalised "do not pay" notice? Leave it alone.
+        if ($plain !== '' && preg_match('/\b(DO NOT|DON\'T|NEVER|NO)\W+(?:\w+\W+){0,4}(PAY|PAYMENT|FEE|FEES|MONEY)\b/', $plain)) {
+            $data['application_procedure'] = $procedure;
+            return $data;
+        }
+
+        $seedBase = ($data['job_title'] ?? '') . '|' . ($data['company_name'] ?? '') . '|' . ($data['deadline'] ?? '');
+
+        if ($plain === '') {
+            $procedure = $this->generateFallbackApplicationProcedure($seedBase, !empty($data['email']), !empty($data['telephone']));
+        }
+
+        $variants = $this->paymentWarningVariants();
+        $text     = $variants[crc32($seedBase . 'w') % count($variants)];
+        $style    = crc32($seedBase . 's') % 3;
+        $before   = crc32($seedBase . 'p') % 4 === 0; // mostly after, sometimes first
+
+        $notice = match ($style) {
+            0       => '<p><strong>' . $text . '</strong></p>',
+            1       => '<p><strong>NOTICE:</strong> ' . $text . '</p>',
+            default => '<p>' . $text . '</p>',
+        };
+
+        $data['application_procedure'] = $before ? $notice . $procedure : $procedure . $notice;
+
+        return $data;
+    }
+
+    protected function generateFallbackApplicationProcedure(string $seed, bool $hasEmail, bool $hasPhone): string
+    {
+        $contact = match (true) {
+            $hasEmail && $hasPhone => ['using the email address or phone number shown on this page', 'through the email or phone contact on this page'],
+            $hasEmail              => ['using the email address shown on this page', 'to the email address on this page'],
+            $hasPhone              => ['using the phone number shown on this page', 'on the phone number given on this page'],
+            default                => ['using the details on this page', 'through the contact details on this page'],
+        };
+
+        $variants = [
+            "<p>Interested candidates should send an updated CV and a short cover letter {$contact[0]}, before the closing date.</p>",
+            "<p>If you qualify, send your CV and cover letter {$contact[1]}. Applications received after the deadline will not be looked at.</p>",
+            "<p>Send your CV, a cover letter and copies of your academic documents {$contact[0]}. Only shortlisted candidates will be contacted.</p>",
+            "<p>To apply, get in touch {$contact[1]} with your CV attached. Please mention the job title in your message.</p>",
+        ];
+
+        return $variants[crc32($seed . 'a') % count($variants)];
+    }
+
+    /**
+     * Wording a reader (or a detector) would recognise as machine-written.
+     * Used in every prompt that asks the model to WRITE job content.
+     */
+    protected function humanWritingRules(): string
+    {
+        return <<<RULES
+        HUMAN WRITING RULES (anything you write yourself, not text copied from the source):
+        - Write the way a hiring officer in East Africa would type a real advert: plain, direct, specific.
+        - Never use these words or phrases: delve, leverage, utilize, synergy, dynamic, passionate, vibrant,
+        fast-paced, thrive, seamless, robust, cutting-edge, state-of-the-art, game-changer, pivotal, tapestry,
+        landscape, realm, "in today's", "join our team", "exciting opportunity", "rewarding career",
+        "take your career to the next level", "a proven track record", "results-driven", "self-starter",
+        "plays a crucial role", "ensure that", "it is important to note".
+        - Do not use em dashes or en dashes. Use a comma, a full stop or a plain hyphen.
+        - Do not use emojis, rhetorical questions, or a closing sentence that sums up the whole advert.
+        - Avoid "not only ... but also", and avoid listing things in threes every time.
+        - Vary sentence length on purpose: some short, some long. Do not start two sentences the same way.
+        - Prefer concrete things (what the person actually does, uses, reports to) over adjectives.
+        - Lists do not need equal length: some bullets are a few words, others a full line.
+        - Do not repeat the job title in every sentence, and do not repeat keywords to please search engines.
+        RULES;
+    }
+
+    /**
+     * Last line of defence for text WE generate (not verbatim source text):
+     * remove the small habits that make copy look machine-written.
+     */
+    protected function scrubAiTells(string $text): string
+    {
+        $text = preg_replace('/\s*[\x{2014}\x{2013}]\s*/u', ', ', $text);
+        $text = str_replace(["\u{2018}", "\u{2019}", "\u{201C}", "\u{201D}"], ["'", "'", '"', '"'], $text);
+        // emojis / pictographs
+        $text = preg_replace('/[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]/u', '', $text);
+
+        $swap = [
+            '/\bleverag(e|es|ed|ing)\b/i'      => 'use',
+            '/\butili[sz](e|es|ed|ing)\b/i'    => 'use',
+            '/\bdelv(e|es|ed|ing) into\b/i'    => 'look into',
+            '/\bseamless(ly)?\b/i'             => 'smooth',
+            '/\bcutting-edge\b/i'              => 'modern',
+            '/\bfast-paced\b/i'                => 'busy',
+            '/\bdynamic\b/i'                   => 'active',
+            '/\bpassionate\b/i'                => 'committed',
+            '/\bvibrant\b/i'                   => 'lively',
+            '/\bpivotal\b/i'                   => 'important',
+            '/\bresults-driven\b/i'            => 'focused',
+        ];
+        $text = preg_replace(array_keys($swap), array_values($swap), $text);
+
+        return preg_replace('/,\s*,/', ',', $text);
+    }
+
+    /** Scrub every string value that we asked the model to write from scratch. */
+    protected function scrubGeneratedFields(array $data): array
+    {
+        foreach (['job_description', 'responsibilities', 'qualifications', 'skills', 'meta_description', 'keywords'] as $f) {
+            if (!empty($data[$f]) && is_string($data[$f])) {
+                $data[$f] = $this->scrubAiTells($data[$f]);
+            }
+        }
+        return $data;
+    }
+
+    /** Stable pick: same job => same result, different jobs => different results. */
+    protected function seededPick(array $pool, string $seed, int $count = 1): array
+    {
+        $scored = [];
+        foreach ($pool as $i => $item) {
+            $scored[] = [crc32($seed . '#' . $i), $item];
+        }
+        usort($scored, fn($a, $b) => $a[0] <=> $b[0]);
+
+        return array_map(fn($s) => $s[1], array_slice($scored, 0, $count));
     }
 
     /**
@@ -280,7 +443,9 @@ class AiService
             return $this->callAiApi($m, $key, $prompt);
         }, expectJson: false);
 
-        return is_string($text) ? trim($text) : $this->extractTextFromResult($text);
+        $text = is_string($text) ? trim($text) : $this->extractTextFromResult($text);
+
+        return $this->scrubAiTells($text);
     }
 
     public function generateFromTitle(string $title, ?string $company = null, ?string $country = null, ?string $model = null): array
@@ -293,6 +458,9 @@ class AiService
             return $this->callAiApi($m, $key, $prompt);
         }, expectJson: true);
 
+        $result = $this->scrubGeneratedFields($result); // all of this was written by the model
+        $result['job_title'] = $result['job_title'] ?? $title;
+        $result['company_name'] = $result['company_name'] ?? ($company ?? '');
         $result = $this->applySmartDefaults($result, $country);
         $result = $this->applyApplicationLinkHandling($result);
         return $this->applyGeorgiaFontToContentFields($result);
@@ -670,6 +838,7 @@ class AiService
     {
         $twoWeeksAhead = Carbon::now()->addWeeks(2)->format('Y-m-d');
         $referenceBlock = $this->formatReferenceListsForPrompt($referenceData);
+        $humanRules = $this->humanWritingRules();
 
         $sourceInstruction = $sourceType === 'url'
             ? 'The CONTENT below was fetched directly from the job posting page. Extract the job details from it.'
@@ -727,11 +896,15 @@ class AiService
                 given at all for a number (default to true for that number in that case).
                 - Both flags can be true at once if the content indicates numbers work for both purposes.
 
+                APPLICATION PROCEDURE NOTE:
+                Do NOT write any warning about paying money or fees in application_procedure. A "do not pay"
+                notice is added automatically afterwards.
+
+                {$humanRules}
+
                 CONTENT QUALITY & SEO RULE (applies to anything you WRITE rather than copy verbatim):
-                - Write natural, professional, human-sounding copy. Avoid generic AI phrasing, repetitive sentence
-                openers ("We are looking for...", "This is an exciting opportunity..." used more than once), and
-                filler that reads as machine-generated. Vary sentence length and structure so it reads like it was
-                written by an experienced HR copywriter, not a template.
+                - Write natural, professional, human-sounding copy that reads like it was typed by an
+                experienced HR officer, not a template.
                 - Naturally weave in the job title and relevant industry, skill, and location keywords so the
                 content is well-optimized for search engines, without keyword-stuffing or awkward repetition.
                 - If the final job_description (verbatim, generated, or a mix) would end up under roughly 120 words, 
@@ -829,8 +1002,10 @@ class AiService
             . "dedicated email/telephone/application_link fields. If more than one contact number is "
             . "visible, list them all in telephone separated by commas (never with \"/\", \"and\", or \"or\"). "
             . "If an application URL is visible, put it in application_link (do not embed the raw link in "
-            . "application_procedure). Any content you write rather than copy from the image must read as "
-            . "natural, human-written, SEO-friendly copy (not generic or repetitive AI phrasing), and if the "
+            . "application_procedure). Do not write any warning about paying money in application_procedure, "
+            . "one is added automatically. Any content you write rather than copy from the image must read as "
+            . "natural, human-written, SEO-friendly copy.\n\n" . $this->humanWritingRules() . "\n\n"
+            . "If the "
             . "resulting job_description would be under roughly 120 words, expand it with reasonable "
             . "role-appropriate detail so it's substantive enough for search engines. "
             . "Return ONLY a single valid JSON object with the same fields as a standard job extraction "
@@ -852,6 +1027,7 @@ class AiService
         $countryText = $country ? " in {$country}" : ' in East Africa';
         $deadline = Carbon::now()->addWeeks(2)->format('Y-m-d');
         $referenceBlock = $this->formatReferenceListsForPrompt($referenceData);
+        $humanRules = $this->humanWritingRules();
 
         return <<<PROMPT
             Generate a complete, professional job posting for a "{$title}"{$companyText}{$countryText}.
@@ -869,21 +1045,23 @@ class AiService
 
             {$referenceBlock}
 
-            Write natural, human-sounding, SEO-optimized copy - vary sentence structure and wording, avoid
-            generic or repetitive AI-sounding phrasing, and naturally include the job title and relevant
-            industry/skill/location keywords. The job_description must be substantive — roughly 120-180 words across 3-4 short paragraphs. 
-            Each paragraph should cover a distinct angle (the role's purpose, day-to-day scope, the team/environment, 
-            and what the employer is looking for). Do not repeat the same idea in different words to hit the length.
+            {$humanRules}
+
+            Naturally include the job title and relevant industry/skill/location keywords once or twice,
+            never forced. The job_description should run roughly 120-180 words in 2-4 paragraphs of uneven
+            length (one can be a single sentence). Do not follow a fixed paragraph recipe. Cover what the
+            person actually does, who they work with and what the employer wants, in whatever order suits
+            this particular job. Do not repeat the same idea in different words to hit the length.
 
             Return ONLY a valid JSON object - no explanation, no markdown, no code blocks. Do not use any HTML
             attributes (no style="...") on any tag - plain <p>/<ul>/<li> only, so nothing can break the JSON. Do not
             include any contact info or application links anywhere - this is a fresh generated posting.
 
             {
-            "job_description": "3-4 paragraphs as HTML with <p> tags",
+            "job_description": "2-4 paragraphs as HTML with <p> tags",
             "responsibilities": "HTML <ul><li> list format - NEVER plain text with dashes or commas",
             "qualifications": "HTML <ul><li> list format - NEVER plain text with dashes or commas",
-            "skills": "comma-separated list of 8-12 relevant skills",
+            "skills": "comma-separated list of 6-10 relevant skills, specific to this job rather than generic soft skills",
             "meta_description": "155-character SEO meta description",
             "keywords": "comma-separated SEO keywords",
             "experience_level_name": "must be an EXACT value from the Experience Levels list above, else null",
@@ -901,6 +1079,7 @@ class AiService
     protected function buildEnhancePrompt(string $fieldName, string $content, string $instruction): string
     {
         $fieldLabel = ucwords(str_replace('_', ' ', $fieldName));
+        $humanRules = $this->humanWritingRules();
 
         return <<<PROMPT
         You are an expert HR copywriter. Your task: {$instruction}
@@ -909,10 +1088,7 @@ class AiService
 
         RULES:
         - Preserve the original meaning and any facts present; improve clarity and professionalism only.
-        - Write natural, human-sounding copy. Avoid: repeated sentence openers, the phrases
-        "In today's fast-paced world", "We are looking for a dynamic individual",
-        "This is an exciting opportunity", "leverage", "synergy", and any phrasing that
-        reads as machine-generated. Prefer concrete verbs and specific detail over adjectives.
+        - {$humanRules}
         - Match the register to the field: descriptions and procedures should read as flowing
         paragraphs; responsibilities and qualifications should read as crisp, scannable lists.
         - Return ONLY the improved content as clean HTML using <p> and <ul><li> - no attributes on any tag.
@@ -1029,91 +1205,141 @@ class AiService
             return $description;
         }
 
-        $extra = $this->generateFallbackDescription($title, $company, $location);
+        $extra = $this->generateFallbackDescription($title, $company, $location, true);
 
         return trim(strip_tags($description)) !== ''
             ? $description . $extra
             : $extra;
     }
 
-    protected function generateFallbackDescription(string $title, ?string $company, ?string $location): string
+    protected function generateFallbackDescription(string $title, ?string $company, ?string $location, bool $supplement = false): string
     {
-        $companyText  = $company  ? " at {$company}"  : '';
-        $locationText = $location ? " based in {$location}" : '';
+        $at    = $company  ? " at {$company}"  : '';
+        $in    = $location ? " in {$location}" : '';
+        $seed  = $title . '|' . $company . '|' . $location;
+        $pick  = fn(array $pool, string $salt) => $pool[crc32($seed . $salt) % count($pool)];
 
-        // Rotate openers so repeated generations don't look templated
         $openers = [
-            "<p>We are currently recruiting a <strong>{$title}</strong>{$companyText}{$locationText} to join our growing team.</p>",
-            "<p>An opportunity has arisen for a <strong>{$title}</strong>{$companyText}{$locationText}.</p>",
-            "<p>Our organisation is seeking a suitably qualified <strong>{$title}</strong>{$companyText}{$locationText}.</p>",
+            "<p>{$company} has a vacancy for a <strong>{$title}</strong>{$in}.</p>",
+            "<p>A <strong>{$title}</strong> is needed{$at}{$in}.</p>",
+            "<p>The <strong>{$title}</strong> post{$at} is now open{$in}.</p>",
+            "<p>Applications are invited for the position of <strong>{$title}</strong>{$at}{$in}.</p>",
+            "<p>There is an opening for a <strong>{$title}</strong>{$at}{$in}, and the team would like it filled soon.</p>",
+            "<p>If you have worked as a {$title} before, this vacancy{$at}{$in} may suit you.</p>",
         ];
+        if (!$company) {
+            $openers[0] = "<p>There is a vacancy for a <strong>{$title}</strong>{$in}.</p>";
+        }
 
         $bodies = [
-            "The successful candidate will take ownership of day-to-day responsibilities, work closely with colleagues across departments, and contribute to the continued success of the organisation. This role suits someone who is reliable, detail-oriented, and comfortable working both independently and as part of a team.",
-            "Working within a supportive team, the post-holder will be expected to plan and prioritise their own workload, communicate clearly with stakeholders, and maintain high standards in every task. Previous experience in a comparable position is highly desirable.",
-            "This position offers the right candidate a chance to develop their career in a professional environment, with opportunities to build on existing skills and take on new challenges as the role evolves.",
+            "The person we hire will handle the daily work of the role, keep records up to date and report to a supervisor. Some tasks are routine and some arrive without warning, so being organised matters more than any single skill.",
+            "Most of the week is spent on the core duties of the post, with regular check-ins with colleagues from other departments. You should be able to plan your own time and finish work without being chased.",
+            "This is a hands-on position. You will work closely with the rest of the team, share updates with your supervisor and deal with queries as they come up. Experience in a similar setting will help you settle in quickly.",
+            "The work needs someone steady who can follow procedures but also speak up when something is not working. Clear writing and good communication with clients and co-workers are part of the job.",
+            "You will join an existing team, so learning how things are already done will be your first task. After that, you will be expected to carry your own workload and suggest improvements where you see them.",
+            "The role involves regular contact with colleagues and the public, careful record keeping and meeting deadlines set by management. Training on internal systems will be given where needed.",
         ];
 
         $closers = [
-            "<p>If you meet the requirements and are looking for a rewarding new role, we would like to hear from you.</p>",
-            "<p>Applications are welcome from candidates who can demonstrate the skills and experience outlined below.</p>",
-            "<p>To be considered, please submit your application before the closing date.</p>",
+            "<p>Read the requirements below and apply if they match your background.</p>",
+            "<p>Only candidates who meet the requirements listed below should apply.</p>",
+            "<p>Please check the closing date and send your application in good time.</p>",
+            "<p>Applicants should have the documents mentioned below ready before applying.</p>",
+            "<p>Shortlisted candidates will be contacted for interviews.</p>",
+            "",
         ];
 
-        // Deterministic-but-varied pick based on the title, so the same job always
-        // gets the same text (idempotent re-runs), but different jobs differ.
-        $seed = crc32($title);
+        $body = '<p>' . $pick($bodies, 'b') . '</p>';
+        $close = $pick($closers, 'c');
 
-        return $openers[$seed % count($openers)]
-            . '<p>' . $bodies[$seed % count($bodies)] . '</p>'
-            . $closers[$seed % count($closers)];
+        // Used to top up a short real description: skip the opener so the
+        // text doesn't start a second time halfway down the page.
+        if ($supplement) {
+            return $body . $close;
+        }
+
+        return $this->scrubAiTells($pick($openers, 'o') . $body . $close);
     }
 
     protected function generateFallbackResponsibilities(string $title, ?string $company): string
     {
-        $companyText = $company ? " at {$company}" : '';
+        $seed = $title . '|' . $company;
 
-        return "<ul>
-            <li>Carry out all duties related to the <strong>{$title}</strong> role{$companyText}.</li>
-            <li>Collaborate with team members to achieve organisational goals.</li>
-            <li>Ensure timely delivery of assigned tasks and projects.</li>
-            <li>Maintain high standards of quality and professionalism.</li>
-            <li>Communicate effectively with stakeholders and team members.</li>
-            <li>Contribute to the continuous improvement of processes.</li>
-        </ul>";
+        $pool = [
+            "Handle the day-to-day tasks of the {$title} position",
+            "Keep accurate records and update them on time",
+            "Work with colleagues in other departments when a task needs more than one team",
+            "Report to your supervisor on progress and any problems",
+            "Respond to queries from clients, staff or the public",
+            "Prepare short weekly and monthly reports",
+            "Follow the organisation's policies and procedures",
+            "Help train or guide new staff when asked",
+            "Look after office or work-area materials and equipment",
+            "Attend team meetings and follow up on agreed actions",
+            "Suggest simple ways to improve how the work is done",
+            "Carry out any other reasonable duties assigned by management",
+        ];
+
+        $items = $this->seededPick($pool, $seed, 5 + (crc32($seed . 'n') % 3));
+
+        return '<ul>' . implode('', array_map(fn($i) => "<li>{$i}</li>", $items)) . '</ul>';
     }
 
     protected function generateFallbackQualifications(string $title): string
     {
-        return "<p><strong>Required Qualifications</strong></p>
-        <ul>
-        <li>Relevant qualification or experience for the {$title} role.</li>
-        <li>Strong communication and interpersonal skills.</li>
-        <li>Ability to work independently and as part of a team.</li>
-        </ul>
-        <p><strong>Preferred Qualifications</strong></p>
-        <ul>
-        <li>Experience in a similar role.</li>
-        <li>Knowledge of industry best practices.</li>
-        </ul>";
+        $pool = [
+            "A certificate, diploma or degree relevant to the {$title} role",
+            "Previous work experience in a similar position",
+            "Good spoken and written English",
+            "Basic computer skills, including Word and Excel",
+            "Able to work with little supervision and meet deadlines",
+            "Honest, punctual and well organised",
+            "Good communication skills",
+            "Willingness to work flexible hours when needed",
+            "Ability to work well in a team",
+        ];
+
+        $items = $this->seededPick($pool, $title . 'q', 4 + (crc32($title . 'qn') % 3));
+
+        return '<ul>' . implode('', array_map(fn($i) => "<li>{$i}</li>", $items)) . '</ul>';
     }
 
     protected function generateFallbackSkills(string $title): string
     {
-        return "Communication, Teamwork, Problem Solving, Time Management, Report Writing, Attention to Detail, Leadership, Adaptability";
+        $pool = [
+            'Communication', 'Teamwork', 'Problem Solving', 'Time Management', 'Report Writing',
+            'Attention to Detail', 'Record Keeping', 'Computer Literacy', 'Customer Care',
+            'Planning', 'Organisation', 'Adaptability', 'Basic Budgeting', 'Interpersonal Skills',
+        ];
+
+        return implode(', ', $this->seededPick($pool, $title . 's', 6 + (crc32($title . 'sn') % 3)));
     }
 
     protected function generateFallbackMetaDescription(string $title, ?string $company, ?string $location): string
     {
-        $companyText = $company ? " at {$company}" : '';
-        $locationText = $location ? " in {$location}" : ' in East Africa';
-        $desc = "Apply for the {$title} position{$companyText}{$locationText}. Join our team and advance your career.";
-        return mb_substr($desc, 0, 155);
+        $at  = $company ? " at {$company}" : '';
+        $in  = $location ? " in {$location}" : '';
+        $seed = $title . '|' . $company . '|' . $location;
+
+        $variants = [
+            "{$title} vacancy{$at}{$in}. See the requirements, duties and how to apply before the deadline.",
+            "{$company} is hiring a {$title}{$in}. Check the qualifications needed and apply here.",
+            "Job opening: {$title}{$at}{$in}. Read the full details, requirements and application steps.",
+            "Apply for the {$title} job{$at}{$in}. Duties, qualifications and closing date inside.",
+            "New {$title} vacancy{$in}. Find out what the job involves and who can apply.",
+        ];
+        if (!$company) {
+            $variants[1] = "Hiring now: {$title}{$in}. Check the qualifications needed and apply here.";
+        }
+
+        return mb_substr($variants[crc32($seed) % count($variants)], 0, 155);
     }
 
     protected function generateFallbackKeywords(string $title): string
     {
-        return "{$title}, jobs, career, employment, {$title} jobs, {$title} career, hiring";
+        $lower = mb_strtolower($title);
+
+        return implode(', ', array_unique([$lower, "{$lower} job", "{$lower} vacancy", "{$lower} jobs", 'jobs', 'vacancies', 'hiring']));
     }
 
     public function getCountrySettings(string $countryCode): array
@@ -1585,24 +1811,72 @@ class AiService
 
     protected function buildGapReviewPrompt(string $resumeText, ?string $jobDescription = null): string
     {
+        $today = Carbon::now()->format('j F Y');
+
         $jobContext = $jobDescription
-            ? "The candidate is targeting this specific job:\n\n{$jobDescription}\n\nEvaluate the CV against that role."
-            : "Evaluate this CV for general professional quality.";
+            ? "The candidate is targeting this specific job:\n\n{$jobDescription}\n\nEvaluate the CV against that role. Check every duty, skill, qualification and keyword the advert asks for, and flag the ones the CV does not show or cannot prove."
+            : "No target job was given. Evaluate this CV for general professional quality and ATS readiness. Infer the career field from the CV and judge it against what recruiters in that field (especially in East Africa) expect to see.";
 
         return <<<PROMPT
-            You are a professional CV reviewer with 10+ years of HR experience.
+            You are a senior recruiter and ATS (applicant tracking system) specialist with 10+ years of hiring
+            experience. Your review is used to decide which questions the candidate must answer so their CV can be
+            rebuilt to ATS standards. So do not give a general opinion: dig for the exact facts that are missing,
+            unclear, inconsistent or unproven, because each one becomes a question to the candidate.
+
+            TODAY'S DATE: {$today}. Use it to check whether "years of experience" claims and employment dates are
+            still correct, and to spot open-ended or stale dates.
+
             {$jobContext}
+
+            WHAT TO CHECK IN EACH SECTION
+            1. Contact Information: full name, one reachable phone number, a professional email (flag joke or
+               unprofessional addresses), town/village AND district/country (a bare district is too vague), and a
+               LinkedIn or portfolio link where the field expects one. Note personal data that adds nothing and can
+               cause bias (date of birth, photo, marital status, religion, hobbies, signed declaration).
+            2. Professional Summary: is there one? Does it name the target role, the real years of experience (check
+               against the dates), the main field and 2-3 provable strengths? Flag vague lines like "hard-working
+               person seeking opportunities" and any claim that the dates do not support.
+            3. Work Experience: for EVERY job check employer, exact job title, employment status (paid, volunteer,
+               internship, placement, contract), start and end month and year, and unexplained gaps or very short
+               stints. Check that the duties actually match the job title and the target role (duties copied from a
+               different profession are a red flag). Look for contradictions, such as the same employer and date listed
+               twice under different headings. Check that bullets start with action verbs and carry numbers: volume,
+               clients, money handled, team size, targets, percentages, time saved, results. If numbers are absent,
+               say which ones to ask for.
+            4. Education: for each qualification check institution, exact award title, month and year of completion,
+               grade, class, division or GPA (with its scale) and the exam board where relevant. Flag missing grades,
+               unexplained gaps between levels, and professional registration or licensing that the field legally
+               requires (for example nursing and midwifery council enrolment and practising licence, engineering,
+               accountancy, law, teaching or medical registration). The registration number and expiry date are among
+               the first things an employer checks.
+            5. Skills: separate hard skills, tools and software, certifications and soft skills. Flag skill lists that
+               are mostly soft skills, are generic, or lack the keywords this field and role normally list. Check for
+               short courses and training (provider, year, duration, certificate), languages with levels, and software
+               the candidate probably uses but did not name.
+
+            ATS FORMAT PROBLEMS (mention the most serious in the "summary", or in the closest section note)
+            - The CV looks like a photograph or scan, or is built from tables, text boxes, columns, headers or
+              footers, graphics or rating bars. ATS cannot read these reliably.
+            - Dates not in month-and-year form, missing job titles, headings with unusual names.
+            - Inconsistent spelling of the candidate's name or employers.
+
+            SCORING (overall_score, 0-100). Be strict and honest.
+            - 85-100: complete, consistent, measurable results, and ATS-readable. Rare.
+            - 65-84: solid, with some missing numbers, grades or keywords.
+            - 40-64: key facts missing or duties generic. Needs a real interview with the candidate.
+            - 0-39: major gaps, contradictions or unreadable content.
+            Lower the score for each contradiction, missing registration, missing dates, and absence of numbers.
 
             Return ONLY a single valid JSON object. No markdown fences, no commentary before or after.
 
             {
             "overall_score": 0-100,
-            "summary": "2-3 sentence plain-English overview of the CV's strengths and biggest weaknesses",
+            "summary": "2-3 sentence plain-English overview naming the 2 biggest weaknesses by name and the single strongest point",
             "sections": [
                 {
                     "section": "Contact Information",
                     "status": "ok" | "weak" | "missing",
-                    "note": "one sentence explaining what you found or what is missing"
+                    "note": "one or two sentences naming exactly what is missing or wrong, quoting the CV where possible"
                 },
                 {
                     "section": "Professional Summary",
@@ -1629,13 +1903,30 @@ class AiService
             }
 
             RULES:
-            - Use EXACTLY the 5 sections listed above. Do not add or remove sections.
-            - "status" must be one of: "ok", "weak", "missing" (lowercase).
-            - "missing_fields" should be a JSON array of snake_case strings naming concrete
-            things the candidate should provide to strengthen the CV — e.g. "certifications",
-            "achievements", "quantified_results", "professional_summary", "contact_email",
-            "linkedin_url". Return an empty array [] if nothing is missing.
-            - Do NOT invent details that are not in the CV.
+            - Use EXACTLY the 5 sections listed above, in that order. Do not add or remove sections.
+            - "status" must be one of: "ok", "weak", "missing" (lowercase). Use "ok" only when nothing important is
+              missing. Use "missing" only when the section is absent.
+            - Every "note" must be specific to THIS CV: name the job, school, date or line concerned. Never write
+              generic advice such as "add more detail" or "improve formatting".
+            - "missing_fields" is an array of snake_case strings. Each one is a concrete fact the candidate must
+              supply, and each will be turned into a question for them, so make each one precise and answerable.
+              List the most important first and return at most 15. Prefer these names where they fit, and invent a
+              new snake_case name only if none fits:
+              contact_email, contact_phone, location_town_district, linkedin_url,
+              target_job_title, professional_summary, years_of_experience,
+              professional_registration_number, registration_expiry_date, employment_status,
+              job_title_exact, employment_start_end_dates, employment_gap_explanation,
+              key_duties_for_role, quantified_results, team_size_managed, budget_or_volume_handled,
+              achievements, awards_or_recognition, promotions_or_added_responsibility,
+              education_completion_dates, education_grades, gpa_scale, exam_board_results,
+              certifications, training_provider_and_year, clinical_or_field_placements, projects,
+              software_and_tools, technical_skills, industry_keywords, languages_with_levels,
+              volunteer_work, referees_full_details, referee_consent.
+            - Also list a field when the CV CONTRADICTS itself (for example the same job shown as paid and as
+              volunteer), so the candidate is asked to clarify. Name it after the thing to clarify, such as
+              employment_status.
+            - Return an empty array [] only if truly nothing is missing.
+            - Do NOT invent details that are not in the CV, and do not assume a registration, grade or number exists.
             - Do NOT wrap the response in markdown code fences.
             - Do NOT include any text before or after the JSON object.
 
