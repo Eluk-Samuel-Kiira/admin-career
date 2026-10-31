@@ -23,6 +23,7 @@ class CvReviewRequest extends Model
         'country_code',
         'currency_id',
         'amount_cents',
+        'payment_method_id',
 
         'target_job_title',
         'target_job_description',
@@ -82,6 +83,11 @@ class CvReviewRequest extends Model
     public function user()
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function paymentMethod()
+    {
+        return $this->belongsTo(\App\Models\PaymentMethod::class);
     }
 
     public function service()

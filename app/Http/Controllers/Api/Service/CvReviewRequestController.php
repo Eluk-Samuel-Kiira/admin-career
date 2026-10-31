@@ -249,18 +249,57 @@ class CvReviewRequestController extends Controller
             ], 422);
         }
 
-        $paymentReference = 'CVR-' . strtoupper(\Illuminate\Support\Str::random(10));
+        // Pay Now on a CV review request pays for the REWRITE, not the review.
+        // The review itself is free; what the seeker is buying here is the human rewrite.
+        $countryCode = strtoupper($cvRequest->country_code ?: config('app.country_code', 'UG'));
+        $rewritePrice = \App\Models\Service\ServicePrice::resolve('cv_rewrite', $countryCode);
 
-        return response()->json([
-            'success'           => true,
-            'payment_reference' => $paymentReference,
-            'amount_cents'      => $cvRequest->amount_cents,
-            'currency_code'     => $cvRequest->currency->code,
-            'formatted'         => $cvRequest->currency->formatAmount($cvRequest->amount_cents),
-            'callback_url'      => route('api.cv-review.callback'),
+        if (!$rewritePrice) {
+            return response()->json([
+                'success' => false,
+                'message' => 'CV rewrite pricing is not available in your region yet.',
+            ], 422);
+        }
+
+        // If the rewrite is free in this country (unlikely), skip payment.
+        if ((int) $rewritePrice->amount_cents === 0) {
+            $cvRequest->update([
+                'status'            => 'paid',
+                'payment_reference' => 'FREE-' . strtoupper(\Illuminate\Support\Str::random(8)),
+            ]);
+
+            return response()->json([
+                'success'   => true,
+                'is_free'   => true,
+                'message'   => 'This service is free right now. Your request has moved to our team.',
+                'next_step' => 'paid',
+            ]);
+        }
+
+        // Snapshot the rewrite price into the CV review request so it survives admin price changes.
+        $cvRequest->update([
+            'amount_cents' => (int) $rewritePrice->amount_cents,
+            'currency_id'  => $rewritePrice->currency_id,
         ]);
+
+        // Delegate to the generic init controller
+        $initRequest = new \Illuminate\Http\Request();
+        $initRequest->merge([
+            'amount_cents'      => (int) $rewritePrice->amount_cents,
+            'currency_code'     => $rewritePrice->currency->code,
+            'purpose_type'      => 'cv_review',
+            'purpose_reference' => $cvRequest->uuid,
+            'description'       => 'CV Rewrite for CV Review #' . substr($cvRequest->uuid, 0, 8),
+            'phone'             => $request->input('phone') ?? $user->phone,
+            'method'            => $request->input('method', 'mobile_money'),
+        ]);
+        $initRequest->setUserResolver(fn() => $user);
+
+        return app(\App\Http\Controllers\Api\Payment\PaymentInitController::class)
+            ->initiate($initRequest);
     }
 
+    
     // =================================================================
     // PAYMENT — webhook callback
     // =================================================================
@@ -511,6 +550,8 @@ class CvReviewRequestController extends Controller
             'service_name'          => $r->service->name ?? '—',
             'target_job_title'      => $r->target_job_title,
             'original_cv_name'      => $r->original_cv_name,
+            'payment_method_id' => $r->payment_method_id,
+            'payment_method'    => $r->paymentMethod?->name,
             'original_cv_url'       => $r->cv_download_url,     // ⬅️ use the model accessor
             'delivered_cv_url'      => $r->delivered_cv_url,    // ⬅️ use the model accessor
             'amount_cents'          => $r->amount_cents,

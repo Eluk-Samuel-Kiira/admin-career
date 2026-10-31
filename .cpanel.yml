@@ -1,0 +1,5 @@
+  ---
+  deployment:
+    tasks:
+      - export DEPLOYPATH=/home/starden1/public_html/stardena-team/
+      - /bin/rsync -a --exclude='.git' --exclude='.env' --exclude='storage' --exclude='vendor' --exclude='.cpanel.yml' ./ $DEPLOYPATH

@@ -127,7 +127,7 @@
 </div>
 
 {{-- Detail drawer --}}
-<div class="offcanvas offcanvas-end" tabindex="-1" id="kt_detail_drawer" style="width:720px;">
+<div class="offcanvas offcanvas-end" tabindex="-1" id="kt_detail_drawer" style="width:920px;">
     <div class="offcanvas-header">
         <h3 class="offcanvas-title">Request Details</h3>
         <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
@@ -149,11 +149,37 @@
                 <form id="confirmPaymentForm">
                     @csrf
                     <input type="hidden" name="request_id" id="confirm_request_id">
-                    <div class="fv-row mb-7">
+
+                    <div class="fv-row mb-5">
+                        <label class="required fw-semibold fs-6 mb-2">Payment Method</label>
+                        <select class="form-select form-select-solid" name="payment_method_id" id="confirm_payment_method" required>
+                            <option value="">Select the wallet that received this payment...</option>
+                            {{-- Populated by JS --}}
+                        </select>
+                        <div class="text-muted fs-7 mt-1">
+                            The money will be credited to this payment method's balance and logged in the transaction journal.
+                        </div>
+                    </div>
+
+                    <div class="fv-row mb-5">
                         <label class="required fw-semibold fs-6 mb-2">Payment Reference / Receipt No.</label>
                         <input type="text" class="form-control form-control-solid" name="payment_reference" required />
-                        <div class="text-muted fs-7 mt-1">Paste the transaction ID or receipt number from the payment provider.</div>
+                        <div class="text-muted fs-7 mt-1">Transaction ID or receipt number from the payment provider, or the admin's internal receipt number.</div>
                     </div>
+
+                    <div class="fv-row mb-5">
+                        <label class="fw-semibold fs-6 mb-2">Amount (optional)</label>
+                        <input type="number" class="form-control form-control-solid" name="amount_cents" id="confirm_amount"
+                               placeholder="Leave blank to use the CV review amount" min="1">
+                        <div class="text-muted fs-7 mt-1" id="confirm_amount_hint"></div>
+                    </div>
+
+                    <div class="fv-row mb-5">
+                        <label class="fw-semibold fs-6 mb-2">Note (internal)</label>
+                        <input type="text" class="form-control form-control-solid" name="note"
+                               placeholder="e.g. Cash received at office, receipt R-1042" />
+                    </div>
+
                     <div class="text-end">
                         <button type="button" class="btn btn-light me-3" data-bs-dismiss="modal">Cancel</button>
                         <button type="submit" class="btn btn-success" id="confirmPaymentBtn">
@@ -214,6 +240,7 @@ let currentCountryCode  = '';
 let currentAssignee     = '';
 let currentSlaFilter    = '';
 let adminUsers          = [];
+let paymentMethods      = [];
 
 document.addEventListener('DOMContentLoaded', async function () {
     await loadFilters();
@@ -230,6 +257,7 @@ async function loadFilters() {
         if (!data.success) return;
 
         adminUsers = data.admins || [];
+        paymentMethods = data.payment_methods || [];
 
         const assigneeFilter = document.getElementById('assigneeFilter');
         if (assigneeFilter) {
@@ -459,10 +487,27 @@ window.updateStatus = function (id, newStatus, current) {
 };
 
 /* ── Confirm Payment modal ──────────────────────────────────── */
-window.openConfirmPayment = function (id) {
+window.openConfirmPayment = function (id, defaultAmount) {
     document.getElementById('confirm_request_id').value = id;
     document.getElementById('confirmPaymentForm').reset();
     document.getElementById('confirm_request_id').value = id;
+
+    // Populate payment methods
+    const sel = document.getElementById('confirm_payment_method');
+    sel.innerHTML = '<option value="">Select the wallet that received this payment...</option>' +
+        paymentMethods.map(pm =>
+            `<option value="${pm.id}">${escapeHtml(pm.name)} (${escapeHtml(pm.code)})</option>`
+        ).join('');
+
+    // Amount hint
+    const hint = document.getElementById('confirm_amount_hint');
+    if (defaultAmount && defaultAmount > 0) {
+        hint.textContent = `The CV review request currently has ${defaultAmount} cents recorded. Leave blank to use that.`;
+        document.getElementById('confirm_amount').placeholder = defaultAmount;
+    } else {
+        hint.textContent = 'This CV review has no amount set. You must provide one.';
+    }
+
     new bootstrap.Modal(document.getElementById('kt_modal_confirm_payment')).show();
 };
 

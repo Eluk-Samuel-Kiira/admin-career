@@ -1793,7 +1793,7 @@ class AiService
 
             try {
                 // Log::info("🤖 Attempting CV extraction with {$model}");
-                $raw = $this->callAiApi($model, $apiKey, $prompt);
+                $raw = $this->callAiApi($model, $apiKey, $prompt, null, true);
                 
                 if ($raw) {
                     $data = $this->parseJsonResponse($raw);
@@ -1945,18 +1945,10 @@ class AiService
         $cleaned = preg_replace('/^```(?:json)?\s*|\s*```$/m', '', trim($raw));
         $cleaned = trim($cleaned);
 
-        // Try to find JSON if there's extra text
-        if (!str_starts_with($cleaned, '{') && !str_starts_with($cleaned, '[')) {
-            preg_match('/\{[^{}]*\}/', $cleaned, $matches);
-            if (!empty($matches)) {
-                $cleaned = $matches[0];
-            }
-        }
+        // Tolerates chatter around the object and raw line breaks inside strings
+        $data = $this->decodeJsonLenient($cleaned);
 
-        // Try to parse JSON
-        $data = json_decode($cleaned, true);
-
-        if (json_last_error() === JSON_ERROR_NONE && is_array($data)) {
+        if (is_array($data)) {
             return $data;
         }
 
@@ -2186,14 +2178,14 @@ class AiService
             }
 
             try {
-                $raw = $this->callAiApi($model, $apiKey, $prompt);
+                $raw = $this->callAiApi($model, $apiKey, $prompt, null, true);
                 $data = $this->parseJsonResponse(is_array($raw) ? json_encode($raw) : $raw);
 
                 if ($data !== null && !empty($data)) {
                     // Sanity check: the AI must return an object with at least one of the expected keys
                     if (isset($data['overall_score']) || isset($data['sections']) || isset($data['summary'])) {
                         Log::info("Gap review succeeded with {$model}");
-                        return $data;
+                        return $this->normaliseGapReview($data);
                     }
 
                     Log::warning("Gap review: {$model} returned JSON but shape looks wrong", [
@@ -2212,6 +2204,94 @@ class AiService
             'CV gap review failed on all configured models. Last error: ' .
             ($lastError ?? 'no usable response from any model.')
         );
+    }
+
+    /**
+     * "missing_fields" are the questions shown to the candidate, each written as
+     * "Topic: question". Cleans what the model sent. If it returned an old-style key
+     * (for example "gpa_scale"), it is swapped for a full, plain question.
+     */
+    protected function normaliseGapReview(array $data): array
+    {
+        $out  = [];
+        $seen = [];
+
+        foreach ((array) ($data['missing_fields'] ?? []) as $item) {
+            $text = trim(preg_replace('/\s+/', ' ', (string) $item));
+            $text = preg_replace('/^\d+[.)]\s*/', '', $text);   // the system adds numbers
+            if ($text === '') {
+                continue;
+            }
+
+            if (preg_match('/^[a-z0-9_]+$/i', $text)) {              // a bare key, not a question
+                [$group, $question] = $this->fallbackGapQuestion(strtolower($text));
+                $text = "{$group}: {$question}";
+            } elseif (!str_contains($text, ':')) {
+                $text = 'Details: ' . $text;
+            }
+
+            $key = mb_strtolower($text);
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $out[] = mb_substr($text, 0, 600);
+        }
+
+        $data['missing_fields'] = array_slice($out, 0, 15);
+        unset($data['questions']);
+
+        return $data;
+    }
+
+    /** Plain-language backup questions, used only when the model skipped a missing field. */
+    protected function fallbackGapQuestion(string $field): array
+    {
+        $map = [
+            'contact_email'                    => ['Contact', 'What is the best professional email address for employers to reach you? (For example firstname.lastname@gmail.com.)'],
+            'contact_phone'                    => ['Contact', 'Which phone number should employers call or WhatsApp? Please give one or two numbers.'],
+            'location_town_district'           => ['Contact', 'Which town or village and district do you live in now? Are you willing to work in other districts or to relocate?'],
+            'linkedin_url'                     => ['Contact', 'Do you have a LinkedIn page? If yes, paste the link. If not, write "none".'],
+            'target_job_title'                 => ['Your target job', 'Which job title do you want most, and which type of employer (government, NGO, private company)? Please send one or two adverts you would like to apply to.'],
+            'professional_summary'             => ['Your target job', 'In two or three sentences, how would you describe your work to an employer: what you do, how long you have done it, and what you are best at?'],
+            'years_of_experience'              => ['Your experience', 'In total, how many years and months of paid or volunteer work do you have in your field? List any breaks of more than three months and what you did during them.'],
+            'professional_registration_number' => ['Registration and licence', 'What is your professional registration or enrolment number, and who issued it? When does your practising licence expire (day, month, year)?'],
+            'registration_expiry_date'         => ['Registration and licence', 'On what date does your registration or practising licence expire?'],
+            'employment_status'                => ['Your work history', 'For each job on your CV, were you paid staff, a volunteer, an intern or on placement? What was your exact job title?'],
+            'job_title_exact'                  => ['Your work history', 'What exact job title appears on your appointment letter or contract for each job on your CV?'],
+            'employment_start_end_dates'       => ['Your work history', 'For each job on your CV, in what month and year did you start and finish? Write "to date" if you still work there.'],
+            'employment_gap_explanation'       => ['Your work history', 'What were you doing in the periods between your jobs (study, casual work, job search, family)? One short line for each gap is enough.'],
+            'key_duties_for_role'              => ['Your work history', 'Tell us the real duties you carried out in your most recent job. List everything you actually did, and leave out what you only observed.'],
+            'quantified_results'               => ['Your results', 'Give numbers for your best work: how many clients, patients, customers, interviews, households or transactions did you handle per day, month or in total?'],
+            'team_size_managed'                => ['Your results', 'Did you supervise anyone? If yes, how many people, and what did you do for them (training, targets, reports)?'],
+            'budget_or_volume_handled'         => ['Your results', 'Did you handle money, stock or a budget in any job? Roughly how much per day, month or project (for example UGX 6 million per day)?'],
+            'achievements'                     => ['Your results', 'What are you proud of at work? Think of targets you beat, problems you solved or processes you improved, with a number if you have one.'],
+            'awards_or_recognition'            => ['Your results', 'Have you received any award, praise, promotion or extra responsibility? Who gave it and when?'],
+            'promotions_or_added_responsibility'=> ['Your results', 'Were you ever given extra responsibilities or promoted in a job? What was added and in which month and year?'],
+            'education_completion_dates'       => ['Education', 'In what month and year did you complete each qualification on your CV?'],
+            'education_grades'                 => ['Education', 'What was your final grade, class or GPA for each qualification (with the scale, for example 4.2 out of 5)? For O-level and A-level, give the division or points.'],
+            'gpa_scale'                        => ['Education', 'Your CV shows a GPA without a scale. Is it out of 4.0 or out of 5.0?'],
+            'exam_board_results'               => ['Education', 'Did you pass the national or professional exams for your course (for example UNMEB, UBTEB, ICPAU)? Please give the year and your result.'],
+            'certifications'                   => ['Training and certificates', 'Which professional certificates do you hold? For each one, say who issued it and in which year, and whether you have the certificate copy.'],
+            'training_provider_and_year'       => ['Training and certificates', 'For each short course or training on your CV, who organised it, where was it, what year and how long did it last (days or weeks)?'],
+            'clinical_or_field_placements'     => ['Training and certificates', 'Did you do placements or attachments during your course? Where, for how long, and what did you do there?'],
+            'projects'                         => ['Your results', 'Tell us about one or two projects you worked on: what the goal was, what you did yourself and what the result was.'],
+            'software_and_tools'               => ['Skills and tools', 'Which computer programs or tools do you use for work (for example Word, Excel, QuickBooks, KoboToolbox, DHIS2)? How well: basic, good or advanced?'],
+            'technical_skills'                 => ['Skills and tools', 'Which practical skills of your profession can you do without help? List the ones you do most often.'],
+            'industry_keywords'                => ['Skills and tools', 'Which procedures, systems or methods are used in the jobs you want? List the ones you have really used.'],
+            'languages_with_levels'            => ['Skills and tools', 'Which languages do you speak, and how well in each: fluent, good or basic?'],
+            'volunteer_work'                   => ['Your work history', 'Do you have any volunteer or community work? Please give the organisation, dates and what you did.'],
+            'referees_full_details'            => ['Referees', 'Please give two or three referees with full name, job title, organisation, phone, email and how they know you. At least one should know your work well.'],
+            'referee_consent'                  => ['Referees', 'Have all your referees agreed to be contacted by employers?'],
+        ];
+
+        if (isset($map[$field])) {
+            return $map[$field];
+        }
+
+        $label = trim(str_replace('_', ' ', $field));
+
+        return ['Other details', "Please tell us about your {$label}. Give names, dates and numbers where you can."];
     }
 
     protected function buildGapReviewPrompt(string $resumeText, ?string $jobDescription = null): string
@@ -2304,8 +2384,41 @@ class AiService
                     "note": "..."
                 }
             ],
-            "missing_fields": ["snake_case_field_name", "..."]
+            "missing_fields": [
+                "Topic: one complete question written to this person about their CV",
+                "Topic: another complete question"
+            ]
             }
+
+            HOW TO WRITE "missing_fields":
+            Each item is one question that will be shown to the candidate as a form field, so it must stand on its
+            own and be fully understood by someone who has not read any review. A short label such as "Training
+            Provider And Year" is useless: even the owner of the CV would not know what to write. Write long,
+            direct, specific questions.
+            - Format of every item: "Topic: question". The topic is one to three words (a job, a school, "Target",
+              "Education", "Referees", "Contact", "Availability"). After the colon comes the question. Do not number
+              the items, the system numbers them.
+            - Each question is 20 to 60 words and chains the 2 to 4 closely related things the expert needs for
+              that topic, so the person can answer in one go.
+            - Use the CV's own details: employer, job title, school, project and dates. Name them, so the person
+              knows exactly which part of their CV you mean.
+            - Say what form each answer should take (month and year, a number, yes or no, a short list) and give a
+              short example in brackets where it helps. Estimates are fine ("about how many").
+            - Ask about contradictions directly, for example the same job listed twice, a job shown as paid in one
+              place and volunteer in another, or duty lines copied word for word across several roles.
+            - Do not ask for anything the CV already states. Do not ask for date of birth, marital status,
+              religion, a photo or an ID number; if the CV contains them, say in the Contact note that they should
+              be removed.
+            - Plain, friendly English in the second person ("you", "your"). No jargon, and never the word "ATS".
+            - Put the most important topics first. Return 8 to 14 items, one topic each, with at most 15. Return an
+              empty array [] only if truly nothing is missing.
+
+            Examples of the right length and style (invented people, for style only):
+            - "Target: which job, or type of job, are you applying for, and in which type of organisation (government, NGO or private)? Please send the advert if you have one."
+            - "Education: in what month and year did you finish your Diploma in Business Administration at Makerere, and what was your final grade or GPA (and the scale, for example 4.2 out of 5)? Do you also have a degree, and what were your UCE and UACE years and schools?"
+            - "Work at Total Energies: what was your exact job title, at which station, and what were your start and end dates (month and year)? Roughly how much cash did you reconcile per day, and how many staff did you supervise?"
+            - "Field surveys: your duties are word for word the same under five projects. For each project, about how many households or respondents did you survey, how many days per week did you work, and did you train or lead anyone?"
+            - "Referees: which three people should we keep as referees, and what are their job titles, phone numbers and emails? Do they know you have listed them?"
 
             RULES:
             - Use EXACTLY the 5 sections listed above, in that order. Do not add or remove sections.
@@ -2313,24 +2426,6 @@ class AiService
               missing. Use "missing" only when the section is absent.
             - Every "note" must be specific to THIS CV: name the job, school, date or line concerned. Never write
               generic advice such as "add more detail" or "improve formatting".
-            - "missing_fields" is an array of snake_case strings. Each one is a concrete fact the candidate must
-              supply, and each will be turned into a question for them, so make each one precise and answerable.
-              List the most important first and return at most 15. Prefer these names where they fit, and invent a
-              new snake_case name only if none fits:
-              contact_email, contact_phone, location_town_district, linkedin_url,
-              target_job_title, professional_summary, years_of_experience,
-              professional_registration_number, registration_expiry_date, employment_status,
-              job_title_exact, employment_start_end_dates, employment_gap_explanation,
-              key_duties_for_role, quantified_results, team_size_managed, budget_or_volume_handled,
-              achievements, awards_or_recognition, promotions_or_added_responsibility,
-              education_completion_dates, education_grades, gpa_scale, exam_board_results,
-              certifications, training_provider_and_year, clinical_or_field_placements, projects,
-              software_and_tools, technical_skills, industry_keywords, languages_with_levels,
-              volunteer_work, referees_full_details, referee_consent.
-            - Also list a field when the CV CONTRADICTS itself (for example the same job shown as paid and as
-              volunteer), so the candidate is asked to clarify. Name it after the thing to clarify, such as
-              employment_status.
-            - Return an empty array [] only if truly nothing is missing.
             - Do NOT invent details that are not in the CV, and do not assume a registration, grade or number exists.
             - Do NOT wrap the response in markdown code fences.
             - Do NOT include any text before or after the JSON object.
@@ -2366,7 +2461,7 @@ class AiService
             }
 
             try {
-                $raw  = $this->callAiApi($model, $apiKey, $prompt);
+                $raw  = $this->callAiApi($model, $apiKey, $prompt, null, true);
                 $data = $this->parseJsonResponse(is_array($raw) ? json_encode($raw) : $raw);
 
                 if (is_array($data) && isset($data['score'])) {
@@ -2612,7 +2707,7 @@ class AiService
             if (!$this->isModelUsable($model, $apiKey)) continue;
 
             try {
-                $raw  = $this->callAiApi($model, $apiKey, $prompt);
+                $raw  = $this->callAiApi($model, $apiKey, $prompt, null, true);
                 $data = $this->parseJsonResponse(is_array($raw) ? json_encode($raw) : $raw);
 
                 if (is_array($data) && isset($data['score'])) {

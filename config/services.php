@@ -45,4 +45,11 @@ return [
         'bot_token' => env('TELEGRAM_BOT_TOKEN'),
     ],
 
+    'marzpay' => [
+        'api_key'    => env('MARZPAY_API_KEY'),
+        'api_secret' => env('MARZPAY_API_SECRET'),
+        'base_url'   => env('MARZPAY_BASE_URL', 'https://wallet.wearemarz.com/api/v1'),
+        'callback_url' => env('MARZPAY_CALLBACK_URL'),
+    ],
+
 ];
