@@ -332,33 +332,40 @@ class JobPost extends Model
     }
 
     /**
+     * Site root for a country, exactly as stored in the countries table
+     * (frontend_url first, then domain), INCLUDING any port, e.g. http://127.0.0.1:8001
+     */
+    protected function resolveBaseUrl(?string $countryCode = null): string
+    {
+        $code    = $countryCode ?? $this->country_code ?? 'AU';
+        $country = CountryHelper::getCountry($code);
+
+        $base = trim((string) ($country->frontend_url ?? ''));
+        if ($base === '') {
+            $base = trim((string) ($country->domain ?? ''));
+        }
+        if ($base === '') {
+            $base = trim((string) config('app.url'));
+        }
+
+        // "127.0.0.1:8001" or "stardenacareersug.com" with no scheme: add one
+        if (!preg_match('#^https?://#i', $base)) {
+            $isLocal = preg_match('#^(localhost|127\.|0\.0\.0\.0|.+\.(test|local)(:|/|$))#i', $base);
+            $base = ($isLocal ? 'http://' : 'https://') . ltrim($base, '/');
+        }
+
+        return rtrim($base, '/');
+    }
+
+    /**
      * Generate URL for this job post
      */
     public function generateUrl(?string $countryCode = null): string
     {
-        $code = $countryCode ?? $this->country_code ?? 'AU';
-        
-        // Get country from database
-        $country = CountryHelper::getCountry($code);
-        
-        if ($country) {
-            // Use the frontend_url from country table
-            $frontendUrl = $country->frontend_url ?? $country->domain ?? config('app.url');
-            $scheme = parse_url($frontendUrl, PHP_URL_SCHEME) ?: 'https';
-            $domain = parse_url($frontendUrl, PHP_URL_HOST) ?? $frontendUrl;
-        } else {
-            // Fallback to app config
-            $frontendUrl = config('app.url');
-            $scheme = parse_url($frontendUrl, PHP_URL_SCHEME) ?: 'https';
-            $domain = parse_url($frontendUrl, PHP_URL_HOST) ?? $frontendUrl;
-        }
-        
-        // Generate URL based on whether it's a legacy job
-        if ($this->legacy_id) {
-            return "{$scheme}://{$domain}/jobs/legacy/{$this->legacy_id}/{$this->slug}";
-        }
-        
-        return "{$scheme}://{$domain}/jobs/{$this->slug}";
+        $base = $this->resolveBaseUrl($countryCode);
+
+        // Job details live at /job/{slug} (the listing page stays at /jobs)
+        return "{$base}/job/{$this->slug}";
     }
 
     /**

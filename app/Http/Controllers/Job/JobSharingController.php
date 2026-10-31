@@ -29,11 +29,6 @@ class JobSharingController extends Controller
         '"Your skills are ready. Is your CV?"',
     ];
 
-    private const KEYCAPS = [
-        1 => '1️⃣', 2 => '2️⃣', 3 => '3️⃣', 4 => '4️⃣', 5 => '5️⃣',
-        6 => '6️⃣', 7 => '7️⃣', 8 => '8️⃣', 9 => '9️⃣', 10 => '🔟',
-    ];
-
     public function index()
     {
         if (!auth()->user()->can('view jobs')) {
@@ -240,23 +235,18 @@ class JobSharingController extends Controller
         $firstUrl = null;
 
         foreach ($jobs as $i => $job) {
-            $n      = $i + 1;
-            $key    = self::KEYCAPS[$n] ?? "{$n}.";
             $title  = $this->cleanTitle($job->job_title);
-            $co     = $job->company?->name ? $this->cleanTitle($job->company->name) : null;
             $where  = $this->locationText($job);
             $skills = $this->formatSkills($job->skills);
             $url    = $job->generateUrl();
             $firstUrl ??= $url;
 
-            $lines[] = "{$key} *{$title}*";
-
-            if ($co)    $lines[] = "🏢 {$co}";
-            if ($where) $lines[] = "📍 {$where}";
-            if ($skills !== '') $lines[] = "🛠 {$skills}";
-
-            $lines[] = '⏳ Apply by: ' . $this->deadlineText($job);
-            $lines[] = "👉 {$url}";
+            // title, location, skills, date, link
+            $lines[] = "🔎 *{$title}*";
+            if ($where)         $lines[] = "📍 {$where}";
+            if ($skills !== '') $lines[] = "💡 {$skills}";
+            $lines[] = '🗓️ ' . $this->deadlineText($job);
+            $lines[] = "🔗 {$url}";
             $lines[] = self::JOB_DIVIDER;
             $lines[] = '';
         }
@@ -275,7 +265,7 @@ class JobSharingController extends Controller
 
         if ($firstUrl && ($p = parse_url($firstUrl)) && !empty($p['host'])) {
             $lines[] = '';
-            $lines[] = '🔎 More jobs daily: ' . ($p['scheme'] ?? 'https') . '://' . $p['host'] . '/jobs';
+            $lines[] = '🌐 More jobs daily: ' . ($p['scheme'] ?? 'https') . '://' . $p['host'] . (isset($p['port']) ? ':' . $p['port'] : '') . '/jobs';
         }
 
         return rtrim(implode("\n", $lines));
@@ -312,7 +302,7 @@ class JobSharingController extends Controller
             return 'Open until filled';
         }
 
-        return $job->deadline->format('D, j M Y');
+        return $job->deadline->format('jS M Y'); // 7th Nov 2026
     }
 
     /**
