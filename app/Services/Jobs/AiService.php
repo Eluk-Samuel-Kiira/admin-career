@@ -9,6 +9,13 @@ use App\Models\Job\{Industry, JobCategory, JobLocation, JobType, ExperienceLevel
 
 class AiService
 {
+    /**
+     * Posts shorter than this many words are "thin": the AI writes extra, search-friendly content.
+     * At or above it, the employer's text is copied exactly and nothing is added to it.
+     * Tune this one number against Search Console (indexing/impressions of short vs long jobs).
+     */
+    protected const THIN_POST_WORDS = 300;
+
     protected array $config;
     protected array $fallbackModels;
     protected string $defaultModel;
@@ -131,25 +138,295 @@ class AiService
     public function extractJobData(string $content, string $sourceType = 'text', ?string $model = null, ?string $country = null): array
     {
         $model = $model ?? $this->defaultModel;
+        $sourceUrl = null;
+
+        @set_time_limit(300);
 
         if ($sourceType === 'url') {
+            $sourceUrl = $content;
             $content = $this->fetchUrlContent($content);
         }
 
         $referenceData = $this->getReferenceData($country);
-        $prompt = $this->buildExtractionPrompt($content, $sourceType, $referenceData);
+
+        // Long employer posting: the body is cut from the original text by PHP, not rewritten by a model.
+        $sourceWords = str_word_count(strip_tags($content));
+        $body = $sourceWords >= self::THIN_POST_WORDS ? $this->buildVerbatimBody($content) : null;
+
+        $prompt = $this->buildExtractionPrompt($content, $sourceType, $referenceData, $body !== null);
 
         $result = $this->callWithFallback($model, $prompt, function ($m, $key) use ($prompt) {
-            return $this->callAiApi($m, $key, $prompt);
+            return $this->callAiApi($m, $key, $prompt, null, true);
         }, expectJson: true);
 
         if (!empty($result['error'])) {
             throw new \Exception($result['message'] ?? 'No valid job posting could be found in the provided content.');
         }
 
+        if ($body !== null) {
+            foreach ($body as $field => $html) {
+                if (trim(strip_tags($html)) !== '') {
+                    $result[$field] = $html;
+                }
+            }
+        } else {
+            $result = $this->enrichThinPosting($result, $model, $sourceWords);
+        }
         $result = $this->applySmartDefaults($result, $country);
-        $result = $this->applyApplicationLinkHandling($result);
+        $result = $this->applyApplicationLinkHandling($result, $sourceUrl);
         return $this->applyGeorgiaFontToContentFields($result);
+    }
+
+    /**
+     * COPY-AND-PASTE MODE for long employer postings.
+     *
+     * Employers notice when a model rewords their advert, and no prompt can promise a model
+     * will copy 1,500 words without dropping a line. So for a long posting the body is cut out
+     * of the original text by PHP (by its own headings) and never passes through the model at
+     * all. The model is then only asked for the metadata (title, company, dates, categories).
+     *
+     * Returns null when the text has no recognisable duties/qualifications headings, in which
+     * case the normal model-based extraction (with its word-for-word rule) is used instead.
+     */
+    protected function buildVerbatimBody(string $text): ?array
+    {
+        $text  = str_replace(["\r\n", "\r"], "\n", $text);
+        $lines = [];
+        foreach (explode("\n", $text) as $l) {
+            $l = trim(preg_replace('/[ \t\x{00A0}]+/u', ' ', $l));
+            if ($l !== '') {
+                $lines[] = $l;
+            }
+        }
+
+        // Where the advert itself starts (everything above is site header/menu text).
+        $start = 0;
+        foreach ($lines as $i => $l) {
+            if (preg_match('/^job title\s*:/i', $l)) { $start = $i; break; }
+        }
+        if ($start === 0) {
+            foreach ($lines as $i => $l) {
+                if (preg_match('/^(about\b.{0,60}|job purpose:?|job summary:?|overview:?|background:?)$/i', $l)) { $start = $i; break; }
+            }
+        }
+
+        $respRe    = '/^(key |main )?(duties|responsibilities|duties and responsibilities|roles? and responsibilities)\s*:?$/i';
+        $kpiRe     = '/^key performance indicators\s*:?$/i';
+        $qualRe    = '/^(required |minimum |academic )?(qualifications|requirements|qualifications and experience|education and experience|person specification)( and (experience|requirements))?\s*:?$/i';
+        $skillRe   = '/^(required |key |core )?(skills|competencies|skills and competencies|skills and abilities)\s*:?$/i';
+        $applyRe   = '/^(how to apply|application procedure|application process)\s*:?$/i';
+        $closingRe = '/^(disclaimer\b|we encourage\b|.*\bequal opportunit|.*\bdoes not charge\b)/i';
+        $noiseRe   = '/^(apply to position|use my indeed resume|apply using linkedin|apply now|job openings.*|company website.*|job description)$/i';
+        $endRe     = '/^(powered by|.*sharing button)/i';
+
+        $b = ['desc' => [], 'resp' => [], 'qual' => [], 'skill' => [], 'apply' => [], 'closing' => []];
+        $state = 'desc';
+
+        foreach (array_slice($lines, $start) as $l) {
+            if (preg_match($endRe, $l)) {
+                break;
+            }
+            if (preg_match($noiseRe, $l)) {
+                continue;
+            }
+            if ($state !== 'closing' && preg_match($closingRe, $l)) {
+                $state = 'closing';
+            } elseif (mb_strlen($l) <= 80) {
+                if (preg_match($kpiRe, $l)) {
+                    $state = 'resp';           // keep the heading line itself
+                } elseif (preg_match($respRe, $l)) {
+                    $state = 'resp'; continue;
+                } elseif (preg_match($qualRe, $l)) {
+                    $state = 'qual'; continue;
+                } elseif (preg_match($skillRe, $l)) {
+                    $state = 'skill'; continue;
+                } elseif (preg_match($applyRe, $l)) {
+                    $state = 'apply'; continue;
+                }
+            }
+            $b[$state][] = $l;
+        }
+
+        if (empty($b['resp']) && empty($b['qual'])) {
+            return null;
+        }
+
+        $closing = $this->renderVerbatimBlocks($b['closing'], false);
+
+        return [
+            'job_description'       => $this->renderVerbatimBlocks($b['desc'], false) . $closing,
+            'responsibilities'      => $this->renderVerbatimBlocks($b['resp'], true),
+            'qualifications'        => $this->renderVerbatimBlocks($b['qual'], true),
+            'skills'                => $this->renderVerbatimSkills($b['skill']),
+            'application_procedure' => $this->renderVerbatimBlocks($b['apply'], false),
+        ];
+    }
+
+    private function isVerbatimHeading(string $l): bool
+    {
+        $words = preg_split('/\s+/', $l);
+        $n = count($words);
+
+        if (preg_match('/^\d{1,2}[.)]\s+\S/', $l)) {
+            return $n <= 10 && !preg_match('/[.;,]$/', $l);
+        }
+        if (preg_match('/:$/', $l)) {
+            return $n <= 6;
+        }
+        // "Job Title: Deputy Manager, Planning" is a data line, not a heading
+        if (preg_match('/[.;,!?]$/', $l) || preg_match('/[:,]/', $l) || $n > 5) {
+            return false;
+        }
+        $small = ['and', 'of', 'the', 'for', 'to', 'in', 'on', '&', 'a'];
+        foreach ($words as $w) {
+            if (!in_array(mb_strtolower($w), $small, true) && !preg_match('/^[\p{Lu}\d]/u', $w)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Lines -> HTML. Text is escaped but never changed. Headings stay headings. */
+    private function renderVerbatimBlocks(array $lines, bool $asList): string
+    {
+        $esc  = fn(string $s) => htmlspecialchars($s, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $html = '';
+        $open = false;
+        $close = function () use (&$html, &$open) {
+            if ($open) { $html .= '</ul>'; $open = false; }
+        };
+
+        foreach ($lines as $l) {
+            if ($this->isVerbatimHeading($l)) {
+                $close();
+                $html .= '<p><strong>' . $esc($l) . '</strong></p>';
+                continue;
+            }
+            if (preg_match('/:$/', $l)) { // a lead-in sentence such as "Performance will be assessed against:"
+                $close();
+                $html .= '<p>' . $esc($l) . '</p>';
+                continue;
+            }
+            $item = preg_replace('/^[\x{2022}\x{25AA}\x{25CF}\x{00B7}*\-]\s*/u', '', $l);
+            if ($asList) {
+                if (!$open) { $html .= '<ul>'; $open = true; }
+                $html .= '<li>' . $esc($item) . '</li>';
+            } else {
+                $html .= '<p>' . $esc($item) . '</p>';
+            }
+        }
+        $close();
+
+        return $html;
+    }
+
+    /** Short skill names -> "A, B, C". Long sentences under headings stay as headed lists. */
+    private function renderVerbatimSkills(array $lines): string
+    {
+        if (empty($lines)) {
+            return '';
+        }
+
+        $short = true;
+        foreach ($lines as $l) {
+            if (count(preg_split('/\s+/', $l)) > 4 || $this->isVerbatimHeading($l)) {
+                $short = false;
+                break;
+            }
+        }
+        if ($short) {
+            $items = array_map(fn($l) => rtrim(preg_replace('/^[\x{2022}\x{25AA}\x{25CF}\x{00B7}*\-]\s*/u', '', $l), '.;, '), $lines);
+            return htmlspecialchars(implode(', ', $items), ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        }
+
+        return $this->renderVerbatimBlocks($lines, true);
+    }
+
+    /**
+     * A one-line post ("We need an enrolled nurse or midwife in Kanaaba, 0701...")
+     * would become a skeleton page that search engines ignore. When the description
+     * we ended up with is under ~120 words, ask the model to write a real, role-specific
+     * description from the facts that ARE known. Long, real postings never reach this.
+     * If the model fails, the static fallbacks in applySmartDefaults() still run.
+     */
+    protected function enrichThinPosting(array $data, string $model, ?int $sourceWords = null): array
+    {
+        $title = trim((string) ($data['job_title'] ?? ''));
+        if ($title === '') {
+            return $data;
+        }
+
+        $current = trim(strip_tags((string) ($data['job_description'] ?? '')));
+
+        // Thin = the whole source post under THIN_POST_WORDS (300) words (text/URL), or, for an image where the
+        // source size is unknown, a description under 120 words.
+        $isThin = $sourceWords !== null ? $sourceWords < self::THIN_POST_WORDS : str_word_count($current) < 120;
+        if (!$isThin) {
+            return $data;
+        }
+
+        // A post with a real description of its own (roughly 60+ words) keeps that text untouched;
+        // our content is added after it. Only a bare one-liner is replaced.
+        $append = str_word_count($current) >= 60;
+
+        $company  = trim((string) ($data['company_name'] ?? ''));
+        $location = trim((string) ($data['duty_station'] ?? ($data['job_location_name'] ?? '')));
+        $type     = (string) ($data['employment_type'] ?? '');
+        $humanRules = $this->humanWritingRules();
+
+        $facts = array_filter([
+            "Job title: {$title}",
+            $company  !== '' ? "Employer: {$company}" : 'Employer: not named in the post (do not invent one)',
+            $location !== '' ? "Location: {$location}" : null,
+            $type     !== '' ? "Employment type: {$type}" : null,
+            $current  !== '' ? "What the original post said" . ($append ? ' (it will be shown above your text, so do not repeat it)' : '') . ": {$current}" : null,
+        ]);
+        $factList = implode("\n", $facts);
+
+        $prompt = <<<PROMPT
+        You write job adverts for a Ugandan and East African job board. The original post is very short, so write
+        the job description a real hiring officer would have written for it.
+
+        KNOWN FACTS:
+        {$factList}
+
+        {$humanRules}
+
+        REQUIREMENTS:
+        - 180 to 250 words, in 3 to 5 short <p> paragraphs of uneven length.
+        - SEARCH (SEO): use the job title, the place name and the profession's real search terms where they fit
+          naturally (for example the role, the place and the sector, and what people call this job), each once or
+          twice. Never repeat a phrase just to rank.
+        - ANSWER ENGINES (AEO): the first paragraph must answer, in plain sentences, who is hiring (or that the
+          employer is not named), what the job is, and where. Another paragraph should state clearly who can apply
+          (type of qualification and experience a post like this normally asks for, worded as "suits", not as a
+          binding requirement). Write sentences an assistant could quote on their own as an answer.
+        - Describe what this person actually does day to day in a setting like the one named, who they work with,
+          and what kind of candidate suits the post. Be specific to this profession.
+        - Mention the job title and the location naturally once or twice, never forced.
+        - Do NOT invent the employer name, salary, benefits, deadline, number of vacancies or qualifications as
+          hard requirements. Do not include phone numbers, emails or links.
+        - Return ONLY the HTML paragraphs. Plain <p> tags with no attributes. No markdown, no headings, no code fences.
+        PROMPT;
+
+        try {
+            $text = $this->callWithFallback($model, $prompt, function ($m, $key) use ($prompt) {
+                return $this->callAiApi($m, $key, $prompt);
+            }, expectJson: false);
+
+            $text = $this->cleanLetterHtml(is_string($text) ? $text : $this->extractTextFromResult($text));
+            $text = $this->scrubAiTells($text);
+
+            if (str_word_count(strip_tags($text)) >= 110) {
+                $data['job_description'] = $append
+                    ? trim((string) $data['job_description']) . $text
+                    : $text;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Thin posting enrichment failed, using static fallback', ['error' => $e->getMessage()]);
+        }
+
+        return $data;
     }
 
     /**
@@ -177,9 +454,14 @@ class AiService
         $html = $response->body();
         $text = preg_replace('#<script\b[^>]*>.*?</script>#is', ' ', $html);
         $text = preg_replace('#<style\b[^>]*>.*?</style>#is', ' ', $text);
+        // keep paragraph/list boundaries as line breaks so headings and bullets survive
+        $text = preg_replace('#<br\s*/?>#i', "\n", $text);
+        $text = preg_replace('#</(p|div|li|ul|ol|h[1-6]|tr|section|article|header|footer)>#i', "\n", $text);
+        $text = preg_replace('#<li\b[^>]*>#i', "\n", $text);
         $text = strip_tags($text);
         $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5);
-        $text = preg_replace('/\s+/', ' ', $text);
+        $text = preg_replace('/[ \t\x{00A0}]+/u', ' ', $text);
+        $text = preg_replace('/\s*\n\s*/', "\n", $text);
         $text = trim($text);
 
         if (mb_strlen($text) < 200) {
@@ -206,13 +488,14 @@ class AiService
         $prompt = $this->buildImageExtractionPrompt($referenceData);
 
         $result = $this->callWithFallback($model, $prompt, function ($m, $key) use ($prompt, $imageBase64) {
-            return $this->callAiApi($m, $key, $prompt, $imageBase64);
+            return $this->callAiApi($m, $key, $prompt, $imageBase64, true);
         }, expectJson: true);
 
         if (!empty($result['error'])) {
             throw new \Exception($result['message'] ?? 'No job details could be read from the image.');
         }
 
+        $result = $this->enrichThinPosting($result, $model);
         $result = $this->applySmartDefaults($result, $country);
         $result = $this->applyApplicationLinkHandling($result);
         return $this->applyGeorgiaFontToContentFields($result);
@@ -226,20 +509,35 @@ class AiService
      * Also normalizes "telephone" so that multiple contact numbers are always
      * comma-separated, regardless of how the source/AI formatted them.
      */
-    protected function applyApplicationLinkHandling(array $data): array
+    protected function applyApplicationLinkHandling(array $data, ?string $sourceUrl = null): array
     {
         $link = $data['application_link'] ?? null;
 
+        // Pulled from a web page but the posting showed no separate apply URL
+        // (Breezy, Workable etc. hide it behind a button): apply on the source page.
+        if (empty($link) && $sourceUrl && filter_var($sourceUrl, FILTER_VALIDATE_URL)) {
+            $link = $sourceUrl;
+        }
+
         if (!empty($link) && filter_var($link, FILTER_VALIDATE_URL)) {
             $safeLink = htmlspecialchars($link, ENT_QUOTES, 'UTF-8');
-            $data['application_procedure'] = '<p>To apply for this job, <a href="' . $safeLink . '" target="_blank" rel="noopener noreferrer">click here</a>.</p>';
+            $linkLine = '<p>To apply for this job, <a href="' . $safeLink . '" target="_blank" rel="noopener noreferrer">click here</a>.</p>';
+
+            // Keep any procedure the employer actually wrote; the link goes after it.
+            $existing = (string) ($data['application_procedure'] ?? '');
+            $data['application_procedure'] = trim(strip_tags($existing)) !== '' ? $existing . $linkLine : $linkLine;
             $data['is_application_required'] = true;
         }
 
-        // Belt-and-braces: strip any raw URLs that slipped into body content fields.
-        foreach (['job_description', 'responsibilities', 'qualifications'] as $field) {
+        // Belt-and-braces: contact details and raw URLs belong in their own fields,
+        // never in the body text.
+        foreach (['job_description', 'responsibilities', 'qualifications', 'skills'] as $field) {
             if (!empty($data[$field]) && is_string($data[$field])) {
-                $data[$field] = preg_replace('#https?://\S+#i', '', $data[$field]);
+                $clean = preg_replace('#https?://\S+#i', '', $data[$field]);
+                $clean = preg_replace('/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/', '', $clean);
+                // Ugandan-style phone numbers: 0701 220529, +256 701 220 529, 0701-220-529
+                $clean = preg_replace('/(?<![\d,.])(?:\+?256[\s-]?|0)7\d{2}[\s-]?\d{3}[\s-]?\d{3}(?![\d,])/', '', $clean);
+                $data[$field] = $clean;
             }
         }
 
@@ -455,7 +753,7 @@ class AiService
         $prompt = $this->buildGeneratePrompt($title, $company, $country, $referenceData);
 
         $result = $this->callWithFallback($model, $prompt, function ($m, $key) use ($prompt) {
-            return $this->callAiApi($m, $key, $prompt);
+            return $this->callAiApi($m, $key, $prompt, null, true);
         }, expectJson: true);
 
         $result = $this->scrubGeneratedFields($result); // all of this was written by the model
@@ -477,6 +775,10 @@ class AiService
     protected function callWithFallback(string $primaryModel, string $prompt, callable $callFn, bool $expectJson = true): array|string
     {
         $errors = [];
+
+        // Several models x up to 90s each can outlive PHP's default limit, which kills the
+        // request and sends the browser an HTML error page ("JSON.parse: unexpected character").
+        @set_time_limit(300);
 
         // Build the chain: the requested primary model first, then the standard
         // fallback order (gemini → claude → openai → cohere). Cohere is ALWAYS
@@ -505,7 +807,7 @@ class AiService
                 }
 
                 return $this->parseJsonOrFail($raw, $model);
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) { // Throwable: a TypeError must also fall through to the next model
                 // Store the error message with the model name as key
                 $errorMessage = $e->getMessage();
                 
@@ -541,7 +843,7 @@ class AiService
             $clean = preg_replace('/\s*```\s*$/i', '', $clean);
             $clean = trim($clean);
 
-            $decoded = json_decode($clean, true);
+            $decoded = $this->decodeJsonLenient($clean);
             if (is_array($decoded) && !empty($decoded)) {
                 return $decoded;
             }
@@ -553,7 +855,63 @@ class AiService
         throw new \Exception('Empty or invalid response.');
     }
 
-    protected function callAiApi(string $model, string $apiKey, string $prompt, ?string $imageBase64 = null): array|string
+    /**
+     * Decode a model's JSON reply, tolerating the usual slips on long outputs:
+     * chatter before/after the object, and raw line breaks or tabs inside string
+     * values (which JSON forbids). A reply that is cut off is NOT repaired, so a
+     * truncated posting can never be saved as if it were complete.
+     */
+    protected function decodeJsonLenient(string $text): ?array
+    {
+        $data = json_decode($text, true);
+        if (is_array($data)) {
+            return $data;
+        }
+
+        $start = strpos($text, '{');
+        $end   = strrpos($text, '}');
+        if ($start === false || $end === false || $end <= $start) {
+            return null;
+        }
+        $text = substr($text, $start, $end - $start + 1);
+
+        $data = json_decode($text, true, 512, JSON_INVALID_UTF8_SUBSTITUTE);
+        if (is_array($data)) {
+            return $data;
+        }
+
+        // Escape control characters that sit inside string values.
+        $out = '';
+        $inString = false;
+        $escaped = false;
+        for ($i = 0, $n = strlen($text); $i < $n; $i++) {
+            $c = $text[$i];
+            if ($inString) {
+                if ($escaped) {
+                    $escaped = false;
+                } elseif ($c === '\\') {
+                    $escaped = true;
+                } elseif ($c === '"') {
+                    $inString = false;
+                } elseif ($c === "\n") {
+                    $c = '\\n';
+                } elseif ($c === "\r") {
+                    $c = '';
+                } elseif ($c === "\t") {
+                    $c = ' ';
+                }
+            } elseif ($c === '"') {
+                $inString = true;
+            }
+            $out .= $c;
+        }
+
+        $data = json_decode($out, true, 512, JSON_INVALID_UTF8_SUBSTITUTE);
+
+        return is_array($data) ? $data : null;
+    }
+
+    protected function callAiApi(string $model, string $apiKey, string $prompt, ?string $imageBase64 = null, bool $json = false): array|string
     {
         $config = $this->getModelConfig($model);
         if (!$config) {
@@ -563,6 +921,11 @@ class AiService
         $endpoint = $config['endpoint'];
         $modelName = $config['model'];
         $maxTokens = $config['max_tokens'] ?? 4096;
+        // A long posting copied word-for-word as JSON easily passes 4096 tokens; the reply was
+        // then cut off mid-string and could not be parsed. Cohere rejects values above 4096.
+        if ($model !== 'cohere') {
+            $maxTokens = max($maxTokens, 8192);
+        }
 
         // ✅ FIX: Set headers based on model
         $headers = ['Content-Type' => 'application/json'];
@@ -575,7 +938,7 @@ class AiService
         }
         // Gemini uses URL param, not header
 
-        $body = $this->buildRequestBody($model, $apiKey, $modelName, $maxTokens, $prompt, $imageBase64);
+        $body = $this->buildRequestBody($model, $apiKey, $modelName, $maxTokens, $prompt, $imageBase64, $json);
 
         if ($model === 'gemini') {
             $endpoint = "https://generativelanguage.googleapis.com/v1beta/models/{$modelName}:generateContent?key={$apiKey}";
@@ -598,7 +961,7 @@ class AiService
     /**
      * Build the request body for each AI model
      */
-    private function buildRequestBody(string $model, string $apiKey, string $modelName, int $maxTokens, string $prompt, ?string $imageBase64): array
+    private function buildRequestBody(string $model, string $apiKey, string $modelName, int $maxTokens, string $prompt, ?string $imageBase64, bool $json = false): array
     {
         switch ($model) {
             case 'openai':
@@ -642,7 +1005,11 @@ class AiService
 
                 return [
                     'contents' => [['parts' => $parts]],
-                    'generationConfig' => ['maxOutputTokens' => $maxTokens],
+                    'generationConfig' => array_filter([
+                        'maxOutputTokens'  => $maxTokens,
+                        // JSON mode: the model can't wrap the reply in prose or leave a bare newline in a string
+                        'responseMimeType' => $json ? 'application/json' : null,
+                    ]),
                 ];
 
             case 'grok':
@@ -676,8 +1043,15 @@ class AiService
     /**
      * Extract error message from API response data
      */
-    private function extractErrorMessage(array $errorData, string $fallback): string
+    private function extractErrorMessage(?array $errorData, string $fallback): string
     {
+        // A gateway/HTML error page is not JSON, so json_decode() gave null. The old
+        // `array` type hint turned that into an uncaught TypeError and an HTML 500 page.
+        if (!is_array($errorData)) {
+            $plain = trim(preg_replace('/\s+/', ' ', strip_tags($fallback)));
+            return $plain !== '' ? mb_substr($plain, 0, 300) : 'Empty or non-JSON error response from the provider.';
+        }
+
         // Common error message paths in different API responses
         $paths = [
             'error.message',
@@ -834,11 +1208,15 @@ class AiService
         );
     }
 
-    protected function buildExtractionPrompt(string $content, string $sourceType, array $referenceData = []): string
+    protected function buildExtractionPrompt(string $content, string $sourceType, array $referenceData = [], bool $bodyCaptured = false): string
     {
         $twoWeeksAhead = Carbon::now()->addWeeks(2)->format('Y-m-d');
         $referenceBlock = $this->formatReferenceListsForPrompt($referenceData);
         $humanRules = $this->humanWritingRules();
+
+        $bodyNote = $bodyCaptured
+            ? "BODY TEXT ALREADY CAPTURED - METADATA ONLY:\n                The description, responsibilities, qualifications, skills and application text of this posting have\n                already been copied exactly by the system. Return null for job_description, responsibilities,\n                qualifications, skills and application_procedure (do NOT output them), and fill in every other field\n                by reading the content below."
+            : '';
 
         $sourceInstruction = $sourceType === 'url'
             ? 'The CONTENT below was fetched directly from the job posting page. Extract the job details from it.'
@@ -852,6 +1230,8 @@ class AiService
 
                 {$referenceBlock}
 
+                {$bodyNote}
+
                 ABSOLUTE RULE - PRESERVE VERBATIM:
                 If job_description, responsibilities, qualifications, skills, or application_procedure are present in
                 the content, copy them into the JSON EXACTLY as given - same wording, same order, same structure,
@@ -859,11 +1239,36 @@ class AiService
                 anything that is actually present. Only WRITE new content for a field when that field is completely
                 absent from the source.
 
+                FULL POSTINGS FROM EMPLOYER SITES (copy exactly, add nothing):
+                - Ignore page furniture that is not part of the advert: buttons and menu text such as "Apply To
+                Position", "Use My Indeed Resume", "Apply Using LinkedIn", "Job Openings", share links, cookie notices.
+                - The job details block at the top (Department, Reporting To, Years of Experience, Location, Travel
+                Required, etc.) stays at the start of job_description as plain <p> lines, in the original order.
+                - "About the organisation" and "Job Purpose" text goes into job_description, word for word.
+                - Responsibilities: keep every numbered or named sub-heading as <p><strong>heading</strong></p>
+                followed by its own <ul>. Keep the original order and wording. If the advert has a "Key Performance
+                Indicators" section, add it at the end of responsibilities the same way.
+                - Qualifications: the "Required Qualifications and Experience" items, one <li> each, word for word.
+                - Skills: if the advert gives short skill names, return them comma-separated. If it gives long
+                sentences grouped under headings (Technical, Leadership, Interpersonal...), keep the headings as
+                <p><strong>..</strong></p> and the items as <ul><li>, word for word.
+                - Closing statements (equal opportunity, "we do not charge any fee" disclaimers) stay at the end of
+                job_description, word for word.
+                - duty_station comes from the "Location:" line of the advert if it has one.
+                - Do not add, rephrase, merge or drop any sentence. Do not add your own tips or notices; the
+                "do not pay" notice is added separately.
+
+                VERY SHORT POSTS (under about 300 words, e.g. a one-line WhatsApp-style vacancy):
+                - Put exactly what the post says into job_title, duty_station, telephone and email. Use a clean,
+                properly capitalised title (e.g. "Enrolled Nurse / Midwife") and never put "we need" in the title.
+                - Do not invent an employer, salary or deadline. A short job_description is fine here, because a
+                fuller one is written in a separate step. Never put the phone number or email in the description.
+
                 CRITICAL - RESPONSIBILITIES & QUALIFICATIONS MUST BE HTML LISTS:
                 When you generate or return responsibilities and qualifications, they MUST be formatted as HTML
                 unordered lists using <ul> and <li> tags. NEVER return them as plain text with dashes, asterisks,
                 numbers, commas, or periods as separators. ALWAYS use proper HTML list format.
-                
+
                 CORRECT EXAMPLE:
                 "responsibilities": "<ul><li>Lead and manage key initiatives</li><li>Collaborate with cross-functional teams</li><li>Ensure timely delivery of projects</li></ul>"
                 
@@ -957,7 +1362,7 @@ class AiService
                 "payment_period": "monthly|yearly|weekly|daily|hourly, else null",
                 "currency": "currency code if mentioned, else null",
                 "meta_description": "155-character SEO description generated from the job title/content",
-                "keywords": "comma-separated SEO keywords",
+                "keywords": "8-12 comma-separated search phrases people really type: the job title, title + 'jobs in' + town/district/country, 'vacancy', and close synonyms of the role. No repeats of the same phrase.",
                 "experience_level_name": "must be an EXACT value from the Experience Levels list above, else null",
                 "education_level_name": "must be an EXACT value from the Education Levels list above, else null",
                 "industry_name": "must be an EXACT value from the Industries list above, else null",

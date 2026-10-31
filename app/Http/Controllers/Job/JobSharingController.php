@@ -275,7 +275,7 @@ class JobSharingController extends Controller
 
         if ($firstUrl && ($p = parse_url($firstUrl)) && !empty($p['host'])) {
             $lines[] = '';
-            $lines[] = '🔎 More jobs daily: ' . ($p['scheme'] ?? 'https') . '://' . $p['host'] . '/jobs';
+            $lines[] = '🔎 More jobs daily: ' . ($p['scheme'] ?? 'https') . '://' . $p['host'] . '/job';
         }
 
         return rtrim(implode("\n", $lines));
