@@ -120,7 +120,61 @@ class AiService
     public function isModelEnabled(string $model): bool
     {
         $config = $this->config[$model] ?? null;
-        return $config && !empty($config['api_key']);
+        if (!$config || empty($config['api_key'])) {
+            return false;
+        }
+
+        // A key like "sk-proj-xxxx" or "your-api-key" is a placeholder, not a real key.
+        $key = (string) $config['api_key'];
+        if (stripos($key, 'xxxx') !== false || stripos($key, 'your-') !== false || strlen($key) < 20) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * A model that just answered 401/403 (bad key) or 429 (quota used up) will answer
+     * the same for the next few minutes. Skipping it saves a wasted round trip on every
+     * request instead of trying it first every time.
+     */
+    protected function coolDownSeconds(string $errorMessage): int
+    {
+        $m = strtolower($errorMessage);
+
+        if (preg_match('/status code (401|403)|invalid[\s_-]*(x-)?api[\s_-]*key|incorrect api key|authentication_error|unauthori[sz]ed/', $m)) {
+            return 600;
+        }
+        if (preg_match('/status code 429|quota|rate[\s_-]*limit|resource_exhausted|too many requests/', $m)) {
+            return 300;
+        }
+        if (preg_match('/status code 400.*api key|api key.*(invalid|incorrect)/', $m)) {
+            return 600;
+        }
+
+        return 0;
+    }
+
+    protected function isCoolingDown(string $model): bool
+    {
+        try {
+            return Cache::has("ai_model_cooldown:{$model}");
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    protected function startCoolDown(string $model, string $errorMessage): void
+    {
+        $seconds = $this->coolDownSeconds($errorMessage);
+        if ($seconds <= 0) {
+            return;
+        }
+        try {
+            Cache::put("ai_model_cooldown:{$model}", true, $seconds);
+        } catch (\Throwable $e) {
+            // cooldown is an optimisation only
+        }
     }
 
     public function getModelConfig(string $model): ?array
@@ -135,7 +189,7 @@ class AiService
      * URL string itself was sent to the model as "content", which no plain
      * chat-completion endpoint can browse - it was just guessing/hallucinating).
      */
-    public function extractJobData(string $content, string $sourceType = 'text', ?string $model = null, ?string $country = null): array
+    public function extractJobData(string $content, string $sourceType = 'text', ?string $model = null, ?string $country = null, ?string $position = null): array
     {
         $model = $model ?? $this->defaultModel;
         $sourceUrl = null;
@@ -151,9 +205,12 @@ class AiService
 
         // Long employer posting: the body is cut from the original text by PHP, not rewritten by a model.
         $sourceWords = str_word_count(strip_tags($content));
-        $body = $sourceWords >= self::THIN_POST_WORDS ? $this->buildVerbatimBody($content) : null;
+        // One advert listing several positions ("Position 1: ... Position 2: ...") can't be copied
+        // as a single body; the model picks out one position at a time.
+        $multi = preg_match_all('/^\s*position\s*\d+\b/im', $content) >= 2;
+        $body = ($sourceWords >= self::THIN_POST_WORDS && !$multi) ? $this->buildVerbatimBody($content) : null;
 
-        $prompt = $this->buildExtractionPrompt($content, $sourceType, $referenceData, $body !== null);
+        $prompt = $this->buildExtractionPrompt($content, $sourceType, $referenceData, $body !== null, $position);
 
         $result = $this->callWithFallback($model, $prompt, function ($m, $key) use ($prompt) {
             return $this->callAiApi($m, $key, $prompt, null, true);
@@ -163,12 +220,13 @@ class AiService
             throw new \Exception($result['message'] ?? 'No valid job posting could be found in the provided content.');
         }
 
+        $result = $this->coerceModelOutput($result);
+
         if ($body !== null) {
             foreach ($body as $field => $html) {
-                if (trim(strip_tags($html)) !== '') {
-                    $result[$field] = $html;
-                }
+                $result[$field] = trim(strip_tags($html)) !== '' ? $html : null;
             }
+            $result['_verbatim'] = true; // applySmartDefaults must not invent text for a copied posting
         } else {
             $result = $this->enrichThinPosting($result, $model, $sourceWords);
         }
@@ -206,18 +264,18 @@ class AiService
         }
         if ($start === 0) {
             foreach ($lines as $i => $l) {
-                if (preg_match('/^(about\b.{0,60}|job purpose:?|job summary:?|overview:?|background:?)$/i', $l)) { $start = $i; break; }
+                if (preg_match('/^(about\b.{0,60}|job purpose:?|job summary:?|position summary:?|role summary:?|summary:?|overview:?|background:?)$/i', $l)) { $start = $i; break; }
             }
         }
 
         $respRe    = '/^(key |main )?(duties|responsibilities|duties and responsibilities|roles? and responsibilities)\s*:?$/i';
         $kpiRe     = '/^key performance indicators\s*:?$/i';
-        $qualRe    = '/^(required |minimum |academic )?(qualifications|requirements|qualifications and experience|education and experience|person specification)( and (experience|requirements))?\s*:?$/i';
+        $qualRe    = '/^(required |minimum |academic |preferred |desired |essential |key )?(qualifications?|requirements|qualifications and experience|education and experience|person specification)( and (experience|requirements))?\s*:?$/i';
         $skillRe   = '/^(required |key |core )?(skills|competencies|skills and competencies|skills and abilities)\s*:?$/i';
         $applyRe   = '/^(how to apply|application procedure|application process)\s*:?$/i';
         $closingRe = '/^(disclaimer\b|we encourage\b|.*\bequal opportunit|.*\bdoes not charge\b)/i';
         $noiseRe   = '/^(apply to position|use my indeed resume|apply using linkedin|apply now|job openings.*|company website.*|job description)$/i';
-        $endRe     = '/^(powered by|.*sharing button)/i';
+        $endRe     = '/^(powered by.*|.*sharing button.*|job details)$/i';
 
         $b = ['desc' => [], 'resp' => [], 'qual' => [], 'skill' => [], 'apply' => [], 'closing' => []];
         $state = 'desc';
@@ -495,6 +553,8 @@ class AiService
             throw new \Exception($result['message'] ?? 'No job details could be read from the image.');
         }
 
+        $result = $this->coerceModelOutput($result);
+
         $result = $this->enrichThinPosting($result, $model);
         $result = $this->applySmartDefaults($result, $country);
         $result = $this->applyApplicationLinkHandling($result);
@@ -756,6 +816,7 @@ class AiService
             return $this->callAiApi($m, $key, $prompt, null, true);
         }, expectJson: true);
 
+        $result = $this->coerceModelOutput($result);
         $result = $this->scrubGeneratedFields($result); // all of this was written by the model
         $result['job_title'] = $result['job_title'] ?? $title;
         $result['company_name'] = $result['company_name'] ?? ($company ?? '');
@@ -794,7 +855,11 @@ class AiService
 
         foreach ($models as $model) {
             if (!$this->isModelEnabled($model)) {
-                $errors[$model] = 'not enabled (missing API key)';
+                $errors[$model] = 'not enabled (missing or placeholder API key)';
+                continue;
+            }
+            if ($this->isCoolingDown($model)) {
+                $errors[$model] = 'skipped for a few minutes after its last quota/API-key error';
                 continue;
             }
 
@@ -814,7 +879,8 @@ class AiService
                 // Clean up the error message - remove "API error (model): " prefix if present
                 $cleanError = preg_replace('/^API error \([^)]+\):\s*/', '', $errorMessage);
                 $errors[$model] = $cleanError ?: $errorMessage;
-                
+                $this->startCoolDown($model, $errorMessage);
+
                 Log::warning("AI call failed for model '{$model}'", ['error' => $e->getMessage()]);
             }
         }
@@ -824,6 +890,67 @@ class AiService
             'type' => 'model_errors',
             'errors' => $errors
         ]));
+    }
+
+    /**
+     * JSON mode makes models return real JSON arrays where the prompt asked for HTML
+     * strings (skills as ["A","B"], responsibilities as ["..","..."]). Later code calls
+     * trim()/strip_tags() on these, and handing them an array is a fatal TypeError, which
+     * PHP reports as an HTML 500 page. The browser then fails with
+     * "JSON.parse: unexpected character at line 1 column 1". Turn every field back into
+     * the string shape the rest of the service expects.
+     */
+    protected function coerceModelOutput(array $d): array
+    {
+        $flat = function ($v) use (&$flat): array {
+            if (is_array($v)) {
+                $out = [];
+                foreach ($v as $item) {
+                    $out = array_merge($out, $flat($item));
+                }
+                return $out;
+            }
+            if ($v === null || is_bool($v)) {
+                return [];
+            }
+            $t = trim((string) $v);
+            return $t === '' ? [] : [$t];
+        };
+
+        foreach (['responsibilities', 'qualifications'] as $f) {
+            if (isset($d[$f]) && is_array($d[$f])) {
+                $items = $flat($d[$f]);
+                $d[$f] = $items ? '<ul>' . implode('', array_map(fn($i) => "<li>{$i}</li>", $items)) . '</ul>' : null;
+            }
+        }
+        foreach (['job_description', 'application_procedure'] as $f) {
+            if (isset($d[$f]) && is_array($d[$f])) {
+                $items = $flat($d[$f]);
+                $d[$f] = $items ? '<p>' . implode('</p><p>', $items) . '</p>' : null;
+            }
+        }
+        if (isset($d['other_positions'])) {
+            $d['other_positions'] = is_array($d['other_positions']) ? $flat($d['other_positions']) : [];
+        }
+        foreach (['skills', 'keywords', 'email', 'telephone'] as $f) {
+            if (isset($d[$f]) && is_array($d[$f])) {
+                $d[$f] = implode(', ', $flat($d[$f])) ?: null;
+            }
+        }
+        foreach ([
+            'job_title', 'company_name', 'duty_station', 'meta_description', 'application_link', 'deadline',
+            'location_type', 'employment_type', 'salary_amount', 'payment_period', 'currency', 'work_hours',
+            'experience_level_name', 'education_level_name', 'industry_name', 'category_name',
+            'job_type_name', 'job_location_name', 'salary_range_name', 'country_code',
+        ] as $f) {
+            if (isset($d[$f]) && is_array($d[$f])) {
+                $d[$f] = implode(' ', $flat($d[$f])) ?: null;
+            } elseif (isset($d[$f]) && !is_string($d[$f]) && !is_null($d[$f])) {
+                $d[$f] = (string) $d[$f];
+            }
+        }
+
+        return $d;
     }
 
     /**
@@ -848,8 +975,14 @@ class AiService
                 return $decoded;
             }
 
-            // Throw with the raw response
-            throw new \Exception("Response could not be parsed as JSON. Raw response: " . substr($result, 0, 500));
+            // Say WHY: a reply cut off by the output limit has unbalanced braces
+            $opens  = substr_count($clean, '{') + substr_count($clean, '[');
+            $closes = substr_count($clean, '}') + substr_count($clean, ']');
+            $why = $opens > $closes
+                ? 'the reply was cut off (output limit reached), ' . mb_strlen($clean) . ' characters received'
+                : 'the reply is not valid JSON';
+            throw new \Exception("Response could not be parsed as JSON: {$why}. Start: "
+                . substr($clean, 0, 200) . ' ... End: ' . substr($clean, -200));
         }
 
         throw new \Exception('Empty or invalid response.');
@@ -925,6 +1058,8 @@ class AiService
         // then cut off mid-string and could not be parsed. Cohere rejects values above 4096.
         if ($model !== 'cohere') {
             $maxTokens = max($maxTokens, 8192);
+        } else {
+            $maxTokens = min(max($maxTokens, 4000), 4096); // Cohere's ceiling; a low config value cut replies mid-string
         }
 
         // ✅ FIX: Set headers based on model
@@ -1015,11 +1150,15 @@ class AiService
             case 'grok':
             case 'cohere':
             case 'mistral':
-                return [
+                $body = [
                     'model' => $modelName,
                     'max_tokens' => $maxTokens,
                     'messages' => [['role' => 'user', 'content' => $prompt]],
                 ];
+                if ($json && $model === 'cohere') {
+                    $body['response_format'] = ['type' => 'json_object']; // no code fences, no chatter
+                }
+                return $body;
 
             default:
                 throw new \Exception("Unsupported model: {$model}");
@@ -1208,7 +1347,7 @@ class AiService
         );
     }
 
-    protected function buildExtractionPrompt(string $content, string $sourceType, array $referenceData = [], bool $bodyCaptured = false): string
+    protected function buildExtractionPrompt(string $content, string $sourceType, array $referenceData = [], bool $bodyCaptured = false, ?string $position = null): string
     {
         $twoWeeksAhead = Carbon::now()->addWeeks(2)->format('Y-m-d');
         $referenceBlock = $this->formatReferenceListsForPrompt($referenceData);
@@ -1217,6 +1356,10 @@ class AiService
         $bodyNote = $bodyCaptured
             ? "BODY TEXT ALREADY CAPTURED - METADATA ONLY:\n                The description, responsibilities, qualifications, skills and application text of this posting have\n                already been copied exactly by the system. Return null for job_description, responsibilities,\n                qualifications, skills and application_procedure (do NOT output them), and fill in every other field\n                by reading the content below."
             : '';
+
+        $positionRule = $position !== null && trim($position) !== ''
+            ? 'Extract ONLY the position titled "' . str_replace('"', '', trim($position)) . '" (match it loosely).'
+            : 'If it lists several positions, extract ONLY the first one listed.';
 
         $sourceInstruction = $sourceType === 'url'
             ? 'The CONTENT below was fetched directly from the job posting page. Extract the job details from it.'
@@ -1231,6 +1374,23 @@ class AiService
                 {$referenceBlock}
 
                 {$bodyNote}
+
+                SEVERAL POSITIONS IN ONE ADVERT:
+                Some adverts list more than one position ("Position 1: Stores Officer ... Position 2: Procurement
+                Assistant ..."). {$positionRule}
+                - Use that position's own title, brief description, requirements and location. For duty_station use only
+                the places named for that position.
+                - Anything stated "for both positions" or once at the end (How to Apply, email, address, documents
+                required, deadline, the employer) applies to the position you extract. Include it.
+                - Never mix the other positions' duties or requirements into this one.
+                - List the titles of the positions you did NOT extract in "other_positions" (for example
+                ["Procurement Assistant (2 positions, Lango & Ankole)"]). If the advert has just one position, use [].
+
+                HOW TO APPLY TEXT:
+                In application_procedure, never write an email address or phone number. Say "by email, using the
+                email address on this page" or "on the phone number on this page" instead; they are returned in the
+                email and telephone fields. Keep every other instruction word for word (postal address, documents
+                required, page limits, file format, deadline).
 
                 ABSOLUTE RULE - PRESERVE VERBATIM:
                 If job_description, responsibilities, qualifications, skills, or application_procedure are present in
@@ -1379,7 +1539,8 @@ class AiService
                 "is_application_required": false,
                 "is_whatsapp_contact": false,
                 "is_telephone_call": false,
-                "work_hours": "work schedule if mentioned, else null"
+                "work_hours": "work schedule if mentioned, else null",
+                "other_positions": ["titles of other positions in the same advert that you did not extract, else []"]
                 }
 
                 CONTENT:
@@ -1515,6 +1676,9 @@ class AiService
         $countrySettings = $country ? ($this->countrySettings[$country] ?? null) : null;
         $referenceData = $this->getReferenceData($country);
 
+        $verbatim = !empty($data['_verbatim']);
+        unset($data['_verbatim']);
+
         foreach ([
             'industry_name'        => 'industries',
             'category_name'        => 'categories',
@@ -1558,32 +1722,33 @@ class AiService
         }
 
         // Only generate fallback content when the field is genuinely empty AND we have a title to work from.
-        if (empty(trim(strip_tags($data['job_description'] ?? ''))) && !empty($data['job_title'])) {
+        if (!$verbatim && empty(trim(strip_tags((string) ($data['job_description'] ?? '')))) && !empty($data['job_title'])) {
             $data['job_description'] = $this->generateFallbackDescription($data['job_title'], $data['company_name'] ?: null, $data['duty_station']);
         }
-        if (empty(trim(strip_tags($data['responsibilities'] ?? ''))) && !empty($data['job_title'])) {
+        if (!$verbatim && empty(trim(strip_tags((string) ($data['responsibilities'] ?? '')))) && !empty($data['job_title'])) {
             $data['responsibilities'] = $this->generateFallbackResponsibilities($data['job_title'], $data['company_name'] ?: null);
         }
-        if (empty(trim(strip_tags($data['qualifications'] ?? ''))) && !empty($data['job_title'])) {
+        if (!$verbatim && empty(trim(strip_tags((string) ($data['qualifications'] ?? '')))) && !empty($data['job_title'])) {
             $data['qualifications'] = $this->generateFallbackQualifications($data['job_title']);
         }
-        if (empty(trim($data['skills'] ?? '')) && !empty($data['job_title'])) {
+        if (!$verbatim && empty(trim((string) ($data['skills'] ?? ''))) && !empty($data['job_title'])) {
             $data['skills'] = $this->generateFallbackSkills($data['job_title']);
         }
-        if (empty(trim($data['meta_description'] ?? '')) && !empty($data['job_title'])) {
+        if (empty(trim((string) ($data['meta_description'] ?? ''))) && !empty($data['job_title'])) {
             $data['meta_description'] = $this->generateFallbackMetaDescription($data['job_title'], $data['company_name'] ?: null, $data['duty_station']);
         }
-        if (empty(trim($data['keywords'] ?? '')) && !empty($data['job_title'])) {
+        if (empty(trim((string) ($data['keywords'] ?? ''))) && !empty($data['job_title'])) {
             $data['keywords'] = $this->generateFallbackKeywords($data['job_title']);
         }
         $data['application_procedure'] = $data['application_procedure'] ?? '';
+        $data['other_positions'] = is_array($data['other_positions'] ?? null) ? $data['other_positions'] : [];
 
         // SEO safety net: even if job_description came back non-empty (verbatim from the
         // source, or from the block above), it might still be too thin (e.g. a source
         // page that only had a one-line title with no real description) to be useful for
         // search engines. Pad it out with additional role-appropriate detail rather than
         // discarding whatever real content was there.
-        if (!empty($data['job_title'])) {
+        if (!$verbatim && !empty($data['job_title'])) {
             $data['job_description'] = $this->ensureMinimumDescriptionLength(
                 $data['job_description'] ?? '',
                 $data['job_title'],
