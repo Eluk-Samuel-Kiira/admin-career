@@ -565,7 +565,7 @@ class CvReviewRequestController extends Controller
 
     private function resolveNextService(CvReviewRequest $r): array
     {
-        \Log::info($r);
+        // \Log::info($r);
         // After answers have been submitted, the seeker is not paying for the review —
         // they are paying for the rewrite. Before that, they still owe nothing.
         $isPurchaseStep = in_array($r->status, ['awaiting_payment'], true);
