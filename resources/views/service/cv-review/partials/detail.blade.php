@@ -405,14 +405,18 @@
                     <label class="fw-semibold fs-7 mb-2">New Status</label>
                     <select class="form-select form-select-sm" id="status_change_select">
                         @foreach(\App\Models\Service\CvReviewRequest::statuses() as $key => $label)
+                            @if($key === 'paid')
+                                @continue
+                            @endif
                             <option value="{{ $key }}" {{ $request->status === $key ? 'selected' : '' }}>
                                 {{ $label }}
                             </option>
                         @endforeach
                     </select>
                     <div class="text-muted fs-8 mt-1">
-                        Admin can jump to any status. Use this to record off-platform payments,
-                        fix mistakes, or undo an accidental cancel.
+                        Admin can jump to any status. To record an off-platform payment,
+                        use the <strong>Confirm Payment</strong> button instead — it creates a deposit,
+                        credits the correct wallet, and writes the transaction log.
                     </div>
                 </div>
 

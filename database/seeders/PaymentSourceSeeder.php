@@ -43,5 +43,20 @@ class PaymentSourceSeeder extends Seeder
                 array_merge($source, ['sort_order' => $index + 1])
             );
         }
+
+        // database/seeders/PaymentSourceSeeder.php
+        \App\Models\PaymentSource::updateOrCreate(
+            ['slug' => 'marzpay'],
+            [
+                'name'        => 'MarzPay',
+                'description' => 'Mobile money and card payments via MarzPay',
+                'category'    => 'revenue',
+                'is_active'   => true,
+                'settings'    => [
+                    'country_scope' => ['UG'],   // extend as more countries are added
+                ],
+            ]
+        );
+        
     }
 }

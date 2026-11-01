@@ -32,6 +32,7 @@ class AiJobController extends Controller
             'content' => 'required|string',
             'source_type' => 'required|in:text,url',
             'country' => 'nullable|string|size:2',
+            'position' => 'nullable|string|max:150', // pick one position when an advert lists several
         ]);
 
         $model = $request->model ?? config('ai.default');
@@ -41,14 +42,15 @@ class AiJobController extends Controller
                 $request->content,
                 $request->source_type,
                 $model,
-                $request->country
+                $request->country,
+                $request->position
             );
 
             return response()->json([
                 'success' => true,
                 'data' => $result,
             ]);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $errorMessage = $e->getMessage();
             
             // Parse the error message to extract per-model errors
@@ -81,7 +83,7 @@ class AiJobController extends Controller
                 'success' => true,
                 'data' => $result,
             ]);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $errorMessage = $e->getMessage();
             $modelErrors = $this->parseModelErrors($errorMessage);
             
@@ -118,7 +120,7 @@ class AiJobController extends Controller
                 'success' => true,
                 'enhanced' => $enhanced,
             ]);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $errorMessage = $e->getMessage();
             $modelErrors = $this->parseModelErrors($errorMessage);
             
@@ -159,7 +161,7 @@ class AiJobController extends Controller
                 'success' => true,
                 'data' => $result,
             ]);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $errorMessage = $e->getMessage();
             $modelErrors = $this->parseModelErrors($errorMessage);
             

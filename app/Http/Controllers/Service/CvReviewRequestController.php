@@ -544,7 +544,10 @@ class CvReviewRequestController extends Controller
         }
 
         $request->validate([
+            'payment_method_id' => 'required|integer|exists:payment_methods,id',
             'payment_reference' => 'required|string|max:255',
+            'amount_cents'      => 'nullable|integer|min:1',
+            'note'              => 'nullable|string|max:500',
         ]);
 
         try {
@@ -564,17 +567,101 @@ class CvReviewRequestController extends Controller
                 ], 422);
             }
 
-            $req->update([
-                'status'            => 'paid',
-                'payment_reference' => $request->input('payment_reference'),
-            ]);
+            $paymentMethod = \App\Models\PaymentMethod::find($request->input('payment_method_id'));
+            if (!$paymentMethod) {
+                return response()->json(['success' => false, 'message' => 'Invalid payment method.'], 422);
+            }
+
+            // The amount is whatever is currently on the CV review request
+            // (which was snapshotted from cv_rewrite's price at Pay Now time).
+            $amountCents = $request->input('amount_cents') ?: $req->amount_cents;
+
+            if (!$amountCents || $amountCents < 1) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This request has no amount set. Please provide amount_cents.',
+                ], 422);
+            }
+
+            $source = \App\Models\PaymentSource::active()->where('slug', 'manual')->first();
+            if (!$source) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Manual payment source not configured. Run PaymentSourceSeeder.',
+                ], 500);
+            }
+
+            $deposit = \Illuminate\Support\Facades\DB::transaction(function () use ($req, $request, $paymentMethod, $amountCents, $source) {
+                // 1. Create the deposit — marked completed immediately, is_manual = true
+                $deposit = \App\Models\Deposit::create([
+                    'deposit_ref'         => (string) \Illuminate\Support\Str::uuid(),
+                    'payment_method_id'   => $paymentMethod->id,
+                    'currency_id'         => $req->currency_id,
+                    'amount'              => $amountCents,
+                    'fee'                 => 0,
+                    'net_amount'          => $amountCents,
+                    'deposit_method'      => 'manual',
+                    'payment_channel'     => 'manual',
+                    'source_id'           => $source->id,
+                    'source_name_manual'  => 'Manual / Offline',
+                    'purpose_type'        => 'cv_review',
+                    'purpose_reference'   => $req->uuid,
+                    'purpose_description' => 'CV Rewrite — admin confirmed',
+                    'status'              => 'completed',
+                    'is_manual'           => true,
+                    'manual_reason'       => $request->input('note') ?? 'Admin confirmed payment',
+                    'deposit_date'        => now(),
+                    'cleared_date'        => now(),
+                    'reference_number'    => $request->input('payment_reference'),
+                    'source_reference'    => $request->input('payment_reference'),
+                    'depositor_id'        => $req->user_id,
+                    'paid_by_user_id'     => $req->user_id,
+                    'depositor_name'      => $req->user->name ?? 'Seeker',
+                    'depositor_email'     => $req->user->email ?? null,
+                    'depositor_phone'     => $req->user->phone ?? null,
+                    'country_code'        => $req->country_code,
+                    'verified_by'         => auth()->id(),
+                    'verified_at'         => now(),
+                    'created_by'          => auth()->id(),
+                ]);
+
+                // 2. Record the accounting entry (credits the wallet, writes payment_transaction_logs)
+                app(\App\Services\Payment\PaymentTransactionService::class)->recordDeposit($deposit->fresh());
+
+                // 3. Flip the CV review request to paid
+                $log   = $req->delivery_log ?? [];
+                $log[] = [
+                    'at'      => now()->toISOString(),
+                    'type'    => 'payment_confirmed_manually',
+                    'by'      => auth()->id(),
+                    'by_name' => auth()->user()->name,
+                    'from'    => $req->status,
+                    'to'      => 'paid',
+                    'note'    => $request->input('note'),
+                    'deposit_ref' => $deposit->deposit_ref,
+                ];
+
+                $req->update([
+                    'status'             => 'paid',
+                    'payment_reference'  => $request->input('payment_reference'),
+                    'payment_method_id'  => $paymentMethod->id,
+                    'delivery_log'       => $log,
+                ]);
+
+                return $deposit;
+            });
 
             return response()->json([
-                'success' => true,
-                'message' => 'Payment confirmed. Request moved to Paid.',
-                'data'    => $req->fresh(),
+                'success'     => true,
+                'message'     => 'Payment recorded and request moved to Paid.',
+                'deposit_ref' => $deposit->deposit_ref,
+                'data'        => $req->fresh(['user', 'service', 'currency', 'country', 'assignedAdmin']),
             ]);
-        } catch (\Exception $e) {
+
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json(['success' => false, 'message' => 'Request not found'], 404);
+        } catch (\Throwable $e) {
+            \Log::error('Confirm payment failed', ['id' => $id, 'error' => $e->getMessage()]);
             return response()->json([
                 'success' => false,
                 'message' => 'Failed: ' . $e->getMessage(),
@@ -692,10 +779,21 @@ class CvReviewRequestController extends Controller
             ->map(fn($c) => ['code' => $c->code, 'name' => $c->name, 'flag' => $c->flag ?? '🌍'])
             ->prepend(['code' => 'XX', 'name' => 'Global', 'flag' => '🌍'])
             ->values();
+        
+        $payment_methods = \App\Models\PaymentMethod::active()
+            ->orderBy('name')
+            ->get(['id', 'name', 'type', 'code'])
+            ->map(fn($pm) => [
+                'id'   => $pm->id,
+                'name' => $pm->name,
+                'type' => $pm->type,
+                'code' => $pm->code,
+            ]);
 
         return response()->json([
             'success'   => true,
             'admins'    => $admins,
+            'payment_methods'    => $payment_methods,
             'countries' => $countries,
         ]);
     }

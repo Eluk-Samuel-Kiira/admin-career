@@ -23,7 +23,13 @@ class Deposit extends Model
         'cheque_number',
         'card_last_four',
         'department_id',        // NEW
-        'depositor_id',         // NEW
+        'depositor_id', 
+        
+        'purpose_type',
+        'purpose_reference',
+        'payment_channel',
+        'gateway_transaction_uuid',
+        'paid_by_user_id',
         'source_id',
         'source_name_manual',
         'source_reference',
@@ -75,6 +81,11 @@ class Deposit extends Model
                 $model->deposit_ref = (string) Str::uuid();
             }
         });
+    }
+
+    public function paidBy()
+    {
+        return $this->belongsTo(User::class, 'paid_by_user_id');
     }
 
     // Relationships

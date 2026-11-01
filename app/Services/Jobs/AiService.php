@@ -120,7 +120,61 @@ class AiService
     public function isModelEnabled(string $model): bool
     {
         $config = $this->config[$model] ?? null;
-        return $config && !empty($config['api_key']);
+        if (!$config || empty($config['api_key'])) {
+            return false;
+        }
+
+        // A key like "sk-proj-xxxx" or "your-api-key" is a placeholder, not a real key.
+        $key = (string) $config['api_key'];
+        if (stripos($key, 'xxxx') !== false || stripos($key, 'your-') !== false || strlen($key) < 20) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * A model that just answered 401/403 (bad key) or 429 (quota used up) will answer
+     * the same for the next few minutes. Skipping it saves a wasted round trip on every
+     * request instead of trying it first every time.
+     */
+    protected function coolDownSeconds(string $errorMessage): int
+    {
+        $m = strtolower($errorMessage);
+
+        if (preg_match('/status code (401|403)|invalid[\s_-]*(x-)?api[\s_-]*key|incorrect api key|authentication_error|unauthori[sz]ed/', $m)) {
+            return 600;
+        }
+        if (preg_match('/status code 429|quota|rate[\s_-]*limit|resource_exhausted|too many requests/', $m)) {
+            return 300;
+        }
+        if (preg_match('/status code 400.*api key|api key.*(invalid|incorrect)/', $m)) {
+            return 600;
+        }
+
+        return 0;
+    }
+
+    protected function isCoolingDown(string $model): bool
+    {
+        try {
+            return Cache::has("ai_model_cooldown:{$model}");
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    protected function startCoolDown(string $model, string $errorMessage): void
+    {
+        $seconds = $this->coolDownSeconds($errorMessage);
+        if ($seconds <= 0) {
+            return;
+        }
+        try {
+            Cache::put("ai_model_cooldown:{$model}", true, $seconds);
+        } catch (\Throwable $e) {
+            // cooldown is an optimisation only
+        }
     }
 
     public function getModelConfig(string $model): ?array
@@ -135,7 +189,7 @@ class AiService
      * URL string itself was sent to the model as "content", which no plain
      * chat-completion endpoint can browse - it was just guessing/hallucinating).
      */
-    public function extractJobData(string $content, string $sourceType = 'text', ?string $model = null, ?string $country = null): array
+    public function extractJobData(string $content, string $sourceType = 'text', ?string $model = null, ?string $country = null, ?string $position = null): array
     {
         $model = $model ?? $this->defaultModel;
         $sourceUrl = null;
@@ -151,9 +205,12 @@ class AiService
 
         // Long employer posting: the body is cut from the original text by PHP, not rewritten by a model.
         $sourceWords = str_word_count(strip_tags($content));
-        $body = $sourceWords >= self::THIN_POST_WORDS ? $this->buildVerbatimBody($content) : null;
+        // One advert listing several positions ("Position 1: ... Position 2: ...") can't be copied
+        // as a single body; the model picks out one position at a time.
+        $multi = preg_match_all('/^\s*position\s*\d+\b/im', $content) >= 2;
+        $body = ($sourceWords >= self::THIN_POST_WORDS && !$multi) ? $this->buildVerbatimBody($content) : null;
 
-        $prompt = $this->buildExtractionPrompt($content, $sourceType, $referenceData, $body !== null);
+        $prompt = $this->buildExtractionPrompt($content, $sourceType, $referenceData, $body !== null, $position);
 
         $result = $this->callWithFallback($model, $prompt, function ($m, $key) use ($prompt) {
             return $this->callAiApi($m, $key, $prompt, null, true);
@@ -163,12 +220,13 @@ class AiService
             throw new \Exception($result['message'] ?? 'No valid job posting could be found in the provided content.');
         }
 
+        $result = $this->coerceModelOutput($result);
+
         if ($body !== null) {
             foreach ($body as $field => $html) {
-                if (trim(strip_tags($html)) !== '') {
-                    $result[$field] = $html;
-                }
+                $result[$field] = trim(strip_tags($html)) !== '' ? $html : null;
             }
+            $result['_verbatim'] = true; // applySmartDefaults must not invent text for a copied posting
         } else {
             $result = $this->enrichThinPosting($result, $model, $sourceWords);
         }
@@ -206,18 +264,18 @@ class AiService
         }
         if ($start === 0) {
             foreach ($lines as $i => $l) {
-                if (preg_match('/^(about\b.{0,60}|job purpose:?|job summary:?|overview:?|background:?)$/i', $l)) { $start = $i; break; }
+                if (preg_match('/^(about\b.{0,60}|job purpose:?|job summary:?|position summary:?|role summary:?|summary:?|overview:?|background:?)$/i', $l)) { $start = $i; break; }
             }
         }
 
         $respRe    = '/^(key |main )?(duties|responsibilities|duties and responsibilities|roles? and responsibilities)\s*:?$/i';
         $kpiRe     = '/^key performance indicators\s*:?$/i';
-        $qualRe    = '/^(required |minimum |academic )?(qualifications|requirements|qualifications and experience|education and experience|person specification)( and (experience|requirements))?\s*:?$/i';
+        $qualRe    = '/^(required |minimum |academic |preferred |desired |essential |key )?(qualifications?|requirements|qualifications and experience|education and experience|person specification)( and (experience|requirements))?\s*:?$/i';
         $skillRe   = '/^(required |key |core )?(skills|competencies|skills and competencies|skills and abilities)\s*:?$/i';
         $applyRe   = '/^(how to apply|application procedure|application process)\s*:?$/i';
         $closingRe = '/^(disclaimer\b|we encourage\b|.*\bequal opportunit|.*\bdoes not charge\b)/i';
         $noiseRe   = '/^(apply to position|use my indeed resume|apply using linkedin|apply now|job openings.*|company website.*|job description)$/i';
-        $endRe     = '/^(powered by|.*sharing button)/i';
+        $endRe     = '/^(powered by.*|.*sharing button.*|job details)$/i';
 
         $b = ['desc' => [], 'resp' => [], 'qual' => [], 'skill' => [], 'apply' => [], 'closing' => []];
         $state = 'desc';
@@ -495,6 +553,8 @@ class AiService
             throw new \Exception($result['message'] ?? 'No job details could be read from the image.');
         }
 
+        $result = $this->coerceModelOutput($result);
+
         $result = $this->enrichThinPosting($result, $model);
         $result = $this->applySmartDefaults($result, $country);
         $result = $this->applyApplicationLinkHandling($result);
@@ -756,6 +816,7 @@ class AiService
             return $this->callAiApi($m, $key, $prompt, null, true);
         }, expectJson: true);
 
+        $result = $this->coerceModelOutput($result);
         $result = $this->scrubGeneratedFields($result); // all of this was written by the model
         $result['job_title'] = $result['job_title'] ?? $title;
         $result['company_name'] = $result['company_name'] ?? ($company ?? '');
@@ -794,7 +855,11 @@ class AiService
 
         foreach ($models as $model) {
             if (!$this->isModelEnabled($model)) {
-                $errors[$model] = 'not enabled (missing API key)';
+                $errors[$model] = 'not enabled (missing or placeholder API key)';
+                continue;
+            }
+            if ($this->isCoolingDown($model)) {
+                $errors[$model] = 'skipped for a few minutes after its last quota/API-key error';
                 continue;
             }
 
@@ -814,7 +879,8 @@ class AiService
                 // Clean up the error message - remove "API error (model): " prefix if present
                 $cleanError = preg_replace('/^API error \([^)]+\):\s*/', '', $errorMessage);
                 $errors[$model] = $cleanError ?: $errorMessage;
-                
+                $this->startCoolDown($model, $errorMessage);
+
                 Log::warning("AI call failed for model '{$model}'", ['error' => $e->getMessage()]);
             }
         }
@@ -824,6 +890,67 @@ class AiService
             'type' => 'model_errors',
             'errors' => $errors
         ]));
+    }
+
+    /**
+     * JSON mode makes models return real JSON arrays where the prompt asked for HTML
+     * strings (skills as ["A","B"], responsibilities as ["..","..."]). Later code calls
+     * trim()/strip_tags() on these, and handing them an array is a fatal TypeError, which
+     * PHP reports as an HTML 500 page. The browser then fails with
+     * "JSON.parse: unexpected character at line 1 column 1". Turn every field back into
+     * the string shape the rest of the service expects.
+     */
+    protected function coerceModelOutput(array $d): array
+    {
+        $flat = function ($v) use (&$flat): array {
+            if (is_array($v)) {
+                $out = [];
+                foreach ($v as $item) {
+                    $out = array_merge($out, $flat($item));
+                }
+                return $out;
+            }
+            if ($v === null || is_bool($v)) {
+                return [];
+            }
+            $t = trim((string) $v);
+            return $t === '' ? [] : [$t];
+        };
+
+        foreach (['responsibilities', 'qualifications'] as $f) {
+            if (isset($d[$f]) && is_array($d[$f])) {
+                $items = $flat($d[$f]);
+                $d[$f] = $items ? '<ul>' . implode('', array_map(fn($i) => "<li>{$i}</li>", $items)) . '</ul>' : null;
+            }
+        }
+        foreach (['job_description', 'application_procedure'] as $f) {
+            if (isset($d[$f]) && is_array($d[$f])) {
+                $items = $flat($d[$f]);
+                $d[$f] = $items ? '<p>' . implode('</p><p>', $items) . '</p>' : null;
+            }
+        }
+        if (isset($d['other_positions'])) {
+            $d['other_positions'] = is_array($d['other_positions']) ? $flat($d['other_positions']) : [];
+        }
+        foreach (['skills', 'keywords', 'email', 'telephone'] as $f) {
+            if (isset($d[$f]) && is_array($d[$f])) {
+                $d[$f] = implode(', ', $flat($d[$f])) ?: null;
+            }
+        }
+        foreach ([
+            'job_title', 'company_name', 'duty_station', 'meta_description', 'application_link', 'deadline',
+            'location_type', 'employment_type', 'salary_amount', 'payment_period', 'currency', 'work_hours',
+            'experience_level_name', 'education_level_name', 'industry_name', 'category_name',
+            'job_type_name', 'job_location_name', 'salary_range_name', 'country_code',
+        ] as $f) {
+            if (isset($d[$f]) && is_array($d[$f])) {
+                $d[$f] = implode(' ', $flat($d[$f])) ?: null;
+            } elseif (isset($d[$f]) && !is_string($d[$f]) && !is_null($d[$f])) {
+                $d[$f] = (string) $d[$f];
+            }
+        }
+
+        return $d;
     }
 
     /**
@@ -848,8 +975,14 @@ class AiService
                 return $decoded;
             }
 
-            // Throw with the raw response
-            throw new \Exception("Response could not be parsed as JSON. Raw response: " . substr($result, 0, 500));
+            // Say WHY: a reply cut off by the output limit has unbalanced braces
+            $opens  = substr_count($clean, '{') + substr_count($clean, '[');
+            $closes = substr_count($clean, '}') + substr_count($clean, ']');
+            $why = $opens > $closes
+                ? 'the reply was cut off (output limit reached), ' . mb_strlen($clean) . ' characters received'
+                : 'the reply is not valid JSON';
+            throw new \Exception("Response could not be parsed as JSON: {$why}. Start: "
+                . substr($clean, 0, 200) . ' ... End: ' . substr($clean, -200));
         }
 
         throw new \Exception('Empty or invalid response.');
@@ -925,6 +1058,8 @@ class AiService
         // then cut off mid-string and could not be parsed. Cohere rejects values above 4096.
         if ($model !== 'cohere') {
             $maxTokens = max($maxTokens, 8192);
+        } else {
+            $maxTokens = min(max($maxTokens, 4000), 4096); // Cohere's ceiling; a low config value cut replies mid-string
         }
 
         // ✅ FIX: Set headers based on model
@@ -1015,11 +1150,15 @@ class AiService
             case 'grok':
             case 'cohere':
             case 'mistral':
-                return [
+                $body = [
                     'model' => $modelName,
                     'max_tokens' => $maxTokens,
                     'messages' => [['role' => 'user', 'content' => $prompt]],
                 ];
+                if ($json && $model === 'cohere') {
+                    $body['response_format'] = ['type' => 'json_object']; // no code fences, no chatter
+                }
+                return $body;
 
             default:
                 throw new \Exception("Unsupported model: {$model}");
@@ -1208,7 +1347,7 @@ class AiService
         );
     }
 
-    protected function buildExtractionPrompt(string $content, string $sourceType, array $referenceData = [], bool $bodyCaptured = false): string
+    protected function buildExtractionPrompt(string $content, string $sourceType, array $referenceData = [], bool $bodyCaptured = false, ?string $position = null): string
     {
         $twoWeeksAhead = Carbon::now()->addWeeks(2)->format('Y-m-d');
         $referenceBlock = $this->formatReferenceListsForPrompt($referenceData);
@@ -1217,6 +1356,10 @@ class AiService
         $bodyNote = $bodyCaptured
             ? "BODY TEXT ALREADY CAPTURED - METADATA ONLY:\n                The description, responsibilities, qualifications, skills and application text of this posting have\n                already been copied exactly by the system. Return null for job_description, responsibilities,\n                qualifications, skills and application_procedure (do NOT output them), and fill in every other field\n                by reading the content below."
             : '';
+
+        $positionRule = $position !== null && trim($position) !== ''
+            ? 'Extract ONLY the position titled "' . str_replace('"', '', trim($position)) . '" (match it loosely).'
+            : 'If it lists several positions, extract ONLY the first one listed.';
 
         $sourceInstruction = $sourceType === 'url'
             ? 'The CONTENT below was fetched directly from the job posting page. Extract the job details from it.'
@@ -1231,6 +1374,23 @@ class AiService
                 {$referenceBlock}
 
                 {$bodyNote}
+
+                SEVERAL POSITIONS IN ONE ADVERT:
+                Some adverts list more than one position ("Position 1: Stores Officer ... Position 2: Procurement
+                Assistant ..."). {$positionRule}
+                - Use that position's own title, brief description, requirements and location. For duty_station use only
+                the places named for that position.
+                - Anything stated "for both positions" or once at the end (How to Apply, email, address, documents
+                required, deadline, the employer) applies to the position you extract. Include it.
+                - Never mix the other positions' duties or requirements into this one.
+                - List the titles of the positions you did NOT extract in "other_positions" (for example
+                ["Procurement Assistant (2 positions, Lango & Ankole)"]). If the advert has just one position, use [].
+
+                HOW TO APPLY TEXT:
+                In application_procedure, never write an email address or phone number. Say "by email, using the
+                email address on this page" or "on the phone number on this page" instead; they are returned in the
+                email and telephone fields. Keep every other instruction word for word (postal address, documents
+                required, page limits, file format, deadline).
 
                 ABSOLUTE RULE - PRESERVE VERBATIM:
                 If job_description, responsibilities, qualifications, skills, or application_procedure are present in
@@ -1379,7 +1539,8 @@ class AiService
                 "is_application_required": false,
                 "is_whatsapp_contact": false,
                 "is_telephone_call": false,
-                "work_hours": "work schedule if mentioned, else null"
+                "work_hours": "work schedule if mentioned, else null",
+                "other_positions": ["titles of other positions in the same advert that you did not extract, else []"]
                 }
 
                 CONTENT:
@@ -1515,6 +1676,9 @@ class AiService
         $countrySettings = $country ? ($this->countrySettings[$country] ?? null) : null;
         $referenceData = $this->getReferenceData($country);
 
+        $verbatim = !empty($data['_verbatim']);
+        unset($data['_verbatim']);
+
         foreach ([
             'industry_name'        => 'industries',
             'category_name'        => 'categories',
@@ -1558,32 +1722,33 @@ class AiService
         }
 
         // Only generate fallback content when the field is genuinely empty AND we have a title to work from.
-        if (empty(trim(strip_tags($data['job_description'] ?? ''))) && !empty($data['job_title'])) {
+        if (!$verbatim && empty(trim(strip_tags((string) ($data['job_description'] ?? '')))) && !empty($data['job_title'])) {
             $data['job_description'] = $this->generateFallbackDescription($data['job_title'], $data['company_name'] ?: null, $data['duty_station']);
         }
-        if (empty(trim(strip_tags($data['responsibilities'] ?? ''))) && !empty($data['job_title'])) {
+        if (!$verbatim && empty(trim(strip_tags((string) ($data['responsibilities'] ?? '')))) && !empty($data['job_title'])) {
             $data['responsibilities'] = $this->generateFallbackResponsibilities($data['job_title'], $data['company_name'] ?: null);
         }
-        if (empty(trim(strip_tags($data['qualifications'] ?? ''))) && !empty($data['job_title'])) {
+        if (!$verbatim && empty(trim(strip_tags((string) ($data['qualifications'] ?? '')))) && !empty($data['job_title'])) {
             $data['qualifications'] = $this->generateFallbackQualifications($data['job_title']);
         }
-        if (empty(trim($data['skills'] ?? '')) && !empty($data['job_title'])) {
+        if (!$verbatim && empty(trim((string) ($data['skills'] ?? ''))) && !empty($data['job_title'])) {
             $data['skills'] = $this->generateFallbackSkills($data['job_title']);
         }
-        if (empty(trim($data['meta_description'] ?? '')) && !empty($data['job_title'])) {
+        if (empty(trim((string) ($data['meta_description'] ?? ''))) && !empty($data['job_title'])) {
             $data['meta_description'] = $this->generateFallbackMetaDescription($data['job_title'], $data['company_name'] ?: null, $data['duty_station']);
         }
-        if (empty(trim($data['keywords'] ?? '')) && !empty($data['job_title'])) {
+        if (empty(trim((string) ($data['keywords'] ?? ''))) && !empty($data['job_title'])) {
             $data['keywords'] = $this->generateFallbackKeywords($data['job_title']);
         }
         $data['application_procedure'] = $data['application_procedure'] ?? '';
+        $data['other_positions'] = is_array($data['other_positions'] ?? null) ? $data['other_positions'] : [];
 
         // SEO safety net: even if job_description came back non-empty (verbatim from the
         // source, or from the block above), it might still be too thin (e.g. a source
         // page that only had a one-line title with no real description) to be useful for
         // search engines. Pad it out with additional role-appropriate detail rather than
         // discarding whatever real content was there.
-        if (!empty($data['job_title'])) {
+        if (!$verbatim && !empty($data['job_title'])) {
             $data['job_description'] = $this->ensureMinimumDescriptionLength(
                 $data['job_description'] ?? '',
                 $data['job_title'],
@@ -1793,7 +1958,7 @@ class AiService
 
             try {
                 // Log::info("🤖 Attempting CV extraction with {$model}");
-                $raw = $this->callAiApi($model, $apiKey, $prompt);
+                $raw = $this->callAiApi($model, $apiKey, $prompt, null, true);
                 
                 if ($raw) {
                     $data = $this->parseJsonResponse($raw);
@@ -1945,18 +2110,10 @@ class AiService
         $cleaned = preg_replace('/^```(?:json)?\s*|\s*```$/m', '', trim($raw));
         $cleaned = trim($cleaned);
 
-        // Try to find JSON if there's extra text
-        if (!str_starts_with($cleaned, '{') && !str_starts_with($cleaned, '[')) {
-            preg_match('/\{[^{}]*\}/', $cleaned, $matches);
-            if (!empty($matches)) {
-                $cleaned = $matches[0];
-            }
-        }
+        // Tolerates chatter around the object and raw line breaks inside strings
+        $data = $this->decodeJsonLenient($cleaned);
 
-        // Try to parse JSON
-        $data = json_decode($cleaned, true);
-
-        if (json_last_error() === JSON_ERROR_NONE && is_array($data)) {
+        if (is_array($data)) {
             return $data;
         }
 
@@ -2186,14 +2343,14 @@ class AiService
             }
 
             try {
-                $raw = $this->callAiApi($model, $apiKey, $prompt);
+                $raw = $this->callAiApi($model, $apiKey, $prompt, null, true);
                 $data = $this->parseJsonResponse(is_array($raw) ? json_encode($raw) : $raw);
 
                 if ($data !== null && !empty($data)) {
                     // Sanity check: the AI must return an object with at least one of the expected keys
                     if (isset($data['overall_score']) || isset($data['sections']) || isset($data['summary'])) {
                         Log::info("Gap review succeeded with {$model}");
-                        return $data;
+                        return $this->normaliseGapReview($data);
                     }
 
                     Log::warning("Gap review: {$model} returned JSON but shape looks wrong", [
@@ -2212,6 +2369,94 @@ class AiService
             'CV gap review failed on all configured models. Last error: ' .
             ($lastError ?? 'no usable response from any model.')
         );
+    }
+
+    /**
+     * "missing_fields" are the questions shown to the candidate, each written as
+     * "Topic: question". Cleans what the model sent. If it returned an old-style key
+     * (for example "gpa_scale"), it is swapped for a full, plain question.
+     */
+    protected function normaliseGapReview(array $data): array
+    {
+        $out  = [];
+        $seen = [];
+
+        foreach ((array) ($data['missing_fields'] ?? []) as $item) {
+            $text = trim(preg_replace('/\s+/', ' ', (string) $item));
+            $text = preg_replace('/^\d+[.)]\s*/', '', $text);   // the system adds numbers
+            if ($text === '') {
+                continue;
+            }
+
+            if (preg_match('/^[a-z0-9_]+$/i', $text)) {              // a bare key, not a question
+                [$group, $question] = $this->fallbackGapQuestion(strtolower($text));
+                $text = "{$group}: {$question}";
+            } elseif (!str_contains($text, ':')) {
+                $text = 'Details: ' . $text;
+            }
+
+            $key = mb_strtolower($text);
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $out[] = mb_substr($text, 0, 600);
+        }
+
+        $data['missing_fields'] = array_slice($out, 0, 15);
+        unset($data['questions']);
+
+        return $data;
+    }
+
+    /** Plain-language backup questions, used only when the model skipped a missing field. */
+    protected function fallbackGapQuestion(string $field): array
+    {
+        $map = [
+            'contact_email'                    => ['Contact', 'What is the best professional email address for employers to reach you? (For example firstname.lastname@gmail.com.)'],
+            'contact_phone'                    => ['Contact', 'Which phone number should employers call or WhatsApp? Please give one or two numbers.'],
+            'location_town_district'           => ['Contact', 'Which town or village and district do you live in now? Are you willing to work in other districts or to relocate?'],
+            'linkedin_url'                     => ['Contact', 'Do you have a LinkedIn page? If yes, paste the link. If not, write "none".'],
+            'target_job_title'                 => ['Your target job', 'Which job title do you want most, and which type of employer (government, NGO, private company)? Please send one or two adverts you would like to apply to.'],
+            'professional_summary'             => ['Your target job', 'In two or three sentences, how would you describe your work to an employer: what you do, how long you have done it, and what you are best at?'],
+            'years_of_experience'              => ['Your experience', 'In total, how many years and months of paid or volunteer work do you have in your field? List any breaks of more than three months and what you did during them.'],
+            'professional_registration_number' => ['Registration and licence', 'What is your professional registration or enrolment number, and who issued it? When does your practising licence expire (day, month, year)?'],
+            'registration_expiry_date'         => ['Registration and licence', 'On what date does your registration or practising licence expire?'],
+            'employment_status'                => ['Your work history', 'For each job on your CV, were you paid staff, a volunteer, an intern or on placement? What was your exact job title?'],
+            'job_title_exact'                  => ['Your work history', 'What exact job title appears on your appointment letter or contract for each job on your CV?'],
+            'employment_start_end_dates'       => ['Your work history', 'For each job on your CV, in what month and year did you start and finish? Write "to date" if you still work there.'],
+            'employment_gap_explanation'       => ['Your work history', 'What were you doing in the periods between your jobs (study, casual work, job search, family)? One short line for each gap is enough.'],
+            'key_duties_for_role'              => ['Your work history', 'Tell us the real duties you carried out in your most recent job. List everything you actually did, and leave out what you only observed.'],
+            'quantified_results'               => ['Your results', 'Give numbers for your best work: how many clients, patients, customers, interviews, households or transactions did you handle per day, month or in total?'],
+            'team_size_managed'                => ['Your results', 'Did you supervise anyone? If yes, how many people, and what did you do for them (training, targets, reports)?'],
+            'budget_or_volume_handled'         => ['Your results', 'Did you handle money, stock or a budget in any job? Roughly how much per day, month or project (for example UGX 6 million per day)?'],
+            'achievements'                     => ['Your results', 'What are you proud of at work? Think of targets you beat, problems you solved or processes you improved, with a number if you have one.'],
+            'awards_or_recognition'            => ['Your results', 'Have you received any award, praise, promotion or extra responsibility? Who gave it and when?'],
+            'promotions_or_added_responsibility'=> ['Your results', 'Were you ever given extra responsibilities or promoted in a job? What was added and in which month and year?'],
+            'education_completion_dates'       => ['Education', 'In what month and year did you complete each qualification on your CV?'],
+            'education_grades'                 => ['Education', 'What was your final grade, class or GPA for each qualification (with the scale, for example 4.2 out of 5)? For O-level and A-level, give the division or points.'],
+            'gpa_scale'                        => ['Education', 'Your CV shows a GPA without a scale. Is it out of 4.0 or out of 5.0?'],
+            'exam_board_results'               => ['Education', 'Did you pass the national or professional exams for your course (for example UNMEB, UBTEB, ICPAU)? Please give the year and your result.'],
+            'certifications'                   => ['Training and certificates', 'Which professional certificates do you hold? For each one, say who issued it and in which year, and whether you have the certificate copy.'],
+            'training_provider_and_year'       => ['Training and certificates', 'For each short course or training on your CV, who organised it, where was it, what year and how long did it last (days or weeks)?'],
+            'clinical_or_field_placements'     => ['Training and certificates', 'Did you do placements or attachments during your course? Where, for how long, and what did you do there?'],
+            'projects'                         => ['Your results', 'Tell us about one or two projects you worked on: what the goal was, what you did yourself and what the result was.'],
+            'software_and_tools'               => ['Skills and tools', 'Which computer programs or tools do you use for work (for example Word, Excel, QuickBooks, KoboToolbox, DHIS2)? How well: basic, good or advanced?'],
+            'technical_skills'                 => ['Skills and tools', 'Which practical skills of your profession can you do without help? List the ones you do most often.'],
+            'industry_keywords'                => ['Skills and tools', 'Which procedures, systems or methods are used in the jobs you want? List the ones you have really used.'],
+            'languages_with_levels'            => ['Skills and tools', 'Which languages do you speak, and how well in each: fluent, good or basic?'],
+            'volunteer_work'                   => ['Your work history', 'Do you have any volunteer or community work? Please give the organisation, dates and what you did.'],
+            'referees_full_details'            => ['Referees', 'Please give two or three referees with full name, job title, organisation, phone, email and how they know you. At least one should know your work well.'],
+            'referee_consent'                  => ['Referees', 'Have all your referees agreed to be contacted by employers?'],
+        ];
+
+        if (isset($map[$field])) {
+            return $map[$field];
+        }
+
+        $label = trim(str_replace('_', ' ', $field));
+
+        return ['Other details', "Please tell us about your {$label}. Give names, dates and numbers where you can."];
     }
 
     protected function buildGapReviewPrompt(string $resumeText, ?string $jobDescription = null): string
@@ -2304,8 +2549,41 @@ class AiService
                     "note": "..."
                 }
             ],
-            "missing_fields": ["snake_case_field_name", "..."]
+            "missing_fields": [
+                "Topic: one complete question written to this person about their CV",
+                "Topic: another complete question"
+            ]
             }
+
+            HOW TO WRITE "missing_fields":
+            Each item is one question that will be shown to the candidate as a form field, so it must stand on its
+            own and be fully understood by someone who has not read any review. A short label such as "Training
+            Provider And Year" is useless: even the owner of the CV would not know what to write. Write long,
+            direct, specific questions.
+            - Format of every item: "Topic: question". The topic is one to three words (a job, a school, "Target",
+              "Education", "Referees", "Contact", "Availability"). After the colon comes the question. Do not number
+              the items, the system numbers them.
+            - Each question is 20 to 60 words and chains the 2 to 4 closely related things the expert needs for
+              that topic, so the person can answer in one go.
+            - Use the CV's own details: employer, job title, school, project and dates. Name them, so the person
+              knows exactly which part of their CV you mean.
+            - Say what form each answer should take (month and year, a number, yes or no, a short list) and give a
+              short example in brackets where it helps. Estimates are fine ("about how many").
+            - Ask about contradictions directly, for example the same job listed twice, a job shown as paid in one
+              place and volunteer in another, or duty lines copied word for word across several roles.
+            - Do not ask for anything the CV already states. Do not ask for date of birth, marital status,
+              religion, a photo or an ID number; if the CV contains them, say in the Contact note that they should
+              be removed.
+            - Plain, friendly English in the second person ("you", "your"). No jargon, and never the word "ATS".
+            - Put the most important topics first. Return 8 to 14 items, one topic each, with at most 15. Return an
+              empty array [] only if truly nothing is missing.
+
+            Examples of the right length and style (invented people, for style only):
+            - "Target: which job, or type of job, are you applying for, and in which type of organisation (government, NGO or private)? Please send the advert if you have one."
+            - "Education: in what month and year did you finish your Diploma in Business Administration at Makerere, and what was your final grade or GPA (and the scale, for example 4.2 out of 5)? Do you also have a degree, and what were your UCE and UACE years and schools?"
+            - "Work at Total Energies: what was your exact job title, at which station, and what were your start and end dates (month and year)? Roughly how much cash did you reconcile per day, and how many staff did you supervise?"
+            - "Field surveys: your duties are word for word the same under five projects. For each project, about how many households or respondents did you survey, how many days per week did you work, and did you train or lead anyone?"
+            - "Referees: which three people should we keep as referees, and what are their job titles, phone numbers and emails? Do they know you have listed them?"
 
             RULES:
             - Use EXACTLY the 5 sections listed above, in that order. Do not add or remove sections.
@@ -2313,24 +2591,6 @@ class AiService
               missing. Use "missing" only when the section is absent.
             - Every "note" must be specific to THIS CV: name the job, school, date or line concerned. Never write
               generic advice such as "add more detail" or "improve formatting".
-            - "missing_fields" is an array of snake_case strings. Each one is a concrete fact the candidate must
-              supply, and each will be turned into a question for them, so make each one precise and answerable.
-              List the most important first and return at most 15. Prefer these names where they fit, and invent a
-              new snake_case name only if none fits:
-              contact_email, contact_phone, location_town_district, linkedin_url,
-              target_job_title, professional_summary, years_of_experience,
-              professional_registration_number, registration_expiry_date, employment_status,
-              job_title_exact, employment_start_end_dates, employment_gap_explanation,
-              key_duties_for_role, quantified_results, team_size_managed, budget_or_volume_handled,
-              achievements, awards_or_recognition, promotions_or_added_responsibility,
-              education_completion_dates, education_grades, gpa_scale, exam_board_results,
-              certifications, training_provider_and_year, clinical_or_field_placements, projects,
-              software_and_tools, technical_skills, industry_keywords, languages_with_levels,
-              volunteer_work, referees_full_details, referee_consent.
-            - Also list a field when the CV CONTRADICTS itself (for example the same job shown as paid and as
-              volunteer), so the candidate is asked to clarify. Name it after the thing to clarify, such as
-              employment_status.
-            - Return an empty array [] only if truly nothing is missing.
             - Do NOT invent details that are not in the CV, and do not assume a registration, grade or number exists.
             - Do NOT wrap the response in markdown code fences.
             - Do NOT include any text before or after the JSON object.
@@ -2366,7 +2626,7 @@ class AiService
             }
 
             try {
-                $raw  = $this->callAiApi($model, $apiKey, $prompt);
+                $raw  = $this->callAiApi($model, $apiKey, $prompt, null, true);
                 $data = $this->parseJsonResponse(is_array($raw) ? json_encode($raw) : $raw);
 
                 if (is_array($data) && isset($data['score'])) {
@@ -2612,7 +2872,7 @@ class AiService
             if (!$this->isModelUsable($model, $apiKey)) continue;
 
             try {
-                $raw  = $this->callAiApi($model, $apiKey, $prompt);
+                $raw  = $this->callAiApi($model, $apiKey, $prompt, null, true);
                 $data = $this->parseJsonResponse(is_array($raw) ? json_encode($raw) : $raw);
 
                 if (is_array($data) && isset($data['score'])) {
