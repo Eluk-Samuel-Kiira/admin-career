@@ -211,11 +211,41 @@ class CvReviewRequestController extends Controller
         }
     }
 
+    private function resolveNextService(CvReviewRequest $r): array
+    {
+        // After answers have been submitted, the seeker is not paying for the review —
+        // they are paying for the rewrite. Before that, they still owe nothing.
+        $isPurchaseStep = in_array($r->status, ['awaiting_payment'], true);
+
+        if (!$isPurchaseStep) {
+            return [
+                'next_service_key'   => null,
+                'next_service_name'  => null,
+                'next_service_price' => null,
+            ];
+        }
+
+        $countryCode = strtoupper($r->country_code ?: config('app.country_code', 'UG'));
+        $rewritePrice = \App\Models\Service\ServicePrice::resolve('cv_rewrite', $countryCode);
+
+        return [
+            'next_service_key'   => 'cv_rewrite',
+            'next_service_name'  => 'CV Rewrite',
+            'next_service_price' => $rewritePrice ? [
+                'amount_cents' => (int) $rewritePrice->amount_cents,
+                'currency_code' => $rewritePrice->currency->code ?? 'UGX',
+                'formatted'    => $rewritePrice->formatted_amount,
+            ] : null,
+        ];
+    }
+
     /**
      * Shape a request for admin-side JSON.
      */
     private function shapeForAdmin(CvReviewRequest $r): array
     {
+        $next = $this->resolveNextService($r);
+
         return [
             'id'                    => $r->id,
             'uuid'                  => $r->uuid,
@@ -243,6 +273,9 @@ class CvReviewRequestController extends Controller
             'seeker_gap_answers'    => $r->seeker_gap_answers,
             'allowed_next_statuses' => $r->allowedNextStatuses(),
             'target_job_title'      => $r->target_job_title,
+            'next_service_key'   => $next['next_service_key'],
+            'next_service_name'  => $next['next_service_name'],
+            'next_service_price' => $next['next_service_price'],
         ];
     }
 

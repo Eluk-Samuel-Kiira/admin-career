@@ -48,6 +48,10 @@ class CvReviewRequest extends Model
         'delivered_cv_path',
         'delivered_at',
         'admin_notes',
+
+        'payment_method_id',
+        'paid_for_service_key',
+
     ];
 
     // ---------------------------------------------------------------
