@@ -42,6 +42,21 @@ class MarzPayService
 
         $cfg = $this->credentials($countryCode);
 
+        // ── DEBUG: prove we got here and have creds ──────────────────
+        Log::info('MarzPay::collect START', [
+            'deposit_ref'   => $deposit->deposit_ref,
+            'country'       => $countryCode,
+            'method'        => $method,
+            'base_url'      => $cfg['base_url']      ?? null,
+            'callback_url'  => $cfg['callback_url']  ?? null,
+            'api_key_len'   => strlen($cfg['api_key']    ?? ''),
+            'api_secret_len'=> strlen($cfg['api_secret'] ?? ''),
+            'api_key_tail'  => substr($cfg['api_key']    ?? '', -4),  // last 4 chars only, never log full keys
+            'currency'      => $deposit->currency?->code,
+            'amount_cents'  => $deposit->amount,
+            'raw_phone'     => $phone,
+        ]);
+
         $payload = [
             'amount'       => $this->amountForMarzPay($deposit),
             'country'      => $countryCode,
@@ -59,30 +74,51 @@ class MarzPayService
 
         if ($method !== 'card') {
             $rawPhone = $phone ?? $deposit->depositor_phone;
-
-            // Strip everything except + and digits — MarzPay rejects spaces,
-            // dashes, parentheses, and any other decoration.
             $phone = preg_replace('/[^\d+]/', '', (string) $rawPhone);
-
-            // Ensure it starts with a single +
             if (!str_starts_with($phone, '+')) {
                 $phone = '+' . ltrim($phone, '+');
             }
-
             $payload['phone_number'] = $phone;
         }
 
-        $response = Http::withBasicAuth($cfg['api_key'], $cfg['api_secret'])
-            ->timeout(30)
-            ->post(rtrim($cfg['base_url'], '/') . '/collect-money', $payload);
+        // ── DEBUG: what we're about to send ──────────────────────────
+        Log::info('MarzPay::collect PAYLOAD', [
+            'deposit_ref' => $deposit->deposit_ref,
+            'url'         => rtrim($cfg['base_url'], '/') . '/collect-money',
+            'payload'     => $payload,   // amount, phone, reference, etc — no secrets
+        ]);
+
+        // ── Wrap the request so we capture DNS / TLS / timeout failures ──
+        try {
+            $response = Http::withBasicAuth($cfg['api_key'], $cfg['api_secret'])
+                ->timeout(30)
+                ->withOptions([
+                    'debug' => false,          // set true only locally to see cURL trace
+                    'verify' => true,          // production MUST verify TLS
+                ])
+                ->post(rtrim($cfg['base_url'], '/') . '/collect-money', $payload);
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            // DNS failure, TLS handshake failure, connection timeout, etc.
+            Log::error('MarzPay::collect CONNECTION FAILED', [
+                'deposit_ref' => $deposit->deposit_ref,
+                'url'         => rtrim($cfg['base_url'], '/') . '/collect-money',
+                'error'       => $e->getMessage(),
+            ]);
+            throw $e;
+        }
+
+        // ── DEBUG: what MarzPay sent back ────────────────────────────
+        Log::info('MarzPay::collect RESPONSE', [
+            'deposit_ref' => $deposit->deposit_ref,
+            'status_code' => $response->status(),
+            'headers'     => $response->headers(),
+            'body'        => $response->body(),        // full body, so you see the exact payload
+        ]);
 
         if (!$response->successful()) {
             $body = $response->json();
+            $message = $body['message'] ?? 'Payment could not be started.';
 
-            $message = $body['message']
-                ?? 'Payment could not be started.';
-
-            // Join validation errors into one line so the user sees exactly what is wrong.
             if (!empty($body['errors']) && is_array($body['errors'])) {
                 $messages = [];
                 foreach ($body['errors'] as $field => $list) {
@@ -95,7 +131,7 @@ class MarzPayService
                 }
             }
 
-            Log::warning('MarzPay collect failed', [
+            Log::warning('MarzPay::collect rejected', [
                 'deposit_ref' => $deposit->deposit_ref,
                 'status'      => $response->status(),
                 'body'        => $response->body(),
