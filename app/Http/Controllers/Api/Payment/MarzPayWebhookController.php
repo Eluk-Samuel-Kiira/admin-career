@@ -4,7 +4,7 @@ namespace App\Http\Controllers\Api\Payment;
 
 use App\Http\Controllers\Controller;
 use App\Models\Deposit;
-use App\Models\PaymentWebhook;
+use App\Models\Subscription\PaymentWebhook;
 use App\Models\Service\CvReviewRequest;
 use App\Services\Payment\MarzPayService;
 use App\Services\Payment\PaymentTransactionService;
