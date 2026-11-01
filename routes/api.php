@@ -249,8 +249,6 @@ Route::middleware(['verifycountry'])->group(function () {
         Route::get('/alert-log', [\App\Http\Controllers\Api\Seeker\AlertLogController::class, 'index']);
     });
 
-    // routes/api.php (main app) — webhook must be public, no auth, no verifycountry
-    Route::post('/payments/marzpay/webhook', [\App\Http\Controllers\Api\Payment\MarzPayWebhookController::class, 'handle']);
 
     // Protected initiation
     Route::middleware(['auth:sanctum'])->group(function () {
@@ -258,6 +256,9 @@ Route::middleware(['verifycountry'])->group(function () {
     });
     
 });
+
+    // routes/api.php (main app) — webhook must be public, no auth, no verifycountry
+    Route::post('/payments/marzpay/webhook', [\App\Http\Controllers\Api\Payment\MarzPayWebhookController::class, 'handle']);
 
 
 // Route to test middleware

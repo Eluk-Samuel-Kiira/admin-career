@@ -85,7 +85,7 @@ class PaymentInitController extends Controller
             'status'              => 'pending',
             'depositor_id'        => $user->id,
             'paid_by_user_id'     => $user->id,
-            'depositor_phone'     => $validated['phone'] ?? $user->phone,
+            'depositor_phone' => $validated['phone'] ?: $user->phone,
             'depositor_email'     => $user->email,
             'depositor_name'      => $user->name,
             'country_code'        => $user->country_code ?? config('app.country_code', 'UG'),

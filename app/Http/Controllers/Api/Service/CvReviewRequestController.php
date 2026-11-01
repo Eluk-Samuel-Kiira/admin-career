@@ -294,7 +294,7 @@ class CvReviewRequestController extends Controller
             'purpose_type'      => 'cv_review',
             'purpose_reference' => $cvRequest->uuid,
             'description'       => 'CV Rewrite for CV Review #' . substr($cvRequest->uuid, 0, 8),
-            'phone'             => $request->input('phone') ?? $user->phone,
+            'phone' => $request->filled('phone') ? $request->input('phone') : $user->phone,
             'method'            => $request->input('method', 'mobile_money'),
         ]);
         $initRequest->setUserResolver(fn() => $user);

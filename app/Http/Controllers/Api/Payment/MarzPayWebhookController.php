@@ -7,6 +7,7 @@ use App\Models\Deposit;
 use App\Models\PaymentWebhook;
 use App\Models\Service\CvReviewRequest;
 use App\Services\Payment\MarzPayService;
+use App\Services\Payment\PaymentTransactionService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\DB;
@@ -59,31 +60,43 @@ class MarzPayWebhookController extends Controller
 
         $verifiedStatus = $verified['data']['transaction']['status'] ?? null;
 
-        DB::transaction(function () use ($deposit, $verified, $verifiedStatus) {
-            $txn        = $verified['data']['transaction'] ?? [];
-            $collection = $verified['data']['collection']  ?? [];
+        try {
+            DB::transaction(function () use ($deposit, $verified, $verifiedStatus) {
+                $txn        = $verified['data']['transaction'] ?? [];
+                $collection = $verified['data']['collection']  ?? [];
 
-            if ($verifiedStatus === 'completed') {
-                $deposit->update([
-                    'status'           => 'completed',
-                    'cleared_date'     => now(),
-                    'reference_number' => $collection['provider_transaction_id'] ?? null,
-                    'fee'              => $this->toCents($txn['charge']['raw']     ?? 0, $deposit),
-                    'net_amount'       => $this->toCents($txn['net_amount']['raw'] ?? $txn['amount']['raw'] ?? 0, $deposit),
-                ]);
+                if ($verifiedStatus === 'completed') {
+                    $deposit->update([
+                        'status'           => 'completed',
+                        'cleared_date'     => now(),
+                        'reference_number' => $collection['provider_transaction_id'] ?? null,
+                        'fee'              => $this->toCents($txn['charge']['raw']     ?? 0, $deposit),
+                        'net_amount'       => $this->toCents($txn['net_amount']['raw'] ?? $txn['amount']['raw'] ?? 0, $deposit),
+                    ]);
 
-                // Record the transaction into the accounting log and credit the wallet
-                $this->transactionService->recordDeposit($deposit->fresh());
+                    // Record the transaction into the accounting log and credit the wallet
+                    $this->transactionService->recordDeposit($deposit->fresh());
 
-                // Flip the CV review request (or any other domain row) to paid
-                $this->activator->activate($deposit->fresh());
-            } elseif ($verifiedStatus === 'failed') {
-                $deposit->update([
-                    'status' => 'failed',
-                    'notes'  => $collection['failure_reason'] ?? 'Payment failed',
-                ]);
-            }
-        });
+                    // Flip the CV review request (or any other domain row) to paid
+                    $this->activate($deposit->fresh());
+                } elseif ($verifiedStatus === 'failed') {
+                    $deposit->update([
+                        'status' => 'failed',
+                        'notes'  => $collection['failure_reason'] ?? 'Payment failed',
+                    ]);
+                }
+            });
+        } catch (\Throwable $e) {
+            Log::error('MarzPay webhook: processing failed', [
+                'reference' => $reference,
+                'error'     => $e->getMessage(),
+                'trace'     => $e->getTraceAsString(),
+            ]);
+
+            // Return 200 so MarzPay does not retry forever on a bug we already logged.
+            // If you want retries, return 500 instead.
+            return response('processing error', 200);
+        }
 
         return response('ok', 200);
     }
