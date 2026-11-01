@@ -264,22 +264,26 @@ class CvReviewRequestController extends Controller
         // If the rewrite is free in this country (unlikely), skip payment.
         if ((int) $rewritePrice->amount_cents === 0) {
             $cvRequest->update([
-                'status'            => 'paid',
-                'payment_reference' => 'FREE-' . strtoupper(\Illuminate\Support\Str::random(8)),
+                'status'              => 'paid',
+                'payment_reference'   => 'FREE-' . strtoupper(\Illuminate\Support\Str::random(8)),
+                'paid_for_service_key'=> 'cv_rewrite',
             ]);
 
             return response()->json([
-                'success'   => true,
-                'is_free'   => true,
-                'message'   => 'This service is free right now. Your request has moved to our team.',
-                'next_step' => 'paid',
+                'success'          => true,
+                'is_free'          => true,
+                'next_service_key' => 'cv_rewrite',
+                'next_service_name'=> 'CV Rewrite',
+                'message'          => 'This service is free right now. Your request has moved to our team.',
+                'next_step'        => 'paid',
             ]);
         }
 
         // Snapshot the rewrite price into the CV review request so it survives admin price changes.
         $cvRequest->update([
-            'amount_cents' => (int) $rewritePrice->amount_cents,
-            'currency_id'  => $rewritePrice->currency_id,
+            'amount_cents'         => (int) $rewritePrice->amount_cents,
+            'currency_id'          => $rewritePrice->currency_id,
+            'paid_for_service_key' => 'cv_rewrite',   // <-- persists what was actually bought
         ]);
 
         // Delegate to the generic init controller
@@ -295,8 +299,26 @@ class CvReviewRequestController extends Controller
         ]);
         $initRequest->setUserResolver(fn() => $user);
 
-        return app(\App\Http\Controllers\Api\Payment\PaymentInitController::class)
+        $gatewayResponse = app(\App\Http\Controllers\Api\Payment\PaymentInitController::class)
             ->initiate($initRequest);
+
+        // The generic init controller returned a JsonResponse.
+        // We augment it with the service context so the seeker UI can label
+        // the payment as "CV Rewrite — UGX 16,000" rather than just an amount.
+        $payload = $gatewayResponse->getData(true);
+
+        if (!empty($payload['success']) && empty($payload['is_free'])) {
+            $payload['next_service_key']   = 'cv_rewrite';
+            $payload['next_service_name']  = 'CV Rewrite';
+            $payload['amount_formatted']   = $rewritePrice->formatted_amount;
+            $payload['amount_cents']       = (int) $rewritePrice->amount_cents;
+            $payload['currency_code']      = $rewritePrice->currency->code;
+
+            return response()->json($payload, $gatewayResponse->getStatusCode());
+        }
+
+        // Failure path — pass through the gateway's exact error untouched
+        return $gatewayResponse;
     }
 
     
@@ -541,22 +563,68 @@ class CvReviewRequestController extends Controller
         return [$existingPath, $found['original_name'] ?? 'CV.pdf'];
     }
 
+    private function resolveNextService(CvReviewRequest $r): array
+    {
+        \Log::info($r);
+        // After answers have been submitted, the seeker is not paying for the review —
+        // they are paying for the rewrite. Before that, they still owe nothing.
+        $isPurchaseStep = in_array($r->status, ['awaiting_payment'], true);
+
+        if (!$isPurchaseStep) {
+            return [
+                'next_service_key'   => null,
+                'next_service_name'  => null,
+                'next_service_price' => null,
+            ];
+        }
+
+        $countryCode = strtoupper($r->country_code ?: config('app.country_code', 'UG'));
+        $rewritePrice = \App\Models\Service\ServicePrice::resolve('cv_rewrite', $countryCode);
+
+        return [
+            'next_service_key'   => 'cv_rewrite',
+            'next_service_name'  => 'CV Rewrite',
+            'next_service_price' => $rewritePrice ? [
+                'amount_cents' => (int) $rewritePrice->amount_cents,
+                'currency_code' => $rewritePrice->currency?->code ?? 'UGX',
+                'formatted'    => $rewritePrice->formatted_amount,
+            ] : null,
+        ];
+    }
+
     private function formatRequest(CvReviewRequest $r): array
     {
+        $next = $this->resolveNextService($r);
+
+        // Once answers are submitted, the card represents the CV Rewrite purchase
+        $isRewriteStep = $r->status === 'awaiting_payment'
+            && !empty($r->seeker_gap_answers);
+
+        $displayServiceName = $isRewriteStep
+            ? ($next['next_service_name'] ?? 'CV Rewrite')
+            : ($r->service->name ?? '—');
+
+        $displayFormattedAmount = $isRewriteStep && $next['next_service_price']
+            ? $next['next_service_price']['formatted']
+            : ($r->currency ? $r->currency->formatAmount($r->amount_cents) : '—');
+
         return [
             'uuid'                  => $r->uuid,
             'status'                => $r->status,
             'status_label'          => ucwords(str_replace('_', ' ', $r->status)),
-            'service_name'          => $r->service->name ?? '—',
+
+            'service_name'          => $displayServiceName,
+            'formatted_amount'      => $displayFormattedAmount,   // <-- keep THIS one
+            'has_answers'           => !empty($r->seeker_gap_answers),
             'target_job_title'      => $r->target_job_title,
             'original_cv_name'      => $r->original_cv_name,
-            'payment_method_id' => $r->payment_method_id,
-            'payment_method'    => $r->paymentMethod?->name,
-            'original_cv_url'       => $r->cv_download_url,     // ⬅️ use the model accessor
-            'delivered_cv_url'      => $r->delivered_cv_url,    // ⬅️ use the model accessor
+            'payment_method_id'     => $r->payment_method_id,
+            'payment_method'        => $r->paymentMethod?->name,
+            'original_cv_url'       => $r->cv_download_url,
+            'delivered_cv_url'      => $r->delivered_cv_url,
             'amount_cents'          => $r->amount_cents,
             'currency_code'         => $r->currency->code ?? '—',
-            'formatted_amount'      => $r->currency ? $r->currency->formatAmount($r->amount_cents) : '—',
+            // 'formatted_amount'   => ...   <-- REMOVE THIS LINE
             'country_code'          => $r->country_code,
             'ai_gap_review'         => $r->ai_gap_review,
             'seeker_gap_answers'    => $r->seeker_gap_answers,
@@ -565,6 +633,9 @@ class CvReviewRequestController extends Controller
             'delivered_at'          => $r->delivered_at?->toISOString(),
             'created_at'            => $r->created_at?->toISOString(),
             'allowed_next_statuses' => $r->allowedNextStatuses(),
+            'next_service_key'      => $next['next_service_key'],
+            'next_service_name'     => $next['next_service_name'],
+            'next_service_price'    => $next['next_service_price'],
         ];
     }
 }
