@@ -221,7 +221,11 @@ Route::middleware(['verifycountry'])->group(function () {
         Route::post('/',             [\App\Http\Controllers\Api\Service\LetterController::class, 'store']);
         Route::get('/{uuid}',        [\App\Http\Controllers\Api\Service\LetterController::class, 'show']);
         Route::post('/{uuid}/pay',   [\App\Http\Controllers\Api\Service\LetterController::class, 'pay']);
-        Route::get('/{uuid}/download', [\App\Http\Controllers\Api\Service\LetterController::class, 'download']);
+        Route::post('/{uuid}/regenerate',    [\App\Http\Controllers\Api\Service\LetterController::class, 'regenerate']);
+        Route::post('/{uuid}/update',        [\App\Http\Controllers\Api\Service\LetterController::class, 'updateInputs']);
+        Route::post('/{uuid}/save-edited',   [\App\Http\Controllers\Api\Service\LetterController::class, 'saveEdited']);   // ← ADD THIS
+        Route::post('/{uuid}/reset-edited',  [\App\Http\Controllers\Api\Service\LetterController::class, 'resetEdited']);  // ← AND THIS
+        Route::get('/{uuid}/download',[\App\Http\Controllers\Api\Service\LetterController::class, 'download']);
         Route::delete('/{uuid}',     [\App\Http\Controllers\Api\Service\LetterController::class, 'destroy']);
     });
 
@@ -254,6 +258,9 @@ Route::middleware(['verifycountry'])->group(function () {
     Route::middleware(['auth:sanctum'])->group(function () {
         Route::post('/payments/initiate', [\App\Http\Controllers\Api\Payment\PaymentController::class, 'initiate']);
     });
+
+
+
     
 });
 

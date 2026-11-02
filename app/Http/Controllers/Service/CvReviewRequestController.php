@@ -580,6 +580,7 @@ class CvReviewRequestController extends Controller
             'payment_method_id' => 'required|integer|exists:payment_methods,id',
             'payment_reference' => 'required|string|max:255',
             'amount_cents'      => 'nullable|integer|min:1',
+            'deposit_method'    => 'required|in:cash,mobile_money,bank_transfer,cheque',  // mirror the ENUM
             'note'              => 'nullable|string|max:500',
         ]);
 
@@ -616,16 +617,18 @@ class CvReviewRequestController extends Controller
                 ], 422);
             }
 
-            $source = \App\Models\PaymentSource::active()->where('slug', 'manual')->first();
+            $source = \App\Models\PaymentSource::active()->where('slug', 'cv_shortlisting')->first();
             if (!$source) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Manual payment source not configured. Run PaymentSourceSeeder.',
+                    'message' => 'cv_shortlisting payment source not configured. Run PaymentSourceSeeder.',
                 ], 500);
             }
 
             $deposit = \Illuminate\Support\Facades\DB::transaction(function () use ($req, $request, $paymentMethod, $amountCents, $source) {
                 // 1. Create the deposit — marked completed immediately, is_manual = true
+                $channel = $request->input('deposit_method');
+
                 $deposit = \App\Models\Deposit::create([
                     'deposit_ref'         => (string) \Illuminate\Support\Str::uuid(),
                     'payment_method_id'   => $paymentMethod->id,
@@ -633,15 +636,15 @@ class CvReviewRequestController extends Controller
                     'amount'              => $amountCents,
                     'fee'                 => 0,
                     'net_amount'          => $amountCents,
-                    'deposit_method'      => 'manual',
-                    'payment_channel'     => 'manual',
+                    'deposit_method'      => $channel,     // ← selected value, not 'manual'
+                    'payment_channel'     => $channel,     // ← same
                     'source_id'           => $source->id,
                     'source_name_manual'  => 'Manual / Offline',
                     'purpose_type'        => 'cv_review',
                     'purpose_reference'   => $req->uuid,
                     'purpose_description' => 'CV Rewrite — admin confirmed',
                     'status'              => 'completed',
-                    'is_manual'           => true,
+                    'is_manual'           => true,         // ← this is what identifies it as admin-recorded
                     'manual_reason'       => $request->input('note') ?? 'Admin confirmed payment',
                     'deposit_date'        => now(),
                     'cleared_date'        => now(),

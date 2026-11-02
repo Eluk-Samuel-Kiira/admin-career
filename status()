@@ -1,0 +1,1 @@
+"LONG prompt: " . $r3- . "\n";if ($r3- !== 200) {    echo "Body: " . substr($r3-, 0, 400) . "\n";}// ── Test 4: LONG prompt with max_tokens 2000 (fits trial tier better)$r4 = $http-, [    'model'      =,    'max_tokens' =,    'messages'   =, 'content' =,]);echo "LONG prompt, max_tokens 2000: " . $r4- . "\n";

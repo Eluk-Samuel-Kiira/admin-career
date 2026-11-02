@@ -34,12 +34,22 @@ class LetterRequest extends Model
         'paid_at',
         'error_message',
         'generated_at',
+        'regeneration_count',
+        'max_regenerations',
+        'is_user_edited',
+        'user_edited_at',
+        'content_original',
     ];
 
     protected $casts = [
         'price'        => 'decimal:2',
         'paid_at'      => 'datetime',
         'generated_at' => 'datetime',
+        'regeneration_count' => 'integer',
+        'max_regenerations'  => 'integer',
+        'is_user_edited'     => 'boolean',
+        'user_edited_at'     => 'datetime',
+
     ];
 
     protected static function booted(): void

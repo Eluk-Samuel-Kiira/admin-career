@@ -1051,32 +1051,58 @@ class AiService
             throw new \Exception("Model '{$model}' not configured.");
         }
 
-        $endpoint = $config['endpoint'];
+        $endpoint  = $config['endpoint'];
         $modelName = $config['model'];
         $maxTokens = $config['max_tokens'] ?? 4096;
-        // A long posting copied word-for-word as JSON easily passes 4096 tokens; the reply was
-        // then cut off mid-string and could not be parsed. Cohere rejects values above 4096.
+
         if ($model !== 'cohere') {
             $maxTokens = max($maxTokens, 8192);
         } else {
-            $maxTokens = min(max($maxTokens, 4000), 4096); // Cohere's ceiling; a low config value cut replies mid-string
+            $maxTokens = min(max($maxTokens, 4000), 4096);
         }
 
-        // ✅ FIX: Set headers based on model
         $headers = ['Content-Type' => 'application/json'];
-        
-        if ($model === 'openai' || $model === 'grok' || $model === 'mistral' || $model === 'cohere') {
+
+        if (in_array($model, ['openai', 'grok', 'mistral', 'cohere'], true)) {
             $headers['Authorization'] = "Bearer {$apiKey}";
         } elseif ($model === 'claude') {
-            $headers['x-api-key'] = $apiKey;
+            $headers['x-api-key']         = $apiKey;
             $headers['anthropic-version'] = '2023-06-01';
         }
-        // Gemini uses URL param, not header
 
         $body = $this->buildRequestBody($model, $apiKey, $modelName, $maxTokens, $prompt, $imageBase64, $json);
 
         if ($model === 'gemini') {
             $endpoint = "https://generativelanguage.googleapis.com/v1beta/models/{$modelName}:generateContent?key={$apiKey}";
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // DEBUG — log the exact request before it goes out
+        // ─────────────────────────────────────────────────────────────
+        if ($model === 'cohere') {
+            $maskedAuth = isset($headers['Authorization'])
+                ? 'Bearer ' . substr($apiKey, 0, 6) . '...' . substr($apiKey, -4) . ' (' . strlen($apiKey) . ' chars)'
+                : '(missing)';
+
+            $bodyPreview = [
+                'model'               => $body['model']       ?? null,
+                'max_tokens'          => $body['max_tokens']  ?? null,
+                'has_messages'        => isset($body['messages']),
+                'messages_count'      => isset($body['messages']) ? count((array) $body['messages']) : 0,
+                'has_prompt'          => isset($body['prompt']),
+                'has_response_format' => isset($body['response_format']),
+                'body_keys'           => array_keys($body),
+            ];
+
+            \Illuminate\Support\Facades\Log::info('COHERE REQUEST', [
+                'endpoint'    => $endpoint,
+                'auth_header' => $maskedAuth,
+                'headers'     => $headers,
+                'body'        => $bodyPreview,
+                'prompt_chars'=> strlen($prompt),
+                'prompt_head' => substr($prompt, 0, 200),
+                'prompt_tail' => substr($prompt, -120),
+            ]);
         }
 
         $response = Http::timeout($this->timeout)
@@ -1086,8 +1112,32 @@ class AiService
             ->withHeaders($headers)
             ->post($endpoint, $body);
 
+        // ─────────────────────────────────────────────────────────────
+        // DEBUG — log Cohere's exact response when it fails
+        // ─────────────────────────────────────────────────────────────
+        if ($model === 'cohere' && !$response->successful()) {
+            \Illuminate\Support\Facades\Log::warning('COHERE RESPONSE (failed)', [
+                'status'      => $response->status(),
+                'reason'      => $response->reason(),
+                'body_500'    => substr($response->body(), 0, 500),
+                'headers_sel' => [
+                    'content-type' => $response->header('Content-Type'),
+                    'x-request-id' => $response->header('X-Request-Id'),
+                    'www-authenticate' => $response->header('WWW-Authenticate'),
+                ],
+            ]);
+        }
+
         if (!$response->successful()) {
             throw $this->buildApiException($model, $response);
+        }
+
+        // Also log success, so you know when it works (helps spot flakiness)
+        if ($model === 'cohere') {
+            \Illuminate\Support\Facades\Log::info('COHERE RESPONSE (success)', [
+                'status'     => $response->status(),
+                'body_chars' => strlen($response->body()),
+            ]);
         }
 
         return $this->extractResponseText($model, $response->json());
@@ -2775,17 +2825,30 @@ class AiService
 
     protected function buildLetterPrompt(string $cvText, array $jobContext, string $letterType): string
     {
-        $jobTitle      = $jobContext['job_title']       ?? 'the advertised role';
-        $companyName   = $jobContext['company_name']    ?? 'the company';
-        $jobDescription= strip_tags($jobContext['job_description'] ?? '');
-        $jobDescription= $jobDescription !== '' ? $jobDescription : '(no detailed description provided)';
+        $jobTitle       = $jobContext['job_title']    ?? 'the advertised post';
+        $companyName    = $jobContext['company_name'] ?? 'the organisation';
+        $jobDescription = strip_tags($jobContext['job_description'] ?? '');
+        $jobDescription = $jobDescription !== '' ? $jobDescription : '(no detailed description provided)';
 
-        $letterWord = $letterType === 'application' ? 'application letter' : 'cover letter';
+        $isApplication = $letterType === 'application';
+
+        $subjectLine = $isApplication
+            ? 'RE: APPLICATION FOR THE POST OF ' . mb_strtoupper($jobTitle)
+            : 'RE: APPLICATION FOR THE POSITION OF ' . mb_strtoupper($jobTitle);
+
+        $openingInstruction = $isApplication
+            ? 'Open with a direct application statement: "I am writing to apply for the post of X as advertised in Y." State where the advert was seen.'
+            : 'Open with a brief statement of interest in the position and where it was advertised. Keep it formal and direct.';
+
+        $today = \Carbon\Carbon::now()->format('d F Y');
 
         return <<<PROMPT
-            You are a professional career writer with 15 years of experience helping candidates win interviews.
+            You are a professional career writer in Uganda. You write formal
+            application letters in the East African / British Commonwealth
+            style that employers in Uganda expect. NOT the American "Dear
+            Hiring Manager, I'm excited to apply" style.
 
-            TASK: Write a {$letterWord} for the candidate below, addressed to the target role.
+            TASK: Write a formal application letter for the candidate below.
 
             TARGET ROLE:
             Job Title: {$jobTitle}
@@ -2793,27 +2856,86 @@ class AiService
             Job Description / Context:
             {$jobDescription}
 
+            TODAY'S DATE (use it in the letter): {$today}
+
             CANDIDATE CV (raw text extracted from their CV):
             ---
             {$cvText}
             ---
 
+            STRUCTURE — follow this EXACTLY, in this order:
+
+            ── 1. CANDIDATE HEADER (top of the letter, right side or left,
+                no label needed) ──
+            Line 1: the candidate's full name (from the CV, in bold)
+            Line 2: their town/city and country (e.g. "Kampala, Uganda") — from the CV if present, else omit this line
+            Line 3: their phone number and email, separated by " | " (from the CV)
+            Do NOT invent a postal address or P.O. Box if the CV doesn't have one.
+
+            ── 2. DATE (own line, right-aligned) ──
+            "{$today}"
+
+            ── 3. RECIPIENT BLOCK (left-aligned, after the date) ──
+            Line 1: "The Human Resource Manager" (default title for all formal applications)
+            Line 2: The company name exactly as provided: "{$companyName}"
+            Line 3: City/location from the job context if known — omit this line if not given
+            Line 4: "Uganda" (only if the previous line is present and doesn't already include "Uganda")
+            Do NOT invent a P.O. Box, postal code, street address, or HR manager's personal name.
+            If the job context names a specific person (e.g. "The Managing Director"), use that instead of "The Human Resource Manager".
+
+            ── 4. SUBJECT LINE (own paragraph, bold, in capitals) ──
+            {$subjectLine}
+
+            ── 5. SALUTATION ──
+            "Dear Sir/Madam," (unless the job context names a specific person — then use "Dear Mr./Ms. [Surname],")
+
+            ── 6. BODY — four paragraphs, in this order ──
+
+            Paragraph 1 (Opening, 2-3 sentences):
+            - {$openingInstruction}
+            - Name the exact job title and where it was advertised if the CV or job context mentions it.
+            - State that your skills match what {$companyName} is looking for.
+
+            Paragraph 2 (Work experience, 3-5 sentences):
+            - Name the most recent relevant employer(s) from the CV.
+            - Describe 2-3 concrete duties that match this job.
+            - Include numbers (years of experience, clients handled per day,
+                records managed, transactions processed) whenever the CV provides them.
+            - Do NOT invent numbers.
+
+            Paragraph 3 (Qualifications and skills, 2-4 sentences):
+            - Name the highest qualification from the CV (degree, diploma, certificate).
+            - Mention 2-3 practical skills that matter for this job (software, languages, tools).
+            - State any relevant professional certifications.
+            - Add one sentence linking those skills directly to what the job advert asks for.
+
+            Paragraph 4 (Personal qualities and availability, 2-3 sentences):
+            - Name 3 personal qualities (e.g. "polite, organised and reliable").
+            - End with: "I am available to start immediately and would be glad to discuss how I can support {$companyName} at an interview."
+            - Add "Thank you for your time and consideration."
+
+            ── 7. SIGN-OFF ──
+            "Yours faithfully," (always, not "Yours sincerely")
+            Then two blank lines
+            Then the candidate's full name as it appears on the CV, in bold.
+
             HARD RULES:
-            - Length: 250 to 350 words. Never shorter, never much longer.
-            - Tone: formal, professional, confident. Natural, human-written English. No AI-sounding filler.
-            - Structure:
-                1. Opening paragraph: state the role being applied for and where it was seen (if relevant), and one sentence on why the candidate is a strong fit.
-                2. Body paragraph 1: highlight the most relevant experience from the CV, tied directly to the role.
-                3. Body paragraph 2: highlight the most relevant skills, education, or achievements from the CV that match the role.
-                4. Closing paragraph: express enthusiasm, thank the reader, and request an interview.
-            - Use ONLY facts present in the CV. Do NOT invent employers, dates, degrees, or achievements.
-            - If the CV is thin, write a strong but honest letter that focuses on transferable skills, not fabricated experience.
-            - Address it generically ("Dear Hiring Manager,") unless the CV or job context names a specific person.
-            - Do NOT include the candidate's address, the date, or the company's address at the top. Just the salutation, body, and sign-off.
-            - End with "Yours sincerely," followed by the candidate's full name as it appears in the CV.
-            - Do NOT include placeholder text like [Your Name] or [Company].
-            - Return clean HTML using only <p> tags. No attributes on any tag. No <html>, <head>, or <body> wrapper.
-            - Do NOT wrap the response in markdown code fences. Do NOT include any commentary before or after the letter.
+            - Length: 300 to 400 words total (excluding the address blocks).
+            - Tone: formal, respectful, direct. Plain English — no "I am
+            thrilled", no "passionate", no "dynamic", no em-dashes.
+            - Do NOT include placeholder brackets like [Your Name],
+            [Company Name], [Date], [Job Title], [P.O. Box]. Fill everything
+            from the CV and the job context provided, or OMIT the line
+            entirely if the data isn't available.
+            - Do NOT invent employers, dates, qualifications, salary, P.O. Boxes,
+            street addresses, or achievements. Only use what is in the CV.
+            - If the CV is thin, write a strong but honest letter that leans
+            on transferable skills — never fabricate experience.
+            - Do NOT use markdown bold, italics, or headings inside the body.
+            - Return clean HTML using only <p>, <strong> and <br> tags. No
+            attributes on any tag. No <html>, <head>, or <body> wrapper.
+            - Do NOT wrap the response in markdown code fences. No commentary
+            before or after the letter.
 
             Return the letter now.
             PROMPT;
@@ -2832,18 +2954,17 @@ class AiService
         // Remove any <html>/<head>/<body> wrappers
         $clean = preg_replace('#</?(html|head|body|meta|title)\b[^>]*>#i', '', $clean);
 
-        // Strip attributes from every tag (style, class, id, etc.) so nothing can break layout
+        // Strip attributes from every tag
         $clean = preg_replace_callback('/<([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/', function ($m) {
             $tag = strtolower($m[1]);
             $selfClosing = in_array($tag, ['br', 'hr', 'img'], true);
             return $selfClosing ? "<{$tag} />" : "<{$tag}>";
         }, $clean);
 
-        // Normalize paragraph spacing
+        // Drop empty <p>
         $clean = preg_replace('#<p>\s*</p>#i', '', $clean);
 
-        // If the model returned plain text (no tags), wrap each blank-line-separated
-        // block in <p> so we always store HTML.
+        // If the model returned plain text, wrap blocks in <p>
         if (!preg_match('/<p\b/i', $clean)) {
             $blocks = preg_split('/\n\s*\n/', $clean);
             $clean = implode('', array_map(

@@ -162,6 +162,21 @@
                     </div>
 
                     <div class="fv-row mb-5">
+                        <label class="required fw-semibold fs-6 mb-2">How was the money received?</label>
+                        <select class="form-select form-select-solid" name="deposit_method" id="confirm_deposit_method" required>
+                            <option value="">Select method...</option>
+                            <option value="cash">Cash</option>
+                            <option value="mobile_money">Mobile Money (MTN / Airtel)</option>
+                            <option value="bank_transfer">Bank Transfer</option>
+                            <option value="cheque">Cheque</option>
+                        </select>
+                        <div class="text-muted fs-7 mt-1">
+                            Recorded on the deposit as the payment channel. The system will still flag
+                            this as an admin-confirmed (manual) entry.
+                        </div>
+                    </div>
+
+                    <div class="fv-row mb-5">
                         <label class="required fw-semibold fs-6 mb-2">Payment Reference / Receipt No.</label>
                         <input type="text" class="form-control form-control-solid" name="payment_reference" required />
                         <div class="text-muted fs-7 mt-1">Transaction ID or receipt number from the payment provider, or the admin's internal receipt number.</div>
@@ -513,6 +528,13 @@ window.openConfirmPayment = function (id, defaultAmount) {
 
 document.getElementById('confirmPaymentForm')?.addEventListener('submit', function (e) {
     e.preventDefault();
+
+    const method = document.getElementById('confirm_deposit_method')?.value;
+    if (!method) {
+        window.showToast('error', 'Please select how the money was received.');
+        return;
+    }
+
     const btn = document.getElementById('confirmPaymentBtn');
     window.showButtonSpinner(btn);
 
