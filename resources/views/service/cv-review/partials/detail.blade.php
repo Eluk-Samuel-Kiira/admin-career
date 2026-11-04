@@ -46,6 +46,123 @@
         </div>
     </div>
 
+    {{-- Rewrite mode badge --}}
+    @if($request->rewrite_mode)
+    <div class="alert alert-light-{{ $request->rewrite_mode === 'ai' ? 'info' : 'warning' }} mb-0">
+        <div class="fw-bold">
+            @if($request->rewrite_mode === 'ai')
+                <i class="ki-duotone ki-robot fs-4 me-1"><span class="path1"></span><span class="path2"></span></i>
+                AI Tool Rewrite
+            @else
+                <i class="ki-duotone ki-user-tick fs-4 me-1"><span class="path1"></span><span class="path2"></span></i>
+                HR Expert Rewrite
+            @endif
+        </div>
+        @if($request->rewrite_mode === 'ai' && $request->rewrite_generated_at)
+            <div class="text-muted fs-7 mt-1">
+                Generated {{ $request->rewrite_generated_at->diffForHumans() }}
+                &middot; {{ $request->rewrite_regeneration_count }}/{{ $request->rewrite_max_regenerations }} regenerations used
+            </div>
+        @endif
+    </div>
+    @endif
+
+    {{-- ========================================================= --}}
+    {{-- REWRITTEN CV — what the seeker actually sees               --}}
+    {{-- ========================================================= --}}
+    @if($request->rewrite_mode === 'ai' && !empty($request->rewrite_content))
+        <div>
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="fw-bold mb-0">
+                    <i class="ki-duotone ki-document fs-3 me-1">
+                        <span class="path1"></span><span class="path2"></span>
+                    </i>
+                    AI-Rewritten CV
+                    @if($request->rewrite_is_user_edited)
+                        <span class="badge badge-light-primary ms-2">Edited by seeker</span>
+                    @endif
+                </h5>
+                <div class="text-muted fs-8">
+                    @if($request->rewrite_generated_at)
+                        Generated {{ $request->rewrite_generated_at->diffForHumans() }}
+                    @endif
+                    @if($request->rewrite_regeneration_count > 0)
+                        &middot; {{ $request->rewrite_regeneration_count }}/{{ $request->rewrite_max_regenerations }} regenerations
+                    @endif
+                </div>
+            </div>
+
+            @if($request->rewrite_error_message)
+                <div class="alert alert-light-danger mb-3 py-2 fs-7">
+                    <strong>Generation error:</strong> {{ $request->rewrite_error_message }}
+                </div>
+            @endif
+
+            {{-- Tabs: current (editable) view + original AI version --}}
+            <div class="card">
+                <div class="card-header border-0 pb-0">
+                    <ul class="nav nav-tabs nav-line-tabs nav-line-tabs-2x fs-7 mb-0">
+                        <li class="nav-item">
+                            <a class="nav-link active" data-bs-toggle="tab" href="#admin-rewrite-current">
+                                Current version
+                                @if($request->rewrite_is_user_edited)
+                                    <span class="badge badge-light-primary ms-1">edited</span>
+                                @endif
+                            </a>
+                        </li>
+                        @if(!empty($request->rewrite_content_original))
+                            <li class="nav-item">
+                                <a class="nav-link" data-bs-toggle="tab" href="#admin-rewrite-original">
+                                    AI original
+                                </a>
+                            </li>
+                        @endif
+                    </ul>
+                </div>
+                <div class="card-body pt-3">
+                    <div class="tab-content">
+
+                        {{-- Current version --}}
+                        <div id="admin-rewrite-current" class="tab-pane fade show active">
+                            <div class="border rounded bg-white p-3 p-md-4" style="max-height: 600px; overflow-y: auto;">
+                                <div class="cv-preview">
+                                    {!! $request->rewrite_content['html'] ?? '<em class="text-muted">No content yet</em>' !!}
+                                </div>
+                            </div>
+                        </div>
+
+                        {{-- Original AI output --}}
+                        @if(!empty($request->rewrite_content_original))
+                            <div id="admin-rewrite-original" class="tab-pane fade">
+                                <div class="border rounded bg-white p-3 p-md-4" style="max-height: 600px; overflow-y: auto;">
+                                    <div class="cv-preview">
+                                        {!! $request->rewrite_content_original['html'] ?? '' !!}
+                                    </div>
+                                </div>
+                            </div>
+                        @endif
+                    </div>
+                </div>
+            </div>
+        </div>
+    @endif
+
+    {{-- Human-mode banner --}}
+    @if($request->rewrite_mode === 'human')
+        <div class="alert alert-light-warning mb-0">
+            <div class="fw-bold">
+                <i class="ki-duotone ki-user-tick fs-4 me-1">
+                    <span class="path1"></span><span class="path2"></span>
+                </i>
+                HR Expert Rewrite
+            </div>
+            <div class="text-muted fs-7 mt-1">
+                This seeker chose the HR expert path. No AI-generated CV exists — the admin assigns
+                a human expert, who uploads the delivered CV below.
+            </div>
+        </div>
+    @endif
+
     {{-- Target job --}}
     @if($request->target_job_title || $request->target_job_description)
     <div>
@@ -125,6 +242,21 @@
                 @endif
             </div>
         </div>
+
+        <style>
+            .cv-preview {
+                font-family: Georgia, "Times New Roman", serif;
+                font-size: 0.9rem;
+                line-height: 1.55;
+                overflow-wrap: anywhere;
+                word-break: break-word;
+            }
+            .cv-preview h1 { font-size: 1.5rem; font-weight: 700; }
+            .cv-preview h2 { font-size: 1.2rem; font-weight: 700; margin-top: 1.4em; border-bottom: 1px solid #e4e6ef; padding-bottom: 0.3em; }
+            .cv-preview h3 { font-size: 1.05rem; font-weight: 700; margin-top: 1em; }
+            .cv-preview ul { padding-left: 1.4em; }
+            .cv-preview table { max-width: 100%; }
+        </style>
 
         @if(!$hasReview)
             <div class="alert alert-light-info text-center py-6">

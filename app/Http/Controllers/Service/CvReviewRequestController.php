@@ -276,6 +276,22 @@ class CvReviewRequestController extends Controller
             'next_service_key'   => $next['next_service_key'],
             'next_service_name'  => $next['next_service_name'],
             'next_service_price' => $next['next_service_price'],
+
+            'rewrite_mode'                  => $r->rewrite_mode,
+            'rewrite_is_ai_mode'            => $r->rewrite_is_ai_mode,
+            'rewrite_is_human_mode'         => $r->rewrite_is_human_mode,
+            'rewrite_is_ready'              => $r->rewrite_is_ready,
+            'rewrite_is_user_edited'        => $r->rewrite_is_user_edited,
+            'rewrite_user_edited_at'        => $r->rewrite_user_edited_at?->toISOString(),
+            'rewrite_generated_at'          => $r->rewrite_generated_at?->toISOString(),
+            'rewrite_regeneration_count'    => $r->rewrite_regeneration_count,
+            'rewrite_max_regenerations'     => $r->rewrite_max_regenerations,
+            'rewrite_error_message'         => $r->rewrite_error_message,
+            'rewrite_can_regenerate'        => $r->rewrite_can_regenerate,
+            'rewrite_download_url'          => $r->rewrite_download_url,
+            // Include the raw HTML so admin modal can preview without a second fetch
+            'rewrite_content_html'          => $r->rewrite_content['html'] ?? null,
+            'rewrite_content_original_html' => $r->rewrite_content_original['html'] ?? null,
         ];
     }
 
@@ -304,6 +320,7 @@ class CvReviewRequestController extends Controller
         $slaFilter    = $request->get('sla', ''); // '' | overdue | due_soon
         $page         = (int) $request->get('page', 1);
         $perPage      = (int) $request->get('per_page', 15);
+        
 
         $query = CvReviewRequest::with(['user', 'service', 'currency', 'country', 'assignedAdmin']);
 
@@ -320,6 +337,12 @@ class CvReviewRequestController extends Controller
 
         if (!empty($status)) {
             $query->where('status', $status);
+        }
+
+        if ($mode = $request->get('rewrite_mode')) {
+            if (in_array($mode, ['ai', 'human'], true)) {
+                $query->where('rewrite_mode', $mode);
+            }
         }
 
         if (!empty($countryCode)) {
@@ -379,6 +402,7 @@ class CvReviewRequestController extends Controller
             $item->cv_download_url = $item->cv_download_url;   // triggers accessor
             $item->cv_name         = $item->cv_display_name;
             $item->has_cv_file     = $item->has_cv_file;
+            $item->seeker_gap_answers = $item->seeker_gap_answers;
 
             return $item;
         });
@@ -504,6 +528,7 @@ class CvReviewRequestController extends Controller
             return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
         }
 
+
         $request->validate([
             'status' => ['required', \Illuminate\Validation\Rule::in(CvReviewRequest::allStatuses())],
             'note'   => 'nullable|string|max:500',
@@ -521,6 +546,15 @@ class CvReviewRequestController extends Controller
                     'message' => 'Status unchanged.',
                     'data'    => $req->fresh(['user', 'service', 'currency', 'country', 'assignedAdmin']),
                 ]);
+            }
+
+            
+            if ($req->status === 'completed') {
+                return response()->json([
+                    'success' => false,
+                    'code'    => 'status_locked',
+                    'message' => 'This request is completed. Its status cannot be changed.',
+                ], 422);
             }
 
             // Side-effect timestamps
@@ -580,6 +614,7 @@ class CvReviewRequestController extends Controller
             'payment_method_id' => 'required|integer|exists:payment_methods,id',
             'payment_reference' => 'required|string|max:255',
             'amount_cents'      => 'nullable|integer|min:1',
+            'deposit_method'    => 'required|in:cash,mobile_money,bank_transfer,cheque',  // mirror the ENUM
             'note'              => 'nullable|string|max:500',
         ]);
 
@@ -616,16 +651,18 @@ class CvReviewRequestController extends Controller
                 ], 422);
             }
 
-            $source = \App\Models\PaymentSource::active()->where('slug', 'manual')->first();
+            $source = \App\Models\PaymentSource::active()->where('slug', 'cv_shortlisting')->first();
             if (!$source) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Manual payment source not configured. Run PaymentSourceSeeder.',
+                    'message' => 'cv_shortlisting payment source not configured. Run PaymentSourceSeeder.',
                 ], 500);
             }
 
             $deposit = \Illuminate\Support\Facades\DB::transaction(function () use ($req, $request, $paymentMethod, $amountCents, $source) {
                 // 1. Create the deposit — marked completed immediately, is_manual = true
+                $channel = $request->input('deposit_method');
+
                 $deposit = \App\Models\Deposit::create([
                     'deposit_ref'         => (string) \Illuminate\Support\Str::uuid(),
                     'payment_method_id'   => $paymentMethod->id,
@@ -633,15 +670,15 @@ class CvReviewRequestController extends Controller
                     'amount'              => $amountCents,
                     'fee'                 => 0,
                     'net_amount'          => $amountCents,
-                    'deposit_method'      => 'manual',
-                    'payment_channel'     => 'manual',
+                    'deposit_method'      => $channel,     // ← selected value, not 'manual'
+                    'payment_channel'     => $channel,     // ← same
                     'source_id'           => $source->id,
                     'source_name_manual'  => 'Manual / Offline',
                     'purpose_type'        => 'cv_review',
                     'purpose_reference'   => $req->uuid,
                     'purpose_description' => 'CV Rewrite — admin confirmed',
                     'status'              => 'completed',
-                    'is_manual'           => true,
+                    'is_manual'           => true,         // ← this is what identifies it as admin-recorded
                     'manual_reason'       => $request->input('note') ?? 'Admin confirmed payment',
                     'deposit_date'        => now(),
                     'cleared_date'        => now(),

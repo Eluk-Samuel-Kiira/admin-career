@@ -16,6 +16,15 @@ class AiService
      */
     protected const THIN_POST_WORDS = 300;
 
+    /**
+     * Any job description WE write (the post had none, or only a line or two) must read like a real,
+     * believable advert, not an essay. About 500 characters of plain text is roughly 70 words.
+     * The prompts ask for this length and capGeneratedDescription() enforces it in PHP, because
+     * models cannot be trusted to count characters.
+     */
+    protected const GENERATED_DESC_MAX_CHARS = 500;
+    protected const GENERATED_DESC_MIN_CHARS = 150;
+
     protected array $config;
     protected array $fallbackModels;
     protected string $defaultModel;
@@ -228,6 +237,9 @@ class AiService
             }
             $result['_verbatim'] = true; // applySmartDefaults must not invent text for a copied posting
         } else {
+            if ($sourceWords < self::THIN_POST_WORDS) {
+                $result = $this->dropInventedDescription($result, $content);
+            }
             $result = $this->enrichThinPosting($result, $model, $sourceWords);
         }
         $result = $this->applySmartDefaults($result, $country);
@@ -401,9 +413,79 @@ class AiService
     }
 
     /**
+     * Trim a description we generated to at most $max characters of plain text, ending on a
+     * whole sentence. Text that is already short enough is returned untouched (formatting kept).
+     */
+    protected function capGeneratedDescription(string $html, int $max = self::GENERATED_DESC_MAX_CHARS): string
+    {
+        $plainOf = fn(string $h) => trim(preg_replace('/\s+/u', ' ', html_entity_decode(strip_tags($h), ENT_QUOTES | ENT_HTML5, 'UTF-8')));
+
+        if (mb_strlen($plainOf($html)) <= $max) {
+            return $html;
+        }
+
+        // paragraphs
+        $paras = [];
+        if (preg_match_all('#<p\b[^>]*>(.*?)</p>#is', $html, $m)) {
+            foreach ($m[1] as $p) {
+                $t = $plainOf($p);
+                if ($t !== '') { $paras[] = $t; }
+            }
+        }
+        if (!$paras) {
+            foreach (preg_split('/\n\s*\n|\n/', strip_tags($html)) as $p) {
+                $t = $plainOf($p);
+                if ($t !== '') { $paras[] = $t; }
+            }
+        }
+
+        $out = [];
+        $used = 0;
+        $done = false;
+        foreach ($paras as $para) {
+            $keep = [];
+            foreach (preg_split('/(?<=[.!?])\s+/u', $para) as $sentence) {
+                $cost = mb_strlen($sentence) + ($keep ? 1 : ($out ? 1 : 0));
+                if ($used + $cost > $max) { $done = true; break; }
+                $keep[] = $sentence;
+                $used += $cost;
+            }
+            if ($keep) { $out[] = implode(' ', $keep); }
+            if ($done) { break; }
+        }
+
+        if (!$out) { // the very first sentence is already too long: cut it at a word boundary
+            $cut = mb_substr($paras[0] ?? $plainOf($html), 0, $max - 1);
+            $cut = preg_replace('/\s+\S*$/u', '', $cut);
+            $out[] = rtrim($cut, " ,;:-") . '.';
+        }
+
+        return implode('', array_map(fn($t) => '<p>' . htmlspecialchars($t, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</p>', $out));
+    }
+
+    /**
+     * Short posts only: if the model returned a description longer than the entire source post it
+     * was given, the extra is invented. Discard it so enrichThinPosting() writes a short one instead.
+     */
+    protected function dropInventedDescription(array $data, string $source): array
+    {
+        $jd = trim(strip_tags((string) ($data['job_description'] ?? '')));
+        if ($jd === '') {
+            return $data;
+        }
+
+        $srcChars = mb_strlen(trim(preg_replace('/\s+/u', ' ', strip_tags($source))));
+        if (mb_strlen(preg_replace('/\s+/u', ' ', $jd)) > $srcChars) {
+            $data['job_description'] = null;
+        }
+
+        return $data;
+    }
+
+    /**
      * A one-line post ("We need an enrolled nurse or midwife in Kanaaba, 0701...")
      * would become a skeleton page that search engines ignore. When the description
-     * we ended up with is under ~120 words, ask the model to write a real, role-specific
+     * we ended up with is thin, ask the model for a SHORT (about 500 characters), role-specific
      * description from the facts that ARE known. Long, real postings never reach this.
      * If the model fails, the static fallbacks in applySmartDefaults() still run.
      */
@@ -440,10 +522,13 @@ class AiService
             $current  !== '' ? "What the original post said" . ($append ? ' (it will be shown above your text, so do not repeat it)' : '') . ": {$current}" : null,
         ]);
         $factList = implode("\n", $facts);
+        $appendNote = $append
+            ? 'Your text is shown AFTER the original wording above, so add only what it does not already say. Do not repeat it.'
+            : 'The original post has no real description, so yours is the only one the reader sees.';
 
         $prompt = <<<PROMPT
         You write job adverts for a Ugandan and East African job board. The original post is very short, so write
-        the job description a real hiring officer would have written for it.
+        a short job description a real hiring officer would have written for it.
 
         KNOWN FACTS:
         {$factList}
@@ -451,19 +536,16 @@ class AiService
         {$humanRules}
 
         REQUIREMENTS:
-        - 180 to 250 words, in 3 to 5 short <p> paragraphs of uneven length.
-        - SEARCH (SEO): use the job title, the place name and the profession's real search terms where they fit
-          naturally (for example the role, the place and the sector, and what people call this job), each once or
-          twice. Never repeat a phrase just to rank.
-        - ANSWER ENGINES (AEO): the first paragraph must answer, in plain sentences, who is hiring (or that the
-          employer is not named), what the job is, and where. Another paragraph should state clearly who can apply
-          (type of qualification and experience a post like this normally asks for, worded as "suits", not as a
-          binding requirement). Write sentences an assistant could quote on their own as an answer.
-        - Describe what this person actually does day to day in a setting like the one named, who they work with,
-          and what kind of candidate suits the post. Be specific to this profession.
-        - Mention the job title and the location naturally once or twice, never forced.
+        - LENGTH IS STRICT: 350 to 500 characters in total, spaces included. That is about 55 to 75 words, in one or
+          two short <p> paragraphs. Never go over 500 characters. A short, believable advert is the goal; a reader
+          who sees a long description for a one-line post will not trust it.
+        - First sentence (this is what search and answer engines quote): who is hiring (or say the employer is not
+          named), what the job is, and where. Use the job title and the place once each, in natural wording.
+        - Then say, in one or two sentences, what the person does day to day and what kind of candidate suits the
+          post (worded as "suits", not as a binding requirement). Be specific to this profession.
+        - {$appendNote}
         - Do NOT invent the employer name, salary, benefits, deadline, number of vacancies or qualifications as
-          hard requirements. Do not include phone numbers, emails or links.
+          hard requirements. Do not include phone numbers, emails or links. No bullet lists.
         - Return ONLY the HTML paragraphs. Plain <p> tags with no attributes. No markdown, no headings, no code fences.
         PROMPT;
 
@@ -474,8 +556,9 @@ class AiService
 
             $text = $this->cleanLetterHtml(is_string($text) ? $text : $this->extractTextFromResult($text));
             $text = $this->scrubAiTells($text);
+            $text = $this->capGeneratedDescription($text);
 
-            if (str_word_count(strip_tags($text)) >= 110) {
+            if (mb_strlen(trim(strip_tags($text))) >= self::GENERATED_DESC_MIN_CHARS) {
                 $data['job_description'] = $append
                     ? trim((string) $data['job_description']) . $text
                     : $text;
@@ -818,6 +901,9 @@ class AiService
 
         $result = $this->coerceModelOutput($result);
         $result = $this->scrubGeneratedFields($result); // all of this was written by the model
+        if (!empty($result['job_description']) && is_string($result['job_description'])) {
+            $result['job_description'] = $this->capGeneratedDescription($result['job_description']);
+        }
         $result['job_title'] = $result['job_title'] ?? $title;
         $result['company_name'] = $result['company_name'] ?? ($company ?? '');
         $result = $this->applySmartDefaults($result, $country);
@@ -1051,32 +1137,58 @@ class AiService
             throw new \Exception("Model '{$model}' not configured.");
         }
 
-        $endpoint = $config['endpoint'];
+        $endpoint  = $config['endpoint'];
         $modelName = $config['model'];
         $maxTokens = $config['max_tokens'] ?? 4096;
-        // A long posting copied word-for-word as JSON easily passes 4096 tokens; the reply was
-        // then cut off mid-string and could not be parsed. Cohere rejects values above 4096.
+
         if ($model !== 'cohere') {
             $maxTokens = max($maxTokens, 8192);
         } else {
-            $maxTokens = min(max($maxTokens, 4000), 4096); // Cohere's ceiling; a low config value cut replies mid-string
+            $maxTokens = min(max($maxTokens, 4000), 4096);
         }
 
-        // ✅ FIX: Set headers based on model
         $headers = ['Content-Type' => 'application/json'];
-        
-        if ($model === 'openai' || $model === 'grok' || $model === 'mistral' || $model === 'cohere') {
+
+        if (in_array($model, ['openai', 'grok', 'mistral', 'cohere'], true)) {
             $headers['Authorization'] = "Bearer {$apiKey}";
         } elseif ($model === 'claude') {
-            $headers['x-api-key'] = $apiKey;
+            $headers['x-api-key']         = $apiKey;
             $headers['anthropic-version'] = '2023-06-01';
         }
-        // Gemini uses URL param, not header
 
         $body = $this->buildRequestBody($model, $apiKey, $modelName, $maxTokens, $prompt, $imageBase64, $json);
 
         if ($model === 'gemini') {
             $endpoint = "https://generativelanguage.googleapis.com/v1beta/models/{$modelName}:generateContent?key={$apiKey}";
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // DEBUG — log the exact request before it goes out
+        // ─────────────────────────────────────────────────────────────
+        if ($model === 'cohere') {
+            $maskedAuth = isset($headers['Authorization'])
+                ? 'Bearer ' . substr($apiKey, 0, 6) . '...' . substr($apiKey, -4) . ' (' . strlen($apiKey) . ' chars)'
+                : '(missing)';
+
+            $bodyPreview = [
+                'model'               => $body['model']       ?? null,
+                'max_tokens'          => $body['max_tokens']  ?? null,
+                'has_messages'        => isset($body['messages']),
+                'messages_count'      => isset($body['messages']) ? count((array) $body['messages']) : 0,
+                'has_prompt'          => isset($body['prompt']),
+                'has_response_format' => isset($body['response_format']),
+                'body_keys'           => array_keys($body),
+            ];
+
+            \Illuminate\Support\Facades\Log::info('COHERE REQUEST', [
+                'endpoint'    => $endpoint,
+                'auth_header' => $maskedAuth,
+                'headers'     => array_merge($headers, array_intersect_key(['Authorization' => '[masked]', 'x-api-key' => '[masked]'], $headers)),
+                'body'        => $bodyPreview,
+                'prompt_chars'=> strlen($prompt),
+                'prompt_head' => substr($prompt, 0, 200),
+                'prompt_tail' => substr($prompt, -120),
+            ]);
         }
 
         $response = Http::timeout($this->timeout)
@@ -1086,8 +1198,32 @@ class AiService
             ->withHeaders($headers)
             ->post($endpoint, $body);
 
+        // ─────────────────────────────────────────────────────────────
+        // DEBUG — log Cohere's exact response when it fails
+        // ─────────────────────────────────────────────────────────────
+        if ($model === 'cohere' && !$response->successful()) {
+            \Illuminate\Support\Facades\Log::warning('COHERE RESPONSE (failed)', [
+                'status'      => $response->status(),
+                'reason'      => $response->reason(),
+                'body_500'    => substr($response->body(), 0, 500),
+                'headers_sel' => [
+                    'content-type' => $response->header('Content-Type'),
+                    'x-request-id' => $response->header('X-Request-Id'),
+                    'www-authenticate' => $response->header('WWW-Authenticate'),
+                ],
+            ]);
+        }
+
         if (!$response->successful()) {
             throw $this->buildApiException($model, $response);
+        }
+
+        // Also log success, so you know when it works (helps spot flakiness)
+        if ($model === 'cohere') {
+            \Illuminate\Support\Facades\Log::info('COHERE RESPONSE (success)', [
+                'status'     => $response->status(),
+                'body_chars' => strlen($response->body()),
+            ]);
         }
 
         return $this->extractResponseText($model, $response->json());
@@ -1472,11 +1608,10 @@ class AiService
                 experienced HR officer, not a template.
                 - Naturally weave in the job title and relevant industry, skill, and location keywords so the
                 content is well-optimized for search engines, without keyword-stuffing or awkward repetition.
-                - If the final job_description (verbatim, generated, or a mix) would end up under roughly 120 words, 
-                    treat that as too thin for SEO: expand it with additional relevant, natural, role-appropriate 
-                    detail — concrete responsibilities, the working environment, and what success in the role looks like. 
-                    Vary sentence length and avoid repeating the same opener. Do not pad with filler or restate the same point in 
-                    different words.
+                - NEVER lengthen or pad a description. job_description is copied from the source when the source has
+                    one. When the source has no description of the job (only a title, a place or contact details),
+                    return null for job_description: a short one is written separately by the system. Do not write
+                    one yourself.
 
                 SKILLS FORMAT:
                 - Skills should be a comma-separated list, e.g. "Communication, Teamwork, Problem Solving, Time Management"
@@ -1499,14 +1634,15 @@ class AiService
                 - experience_level_name: "entry level" (only if that exact string exists in the Experience Levels list above, else null)
                 - education_level_name: "Certificate" (only if that exact string exists in the Education Levels list above, else null)
                 - location_type: "on-site"
-                - For job_description/responsibilities/qualifications/skills that are completely absent: write
+                - For responsibilities/qualifications/skills that are completely absent: write
                 professional, role-appropriate content based on the job_title (and company_name if known).
+                - For job_description when it is completely absent: return null (never write it yourself).
 
                 FIELDS TO RETURN:
                 {
                 "job_title": "exact job title",
                 "company_name": "exact company name as written in the content, else null - do NOT pick from a list",
-                "job_description": "verbatim if present, else generated - plain HTML, no attributes, no contact info",
+                "job_description": "verbatim if present - plain HTML, no attributes, no contact info - else null",
                 "responsibilities": "MUST be HTML <ul><li> list format - NEVER plain text with dashes or commas",
                 "qualifications": "MUST be HTML <ul><li> list format - NEVER plain text with dashes or commas",
                 "skills": "comma-separated list",
@@ -1571,9 +1707,8 @@ class AiService
             . "application_procedure). Do not write any warning about paying money in application_procedure, "
             . "one is added automatically. Any content you write rather than copy from the image must read as "
             . "natural, human-written, SEO-friendly copy.\n\n" . $this->humanWritingRules() . "\n\n"
-            . "If the "
-            . "resulting job_description would be under roughly 120 words, expand it with reasonable "
-            . "role-appropriate detail so it's substantive enough for search engines. "
+            . "Never lengthen or pad text. If the image has no real description of the job, return null for "
+            . "job_description: a short one is written separately by the system. "
             . "Return ONLY a single valid JSON object with the same fields as a standard job extraction "
             . "(job_title, company_name, job_description, responsibilities, qualifications, skills, "
             . "application_procedure, application_link, email, telephone, deadline, duty_station, "
@@ -1614,17 +1749,16 @@ class AiService
             {$humanRules}
 
             Naturally include the job title and relevant industry/skill/location keywords once or twice,
-            never forced. The job_description should run roughly 120-180 words in 2-4 paragraphs of uneven
-            length (one can be a single sentence). Do not follow a fixed paragraph recipe. Cover what the
-            person actually does, who they work with and what the employer wants, in whatever order suits
-            this particular job. Do not repeat the same idea in different words to hit the length.
+            never forced. The job_description is STRICTLY 350 to 500 characters in total, spaces included
+            (about 55 to 75 words) in one or two short paragraphs. Never go over 500 characters. Say what the
+            person does, and what the employer wants, and stop. A long description reads as unbelievable.
 
             Return ONLY a valid JSON object - no explanation, no markdown, no code blocks. Do not use any HTML
             attributes (no style="...") on any tag - plain <p>/<ul>/<li> only, so nothing can break the JSON. Do not
             include any contact info or application links anywhere - this is a fresh generated posting.
 
             {
-            "job_description": "2-4 paragraphs as HTML with <p> tags",
+            "job_description": "one or two short <p> paragraphs, 350 to 500 characters in total",
             "responsibilities": "HTML <ul><li> list format - NEVER plain text with dashes or commas",
             "qualifications": "HTML <ul><li> list format - NEVER plain text with dashes or commas",
             "skills": "comma-separated list of 6-10 relevant skills, specific to this job rather than generic soft skills",
@@ -1768,10 +1902,9 @@ class AiService
      */
     protected function ensureMinimumDescriptionLength(string $description, string $title, ?string $company, ?string $location): string
     {
-        $wordCount = str_word_count(strip_tags($description));
-
-        // 🔽 Raised from 15 → 120 (SEO-safe minimum without forcing bloat)
-        if ($wordCount >= 120) {
+        // Only a near-empty description is topped up (the old 120-word rule doubled the length of
+        // descriptions that were already fine). The added text is itself kept under the 500-character cap.
+        if (mb_strlen(trim(preg_replace('/\s+/u', ' ', strip_tags($description)))) >= self::GENERATED_DESC_MIN_CHARS) {
             return $description;
         }
 
@@ -1825,10 +1958,10 @@ class AiService
         // Used to top up a short real description: skip the opener so the
         // text doesn't start a second time halfway down the page.
         if ($supplement) {
-            return $body . $close;
+            return $this->capGeneratedDescription($body . $close);
         }
 
-        return $this->scrubAiTells($pick($openers, 'o') . $body . $close);
+        return $this->capGeneratedDescription($this->scrubAiTells($pick($openers, 'o') . $body . $close));
     }
 
     protected function generateFallbackResponsibilities(string $title, ?string $company): string
@@ -2775,45 +2908,122 @@ class AiService
 
     protected function buildLetterPrompt(string $cvText, array $jobContext, string $letterType): string
     {
-        $jobTitle      = $jobContext['job_title']       ?? 'the advertised role';
-        $companyName   = $jobContext['company_name']    ?? 'the company';
-        $jobDescription= strip_tags($jobContext['job_description'] ?? '');
-        $jobDescription= $jobDescription !== '' ? $jobDescription : '(no detailed description provided)';
+        $jobTitle       = $jobContext['job_title']    ?? 'the advertised post';
+        $companyName    = $jobContext['company_name'] ?? 'the organisation';
+        $jobDescription = strip_tags($jobContext['job_description'] ?? '');
+        $jobDescription = $jobDescription !== '' ? $jobDescription : '(no detailed description provided)';
 
-        $letterWord = $letterType === 'application' ? 'application letter' : 'cover letter';
+        // Optional: the caller can pass 'company_address', 'duty_station' or 'location' so the
+        // recipient block can carry the company's town/address. Without any of them, the line is omitted.
+        $placeRaw = trim((string) ($jobContext['company_address'] ?? $jobContext['duty_station'] ?? $jobContext['location'] ?? ''));
+        $jobPlace = $placeRaw !== '' ? "Company address / town: {$placeRaw}\n            " : '';
+
+        $isApplication = $letterType === 'application';
+
+        $subjectLine = $isApplication
+            ? 'RE: APPLICATION FOR THE POST OF ' . mb_strtoupper($jobTitle)
+            : 'RE: APPLICATION FOR THE POSITION OF ' . mb_strtoupper($jobTitle);
+
+        $openingInstruction = $isApplication
+            ? 'Open with a direct application statement: "I am writing to apply for the post of X as advertised in Y." State where the advert was seen.'
+            : 'Open with a brief statement of interest in the position and where it was advertised. Keep it formal and direct.';
+
+        $today = \Carbon\Carbon::now()->format('d F Y');
 
         return <<<PROMPT
-            You are a professional career writer with 15 years of experience helping candidates win interviews.
+            You are a professional career writer in Uganda. You write formal
+            application letters in the East African / British Commonwealth
+            style that employers in Uganda expect. NOT the American "Dear
+            Hiring Manager, I'm excited to apply" style.
 
-            TASK: Write a {$letterWord} for the candidate below, addressed to the target role.
+            TASK: Write a formal application letter for the candidate below.
 
             TARGET ROLE:
             Job Title: {$jobTitle}
             Company: {$companyName}
-            Job Description / Context:
+            {$jobPlace}Job Description / Context:
             {$jobDescription}
+
+            TODAY'S DATE (use it in the letter): {$today}
 
             CANDIDATE CV (raw text extracted from their CV):
             ---
             {$cvText}
             ---
 
+            STRUCTURE — follow this EXACTLY, in this order:
+
+            ── 1. CANDIDATE HEADER (top of the letter, right side or left,
+                no label needed) ──
+            Line 1: the candidate's full name (from the CV, in bold)
+            Line 2: their town/city and country (e.g. "Kampala, Uganda") — from the CV if present, else omit this line
+            Line 3: their phone number and email, separated by " | " (from the CV)
+            Do NOT invent a postal address or P.O. Box if the CV doesn't have one.
+
+            ── 2. DATE (own line, right-aligned) ──
+            "{$today}"
+
+            ── 3. RECIPIENT BLOCK (left-aligned, after the date) ──
+            Line 1: "The Human Resource Manager" (default title for all formal applications)
+            Line 2: The company name exactly as provided: "{$companyName}"
+            Line 3: the "Company address / town" given above, exactly as written — omit this line if none is given
+            Line 4: "Uganda" (only if the previous line is present and doesn't already include "Uganda")
+            Do NOT invent a P.O. Box, postal code, street address, or HR manager's personal name.
+            If the job context names a specific person (e.g. "The Managing Director"), use that instead of "The Human Resource Manager".
+
+            ── 4. SUBJECT LINE (own paragraph, bold, in capitals) ──
+            {$subjectLine}
+
+            ── 5. SALUTATION ──
+            "Dear Sir/Madam," (unless the job context names a specific person — then use "Dear Mr./Ms. [Surname],")
+
+            ── 6. BODY — four paragraphs, in this order ──
+
+            Paragraph 1 (Opening, 2-3 sentences):
+            - {$openingInstruction}
+            - Name the exact job title and where it was advertised if the CV or job context mentions it.
+            - State that your skills match what {$companyName} is looking for.
+
+            Paragraph 2 (Work experience, 3-5 sentences):
+            - Name the most recent relevant employer(s) from the CV.
+            - Describe 2-3 concrete duties that match this job.
+            - Include numbers (years of experience, clients handled per day,
+                records managed, transactions processed) whenever the CV provides them.
+            - Do NOT invent numbers.
+
+            Paragraph 3 (Qualifications and skills, 2-4 sentences):
+            - Name the highest qualification from the CV (degree, diploma, certificate).
+            - Mention 2-3 practical skills that matter for this job (software, languages, tools).
+            - State any relevant professional certifications.
+            - Add one sentence linking those skills directly to what the job advert asks for.
+
+            Paragraph 4 (Personal qualities and availability, 2-3 sentences):
+            - Name 3 personal qualities (e.g. "polite, organised and reliable").
+            - End with: "I am available to start immediately and would be glad to discuss how I can support {$companyName} at an interview."
+            - Add "Thank you for your time and consideration."
+
+            ── 7. SIGN-OFF ──
+            "Yours faithfully," (always, not "Yours sincerely")
+            Then two blank lines
+            Then the candidate's full name as it appears on the CV, in bold.
+
             HARD RULES:
-            - Length: 250 to 350 words. Never shorter, never much longer.
-            - Tone: formal, professional, confident. Natural, human-written English. No AI-sounding filler.
-            - Structure:
-                1. Opening paragraph: state the role being applied for and where it was seen (if relevant), and one sentence on why the candidate is a strong fit.
-                2. Body paragraph 1: highlight the most relevant experience from the CV, tied directly to the role.
-                3. Body paragraph 2: highlight the most relevant skills, education, or achievements from the CV that match the role.
-                4. Closing paragraph: express enthusiasm, thank the reader, and request an interview.
-            - Use ONLY facts present in the CV. Do NOT invent employers, dates, degrees, or achievements.
-            - If the CV is thin, write a strong but honest letter that focuses on transferable skills, not fabricated experience.
-            - Address it generically ("Dear Hiring Manager,") unless the CV or job context names a specific person.
-            - Do NOT include the candidate's address, the date, or the company's address at the top. Just the salutation, body, and sign-off.
-            - End with "Yours sincerely," followed by the candidate's full name as it appears in the CV.
-            - Do NOT include placeholder text like [Your Name] or [Company].
-            - Return clean HTML using only <p> tags. No attributes on any tag. No <html>, <head>, or <body> wrapper.
-            - Do NOT wrap the response in markdown code fences. Do NOT include any commentary before or after the letter.
+            - Length: 300 to 400 words total (excluding the address blocks).
+            - Tone: formal, respectful, direct. Plain English — no "I am
+            thrilled", no "passionate", no "dynamic", no em-dashes.
+            - Do NOT include placeholder brackets like [Your Name],
+            [Company Name], [Date], [Job Title], [P.O. Box]. Fill everything
+            from the CV and the job context provided, or OMIT the line
+            entirely if the data isn't available.
+            - Do NOT invent employers, dates, qualifications, salary, P.O. Boxes,
+            street addresses, or achievements. Only use what is in the CV.
+            - If the CV is thin, write a strong but honest letter that leans
+            on transferable skills — never fabricate experience.
+            - Do NOT use markdown bold, italics, or headings inside the body.
+            - Return clean HTML using only <p>, <strong> and <br> tags. No
+            attributes on any tag. No <html>, <head>, or <body> wrapper.
+            - Do NOT wrap the response in markdown code fences. No commentary
+            before or after the letter.
 
             Return the letter now.
             PROMPT;
@@ -2832,18 +3042,17 @@ class AiService
         // Remove any <html>/<head>/<body> wrappers
         $clean = preg_replace('#</?(html|head|body|meta|title)\b[^>]*>#i', '', $clean);
 
-        // Strip attributes from every tag (style, class, id, etc.) so nothing can break layout
+        // Strip attributes from every tag
         $clean = preg_replace_callback('/<([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/', function ($m) {
             $tag = strtolower($m[1]);
             $selfClosing = in_array($tag, ['br', 'hr', 'img'], true);
             return $selfClosing ? "<{$tag} />" : "<{$tag}>";
         }, $clean);
 
-        // Normalize paragraph spacing
+        // Drop empty <p>
         $clean = preg_replace('#<p>\s*</p>#i', '', $clean);
 
-        // If the model returned plain text (no tags), wrap each blank-line-separated
-        // block in <p> so we always store HTML.
+        // If the model returned plain text, wrap blocks in <p>
         if (!preg_match('/<p\b/i', $clean)) {
             $blocks = preg_split('/\n\s*\n/', $clean);
             $clean = implode('', array_map(

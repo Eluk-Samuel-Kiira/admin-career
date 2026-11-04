@@ -119,23 +119,26 @@ Route::middleware(['verifycountry'])->group(function () {
 
 
     Route::middleware(['auth:sanctum'])->prefix('cv-review')->group(function () {
-        // Quote price BEFORE submitting
         Route::get('/quote', [CvReviewRequestController::class, 'quote']);
-
-        // Submit new request (with file OR existing_cv_path)
         Route::post('/', [CvReviewRequestController::class, 'store']);
-
-        // Seeker's list + single
         Route::get('/', [CvReviewRequestController::class, 'index']);
+
+        // CV review (original)
         Route::get('/{uuid}', [CvReviewRequestController::class, 'show']);
-
-        // Answer the AI gap questions
         Route::post('/{uuid}/answers', [CvReviewRequestController::class, 'submitAnswers']);
-
-        // Payment
         Route::post('/{uuid}/pay', [CvReviewRequestController::class, 'initPayment']);
         Route::post('/{uuid}/revision', [CvReviewRequestController::class, 'requestRevision']);
         Route::delete('/{uuid}', [CvReviewRequestController::class, 'destroy']);
+        Route::post('/{uuid}/run-ai-review', [CvReviewRequestController::class, 'runAiReview']);
+
+        // AI rewrite sub-resource
+        Route::get('/{uuid}/rewrite',               [CvReviewRequestController::class, 'rewriteShow']);
+        Route::post('/{uuid}/rewrite/regenerate',   [CvReviewRequestController::class, 'regenerate']);
+        Route::post('/{uuid}/rewrite/save',         [CvReviewRequestController::class, 'saveEdited']);
+        Route::post('/{uuid}/rewrite/reset',        [CvReviewRequestController::class, 'resetEdited']);
+        Route::post('/{uuid}/rewrite/complete',     [CvReviewRequestController::class, 'markComplete']);
+        Route::get('/{uuid}/rewrite/download',      [CvReviewRequestController::class, 'download'])
+            ->name('api.cv-review.rewrite.download');
     });
 
     // Payment gateway callback — unauthenticated, protected by signature in real life
@@ -221,7 +224,11 @@ Route::middleware(['verifycountry'])->group(function () {
         Route::post('/',             [\App\Http\Controllers\Api\Service\LetterController::class, 'store']);
         Route::get('/{uuid}',        [\App\Http\Controllers\Api\Service\LetterController::class, 'show']);
         Route::post('/{uuid}/pay',   [\App\Http\Controllers\Api\Service\LetterController::class, 'pay']);
-        Route::get('/{uuid}/download', [\App\Http\Controllers\Api\Service\LetterController::class, 'download']);
+        Route::post('/{uuid}/regenerate',    [\App\Http\Controllers\Api\Service\LetterController::class, 'regenerate']);
+        Route::post('/{uuid}/update',        [\App\Http\Controllers\Api\Service\LetterController::class, 'updateInputs']);
+        Route::post('/{uuid}/save-edited',   [\App\Http\Controllers\Api\Service\LetterController::class, 'saveEdited']);   // ← ADD THIS
+        Route::post('/{uuid}/reset-edited',  [\App\Http\Controllers\Api\Service\LetterController::class, 'resetEdited']);  // ← AND THIS
+        Route::get('/{uuid}/download',[\App\Http\Controllers\Api\Service\LetterController::class, 'download']);
         Route::delete('/{uuid}',     [\App\Http\Controllers\Api\Service\LetterController::class, 'destroy']);
     });
 
@@ -254,6 +261,9 @@ Route::middleware(['verifycountry'])->group(function () {
     Route::middleware(['auth:sanctum'])->group(function () {
         Route::post('/payments/initiate', [\App\Http\Controllers\Api\Payment\PaymentController::class, 'initiate']);
     });
+
+
+
     
 });
 

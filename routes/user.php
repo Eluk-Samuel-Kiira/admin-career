@@ -211,6 +211,7 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
 
 
 use App\Http\Controllers\Admin\AlertDispatchController;
+use App\Http\Controllers\Admin\CoverLetterController;
 
 Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () {
 
@@ -219,8 +220,15 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     Route::post('/alerts/dispatch',  [AlertDispatchController::class, 'dispatch'])->name('alerts.dispatch');
     Route::get('/alerts/log',        [AlertDispatchController::class, 'log'])->name('alerts.log');
     Route::post('/alerts/bulk-delete', [AlertDispatchController::class, 'bulkDelete'])->name('alerts.bulk-delete');
+
+    Route::get('/cover-letters',                 [CoverLetterController::class, 'index'])->name('cover-letters.index');
+    Route::get('/cover-letters/data',            [CoverLetterController::class, 'data'])->name('cover-letters.data');
+    Route::get('/cover-letters/{uuid}',          [CoverLetterController::class, 'show'])->name('cover-letters.show');
+    Route::get('/cover-letters/{uuid}/download', [CoverLetterController::class, 'download'])->name('cover-letters.download');
     
 });
+
+
 
 use App\Http\Controllers\Employer\EmployerSubscriptionController;
 

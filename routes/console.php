@@ -22,3 +22,6 @@ Schedule::command('queue:prune-failed --hours=168')->dailyAt('04:00');
 Schedule::command('subscriptions:renew')->hourly();
 Schedule::command('subscriptions:expire')->daily();
 
+Schedule::command('letters:cleanup-temp-cvs --hours=24')
+    ->dailyAt('03:00')
+    ->withoutOverlapping();

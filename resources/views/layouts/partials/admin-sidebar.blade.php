@@ -233,9 +233,10 @@
                     {{-- Job Seekers --}}
                     @canany(['view seekers', 'manage job alerts', 'send job alerts', 'view cv review requests'])
                     <div data-kt-menu-trigger="click" class="menu-item menu-accordion {{ request()->routeIs('admin.seekers*', 'admin.alerts.*',
-                        'admin.auto-apply.*',  'admin.cv-review-requests*')
-                        || (request()->routeIs('admin.employer-subscriptions.*') && request('role') === 'seeker')
-                            ? 'show here' : '' }}">
+                            'admin.auto-apply.*',  'admin.cv-review-requests*',
+                            'admin.cover-letters.*')
+                            || (request()->routeIs('admin.employer-subscriptions.*') && request('role') === 'seeker')
+                                ? 'show here' : '' }}">
                         <span class="menu-link">
                             <span class="menu-icon">
                                 <i class="ki-duotone ki-profile-circle fs-2">
@@ -263,6 +264,16 @@
                                 href="{{ route('admin.cv-review-requests') }}">
                                     <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
                                     <span class="menu-title">CV Review Requests</span>
+                                </a>
+                            </div>
+                            @endcan
+
+                            @can('view cv review requests')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.cover-letters.*') ? 'active' : '' }}"
+                                href="{{ route('admin.cover-letters.index') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">Cover Letters</span>
                                 </a>
                             </div>
                             @endcan

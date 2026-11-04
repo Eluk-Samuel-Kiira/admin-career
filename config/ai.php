@@ -170,4 +170,21 @@ return [
         'ZM' => ['currency' => 'ZMW', 'locale' => 'en_ZM', 'timezone' => 'Africa/Lusaka'],
         'SG' => ['currency' => 'SGD', 'locale' => 'en_SG', 'timezone' => 'Asia/Singapore'],
     ],
+
+    'letter_gemini_keys' => [
+        // Order matters: index 0 is tried first, index 1 is fallback, etc.
+        'primary'   => env('GEMINI_LETTER_KEY_1'),
+        'fallbacks' => array_values(array_filter([
+            env('GEMINI_LETTER_KEY_2'),
+            env('GEMINI_LETTER_KEY_3'),
+            env('GEMINI_LETTER_KEY_4'),
+            env('GEMINI_LETTER_KEY_5'),
+        ])),
+    ],
+
+    'letter_gemini_model' => env('GEMINI_LETTER_MODEL', 'gemini-3.5-flash'),
+
+    'letter_gemini_endpoint' => 'https://generativelanguage.googleapis.com/v1beta/models',
+
+
 ];
