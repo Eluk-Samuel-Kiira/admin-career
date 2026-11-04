@@ -177,6 +177,18 @@ class MarzPayWebhookController extends Controller
                         }
                     }
 
+                    if ($webhookStatus === 'completed' && $deposit->purpose_type === 'cv_review') {
+                        $cv = CvReviewRequest::where('uuid', $deposit->purpose_reference)->first();
+                        if ($cv
+                            && $cv->rewrite_mode === 'ai'
+                            && $cv->status === 'paid_ai'
+                            && empty($cv->rewrite_generated_at)
+                            && empty($cv->rewrite_error_message)
+                        ) {
+                            \App\Jobs\GenerateCvRewriteJob::dispatch($cv->id)->onQueue('letters');
+                        }
+                    }
+
                 } else {
                     // 'failed'
                     $reason = $collection['failure_reason']
@@ -266,14 +278,24 @@ class MarzPayWebhookController extends Controller
         }
 
         match ($deposit->purpose_type) {
-            'cv_review' => CvReviewRequest::where('uuid', $deposit->purpose_reference)
-                ->whereNotIn('status', [
-                    'paid', 'in_progress', 'delivered', 'revision_requested', 'completed',
-                ])
-                ->update([
-                    'status'            => 'paid',
-                    'payment_reference' => $deposit->deposit_ref,
-                ]),
+            'cv_review' => (function () use ($deposit) {
+                $cv = CvReviewRequest::where('uuid', $deposit->purpose_reference)->first();
+                if (!$cv) return;
+
+                if ($cv->rewrite_mode === 'ai') {
+                    $cv->update([
+                        'status'            => 'paid_ai',
+                        'payment_reference' => $deposit->deposit_ref,
+                    ]);
+                    \App\Jobs\GenerateCvRewriteJob::dispatch($cv->id)->onQueue('letters');
+                } else {
+                    // HR expert path — existing workflow
+                    $cv->update([
+                        'status'            => 'paid_human',
+                        'payment_reference' => $deposit->deposit_ref,
+                    ]);
+                }
+            })(),
 
             'cover_letter' => \App\Models\Service\LetterRequest::where('uuid', $deposit->purpose_reference)
                 ->whereIn('status', ['pending_payment'])

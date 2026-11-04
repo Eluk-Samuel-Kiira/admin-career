@@ -22,7 +22,7 @@ class ArtisanCommandController extends Controller
         'optimize:clear'       => 'Clear all cached data',
         'optimize'             => 'Cache config, routes & views',
         // 'queue:work --queue=auto-apply --tries=3 --timeout=200 --sleep=3'             => 'Queues for jobs',
-        // 'queue:work --queue=default,auto-apply,ai-screening --tries=3 --timeout=200' => 'Triger Queuing Jobs for bulk processing',
+        // 'php artisan queue:work --queue=letters,default,auto-apply,ai-screening --tries=3 --timeout=200' => 'Triger Queuing Jobs for bulk processing',
         // 'queue:restart'        => 'Restart queue workers',
         'migrate'              => 'Run database migrations (forced in production)',
         'migrate:status'       => 'Show migration status',

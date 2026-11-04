@@ -16,6 +16,11 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
+use App\Jobs\GenerateCvRewriteJob;
+use App\Services\Jobs\CvRewriteService;
+use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Support\Str;
+use App\Services\Jobs\CvHtmlSanitizer;
 
 class CvReviewRequestController extends Controller
 {
@@ -25,6 +30,7 @@ class CvReviewRequestController extends Controller
         protected PricingService $pricing,
         protected AiService $ai,
         protected CvTextExtractionService $textExtractor,
+        protected CvRewriteService $rewrite,
     ) {}
 
     // =================================================================
@@ -232,11 +238,80 @@ class CvReviewRequestController extends Controller
         ]);
     }
 
-        // =================================================================
-    // PAYMENT — init
-    // =================================================================
+    public function runAiReview(Request $request, $uuid): JsonResponse
+    {
+        $user = $request->user();
+        $cvRequest = CvReviewRequest::where('uuid', $uuid)
+            ->where('user_id', $user->id)
+            ->firstOrFail();
+
+        // Only run once, and only when the CV has just been submitted
+        if ($cvRequest->status !== 'submitted') {
+            return response()->json([
+                'success' => false,
+                'message' => "AI review already exists for status '{$cvRequest->status}'.",
+            ], 422);
+        }
+
+        if (!empty($cvRequest->ai_gap_review)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'AI review already generated.',
+            ], 422);
+        }
+
+        try {
+            $cvText = app(\App\Services\Jobs\CvRewriteService::class)
+                ->resolveCvText($cvRequest);
+
+            if ($cvText === '') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Could not read your CV. Please re-upload a PDF or Word file.',
+                ], 422);
+            }
+
+            $review = $this->ai->reviewCvGaps(
+                $cvText,
+                $cvRequest->target_job_description ?: null
+            );
+
+            $cvRequest->update([
+                'ai_gap_review' => $review,
+                'status'        => 'ai_reviewed',
+            ]);
+
+            \Log::info('Seeker ran AI review', [
+                'uuid'  => $cvRequest->uuid,
+                'score' => $review['overall_score'] ?? null,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'AI review complete.',
+                'request' => $this->formatRequest($cvRequest->fresh()),
+            ]);
+
+        } catch (\Throwable $e) {
+            \Log::error('Seeker AI review failed', [
+                'uuid'  => $uuid,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'AI review failed: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
     public function initPayment(Request $request, $uuid): JsonResponse
     {
+        $request->validate([
+            'mode'   => 'nullable|in:ai,human',
+            'phone'  => 'nullable|string|max:25',
+            'method' => 'nullable|in:mobile_money,card',
+        ]);
+
         $user = $request->user();
         $cvRequest = CvReviewRequest::where('uuid', $uuid)
             ->where('user_id', $user->id)
@@ -249,52 +324,100 @@ class CvReviewRequestController extends Controller
             ], 422);
         }
 
-        // Pay Now on a CV review request pays for the REWRITE, not the review.
-        // The review itself is free; what the seeker is buying here is the human rewrite.
+        $mode        = $request->input('mode', 'ai');
         $countryCode = strtoupper($cvRequest->country_code ?: config('app.country_code', 'UG'));
-        $rewritePrice = \App\Models\Service\ServicePrice::resolve('cv_rewrite', $countryCode);
 
-        if (!$rewritePrice) {
+        $basePrice = \App\Models\Service\ServicePrice::resolve('cv_rewrite', $countryCode);
+        if (!$basePrice) {
             return response()->json([
                 'success' => false,
-                'message' => 'CV rewrite pricing is not available in your region yet.',
+                'message' => 'CV rewrite pricing is not available in your region.',
             ], 422);
         }
 
-        // If the rewrite is free in this country (unlikely), skip payment.
-        if ((int) $rewritePrice->amount_cents === 0) {
-            $cvRequest->update([
-                'status'              => 'paid',
-                'payment_reference'   => 'FREE-' . strtoupper(\Illuminate\Support\Str::random(8)),
-                'paid_for_service_key'=> 'cv_rewrite',
+        // HR expert = base × 3 (i.e. +200%)
+        $amountCents = (int) $basePrice->amount_cents;
+        if ($mode === 'human') {
+            $amountCents *= 3;
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // Idempotency: if a deposit is already pending for this request
+        // within the last 15 minutes...
+        //   - same amount (same mode)  → reuse it, don't create a duplicate
+        //   - different amount (mode changed AI↔HR) → mark old failed, create new
+        // ─────────────────────────────────────────────────────────────
+        $existingDeposit = \App\Models\Deposit::where('purpose_type', 'cv_review')
+            ->where('purpose_reference', $cvRequest->uuid)
+            ->where('status', 'pending')
+            ->where('created_at', '>', now()->subMinutes(15))
+            ->orderByDesc('id')
+            ->first();
+
+        if ($existingDeposit) {
+            $existingAmountCents = (int) $existingDeposit->amount;
+
+            if ($existingAmountCents === $amountCents) {
+                // Same mode, same amount → reuse the in-flight deposit
+                $cvRequest->update([
+                    'amount_cents'         => $amountCents,
+                    'currency_id'          => $basePrice->currency_id,
+                    'paid_for_service_key' => $mode === 'human' ? 'cv_rewrite_human' : 'cv_rewrite',
+                    'rewrite_mode'         => $mode,
+                ]);
+
+                return response()->json([
+                    'success'          => true,
+                    'reused'           => true,
+                    'deposit_ref'      => $existingDeposit->deposit_ref,
+                    'mode'             => $mode,
+                    'next_service_key' => $mode === 'human' ? 'cv_rewrite_human' : 'cv_rewrite',
+                    'next_service_name'=> $mode === 'human' ? 'HR Expert CV Rewrite' : 'AI CV Rewrite',
+                    'amount_formatted' => $this->formatAmountFor($amountCents, $basePrice->currency->code),
+                    'amount_cents'     => $amountCents,
+                    'currency_code'    => $basePrice->currency->code,
+                    'message'          => 'A payment for this CV is already in progress.',
+                ]);
+            }
+
+            // Amount changed → user switched modes. Void the old pending deposit
+            // so it can't be charged, then create a fresh one.
+            $existingDeposit->update([
+                'status' => 'failed',
+                'notes'  => trim(
+                    ($existingDeposit->notes ?? '') .
+                    "\nSuperseded: user changed mode to {$mode} (was " .
+                    ($existingDeposit->amount === $amountCents ? 'same' : "{$existingDeposit->amount} cents") . ')'
+                ),
             ]);
 
-            return response()->json([
-                'success'          => true,
-                'is_free'          => true,
-                'next_service_key' => 'cv_rewrite',
-                'next_service_name'=> 'CV Rewrite',
-                'message'          => 'This service is free right now. Your request has moved to our team.',
-                'next_step'        => 'paid',
+            \Log::info('CV payment: superseding pending deposit due to mode change', [
+                'uuid'             => $cvRequest->uuid,
+                'old_deposit_ref'  => $existingDeposit->deposit_ref,
+                'old_amount_cents' => $existingAmountCents,
+                'new_amount_cents' => $amountCents,
+                'new_mode'         => $mode,
             ]);
         }
 
-        // Snapshot the rewrite price into the CV review request so it survives admin price changes.
+        // Snapshot the price + mode on the CV request BEFORE hitting the gateway
         $cvRequest->update([
-            'amount_cents'         => (int) $rewritePrice->amount_cents,
-            'currency_id'          => $rewritePrice->currency_id,
-            'paid_for_service_key' => 'cv_rewrite',   // <-- persists what was actually bought
+            'amount_cents'         => $amountCents,
+            'currency_id'          => $basePrice->currency_id,
+            'paid_for_service_key' => $mode === 'human' ? 'cv_rewrite_human' : 'cv_rewrite',
+            'rewrite_mode'         => $mode,
         ]);
 
-        // Delegate to the generic init controller
         $initRequest = new \Illuminate\Http\Request();
         $initRequest->merge([
-            'amount_cents'      => (int) $rewritePrice->amount_cents,
-            'currency_code'     => $rewritePrice->currency->code,
+            'amount_cents'      => $amountCents,
+            'currency_code'     => $basePrice->currency->code,
             'purpose_type'      => 'cv_review',
             'purpose_reference' => $cvRequest->uuid,
-            'description'       => 'CV Rewrite for CV Review #' . substr($cvRequest->uuid, 0, 8),
-            'phone' => $request->filled('phone') ? $request->input('phone') : $user->phone,
+            'description'       => $mode === 'human'
+                ? 'HR Expert CV Rewrite for #' . substr($cvRequest->uuid, 0, 8)
+                : 'AI CV Rewrite for #' . substr($cvRequest->uuid, 0, 8),
+            'phone'             => $request->filled('phone') ? $request->input('phone') : $user->phone,
             'method'            => $request->input('method', 'mobile_money'),
         ]);
         $initRequest->setUserResolver(fn() => $user);
@@ -302,27 +425,29 @@ class CvReviewRequestController extends Controller
         $gatewayResponse = app(\App\Http\Controllers\Api\Payment\PaymentInitController::class)
             ->initiate($initRequest);
 
-        // The generic init controller returned a JsonResponse.
-        // We augment it with the service context so the seeker UI can label
-        // the payment as "CV Rewrite — UGX 16,000" rather than just an amount.
         $payload = $gatewayResponse->getData(true);
 
-        if (!empty($payload['success']) && empty($payload['is_free'])) {
-            $payload['next_service_key']   = 'cv_rewrite';
-            $payload['next_service_name']  = 'CV Rewrite';
-            $payload['amount_formatted']   = $rewritePrice->formatted_amount;
-            $payload['amount_cents']       = (int) $rewritePrice->amount_cents;
-            $payload['currency_code']      = $rewritePrice->currency->code;
-
+        if (!empty($payload['success'])) {
+            $payload['mode']              = $mode;
+            $payload['next_service_key']  = $mode === 'human' ? 'cv_rewrite_human' : 'cv_rewrite';
+            $payload['next_service_name'] = $mode === 'human' ? 'HR Expert CV Rewrite' : 'AI CV Rewrite';
+            $payload['amount_formatted']  = $this->formatAmountFor($amountCents, $basePrice->currency->code);
+            $payload['amount_cents']      = $amountCents;
+            $payload['currency_code']     = $basePrice->currency->code;
             return response()->json($payload, $gatewayResponse->getStatusCode());
         }
 
-        // Failure path — pass through the gateway's exact error untouched
         return $gatewayResponse;
     }
 
-
-
+    private function formatAmountFor(int $cents, string $currencyCode): string
+    {
+        $currency = \App\Models\Currency::where('code', $currencyCode)->first();
+        if ($currency && method_exists($currency, 'formatAmount')) {
+            return $currency->formatAmount($cents);
+        }
+        return $currencyCode . ' ' . number_format($cents);
+    }
     
     // =================================================================
     // PAYMENT — webhook callback
@@ -567,32 +692,51 @@ class CvReviewRequestController extends Controller
 
     private function resolveNextService(CvReviewRequest $r): array
     {
-        // \Log::info($r);
-        // After answers have been submitted, the seeker is not paying for the review —
-        // they are paying for the rewrite. Before that, they still owe nothing.
         $isPurchaseStep = in_array($r->status, ['awaiting_payment'], true);
 
         if (!$isPurchaseStep) {
             return [
-                'next_service_key'   => null,
-                'next_service_name'  => null,
-                'next_service_price' => null,
+                'next_service_key'         => null,
+                'next_service_name'        => null,
+                'next_service_price'       => null,
+                'next_service_price_human' => null,
             ];
         }
 
         $countryCode = strtoupper($r->country_code ?: config('app.country_code', 'UG'));
-        $rewritePrice = \App\Models\Service\ServicePrice::resolve('cv_rewrite', $countryCode);
+        $basePrice   = \App\Models\Service\ServicePrice::resolve('cv_rewrite', $countryCode);
+
+        if (!$basePrice) {
+            return [
+                'next_service_key'         => 'cv_rewrite',
+                'next_service_name'        => 'CV Rewrite',
+                'next_service_price'       => null,
+                'next_service_price_human' => null,
+            ];
+        }
+
+        $currencyCode = $basePrice->currency?->code ?? 'UGX';
+        $baseCents    = (int) $basePrice->amount_cents;
+
+        // HR expert = base price × 3 (i.e. +200%)
+        $humanCents   = $baseCents * 3;
 
         return [
             'next_service_key'   => 'cv_rewrite',
             'next_service_name'  => 'CV Rewrite',
-            'next_service_price' => $rewritePrice ? [
-                'amount_cents' => (int) $rewritePrice->amount_cents,
-                'currency_code' => $rewritePrice->currency?->code ?? 'UGX',
-                'formatted'    => $rewritePrice->formatted_amount,
-            ] : null,
+            'next_service_price' => [
+                'amount_cents'  => $baseCents,
+                'currency_code' => $currencyCode,
+                'formatted'     => $basePrice->formatted_amount,
+            ],
+            'next_service_price_human' => [
+                'amount_cents'  => $humanCents,
+                'currency_code' => $currencyCode,
+                'formatted'     => $this->formatAmountFor($humanCents, $currencyCode),
+            ],
         ];
     }
+
 
     private function formatRequest(CvReviewRequest $r): array
     {
@@ -626,7 +770,7 @@ class CvReviewRequestController extends Controller
             'delivered_cv_url'      => $r->delivered_cv_url,
             'amount_cents'          => $r->amount_cents,
             'currency_code'         => $r->currency->code ?? '—',
-            // 'formatted_amount'   => ...   <-- REMOVE THIS LINE
+            'next_service_price_human' => $next['next_service_price_human'],
             'country_code'          => $r->country_code,
             'ai_gap_review'         => $r->ai_gap_review,
             'seeker_gap_answers'    => $r->seeker_gap_answers,
@@ -638,6 +782,192 @@ class CvReviewRequestController extends Controller
             'next_service_key'      => $next['next_service_key'],
             'next_service_name'     => $next['next_service_name'],
             'next_service_price'    => $next['next_service_price'],
+
+            'rewrite_mode'              => $r->rewrite_mode,
+            'rewrite_is_ai_mode'        => $r->rewrite_is_ai_mode,
+            'rewrite_is_human_mode'     => $r->rewrite_is_human_mode,
+            'rewrite_is_ready'          => $r->rewrite_is_ready,
+            'rewrite_content'           => $r->rewrite_content,
+            'rewrite_content_original'  => $r->rewrite_content_original,
+            'rewrite_generated_at'      => $r->rewrite_generated_at?->toISOString(),
+            'rewrite_regeneration_count'=> $r->rewrite_regeneration_count,
+            'rewrite_max_regenerations' => $r->rewrite_max_regenerations,
+            'rewrite_is_user_edited'    => $r->rewrite_is_user_edited,
+            'rewrite_user_edited_at'    => $r->rewrite_user_edited_at?->toISOString(),
+            'rewrite_can_regenerate'    => $r->rewrite_can_regenerate,
+            'rewrite_error_message'     => $r->rewrite_error_message,
+            'rewrite_download_url'      => $r->rewrite_download_url,
+
         ];
+    }
+
+    public function markComplete(Request $request, string $uuid): JsonResponse
+    {
+        $req = $this->findOwn($request, $uuid);
+        if (!$req) return response()->json(['success' => false, 'message' => 'Not found'], 404);
+
+        if ($req->rewrite_mode !== 'ai' || $req->status !== 'generated') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only AI-generated CVs can be marked complete.',
+            ], 422);
+        }
+
+        $req->update(['status' => 'completed']);
+
+        return response()->json(['success' => true, 'message' => 'Marked complete. Thank you!']);
+    }
+
+    // ── Get the rewritten CV ────────────────────────────────────
+    public function rewriteShow(Request $request, string $uuid): JsonResponse
+    {
+        $req = $this->findOwn($request, $uuid);
+        if (!$req) return response()->json(['success' => false, 'message' => 'Not found'], 404);
+
+        if ($req->rewrite_mode !== 'ai') {
+            return response()->json([
+                'success' => false,
+                'message' => 'This request is not using AI rewrite.',
+            ], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'uuid'              => $req->uuid,
+                'status'            => $req->status,
+                'is_ready'          => $req->rewrite_is_ready,
+                'content'           => $req->rewrite_content['html'] ?? null,
+                'is_user_edited'    => $req->rewrite_is_user_edited,
+                'user_edited_at'    => $req->rewrite_user_edited_at?->toISOString(),
+                'regeneration_count'=> $req->rewrite_regeneration_count,
+                'max_regenerations' => $req->rewrite_max_regenerations,
+                'can_regenerate'    => $req->rewrite_can_regenerate,
+                'error_message'     => $req->rewrite_error_message,
+                'generated_at'      => $req->rewrite_generated_at?->toISOString(),
+            ],
+        ]);
+    }
+
+    // ── Trigger / retry generation ──────────────────────────────
+    public function regenerate(Request $request, string $uuid): JsonResponse
+    {
+        $req = $this->findOwn($request, $uuid);
+        if (!$req) return response()->json(['success' => false, 'message' => 'Not found'], 404);
+
+        if ($req->rewrite_mode !== 'ai') {
+            return response()->json(['success' => false, 'message' => 'Not an AI rewrite request.'], 422);
+        }
+
+        if (!in_array($req->status, ['paid_ai', 'generating', 'generated'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => "Cannot regenerate in status '{$req->status}'.",
+            ], 422);
+        }
+
+        // First run — no count increment. Retries — increment.
+        if ($req->status === 'generated' && !empty($req->rewrite_generated_at)) {
+            if ($req->rewrite_regeneration_count >= $req->rewrite_max_regenerations) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You have used all ' . $req->rewrite_max_regenerations . ' regenerations.',
+                ], 422);
+            }
+            $req->increment('rewrite_regeneration_count');
+            $req->update(['rewrite_is_user_edited' => false, 'rewrite_user_edited_at' => null]);
+        }
+
+        $req->update([
+            'status'                => 'paid_ai',
+            'rewrite_error_message' => null,
+        ]);
+
+        GenerateCvRewriteJob::dispatch($req->id)->onQueue('letters');
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Generating your rewritten CV…',
+        ]);
+    }
+
+    // ── Save edits (TinyMCE) ────────────────────────────────────
+    public function saveEdited(Request $request, string $uuid): JsonResponse
+    {
+        $req = $this->findOwn($request, $uuid);
+        if (!$req) return response()->json(['success' => false, 'message' => 'Not found'], 404);
+
+        if ($req->status !== 'generated') {
+            return response()->json(['success' => false, 'message' => 'CV not ready.'], 422);
+        }
+
+        $request->validate(['content' => 'required|string|min:100']);
+
+        $html = $request->input('content');
+
+        $req->update([
+            'rewrite_content'         => ['html' => $html],
+            'rewrite_is_user_edited'  => true,
+            'rewrite_user_edited_at'  => now(),
+        ]);
+
+        return response()->json(['success' => true, 'message' => 'Changes saved.']);
+    }
+
+    // ── Reset to AI original ───────────────────────────────────
+    public function resetEdited(Request $request, string $uuid): JsonResponse
+    {
+        $req = $this->findOwn($request, $uuid);
+        if (!$req) return response()->json(['success' => false, 'message' => 'Not found'], 404);
+
+        if (empty($req->rewrite_content_original)) {
+            return response()->json(['success' => false, 'message' => 'No original to reset to.'], 422);
+        }
+
+        $req->update([
+            'rewrite_content'        => $req->rewrite_content_original,
+            'rewrite_is_user_edited' => false,
+            'rewrite_user_edited_at' => null,
+        ]);
+
+        return response()->json(['success' => true, 'message' => 'Restored the AI version.']);
+    }
+
+    // ── Download PDF ───────────────────────────────────────────
+    public function download(Request $request, string $uuid)
+    {
+        $user = $request->user();
+        $req  = CvReviewRequest::where('uuid', $uuid)
+            ->where('user_id', $user->id)
+            ->firstOrFail();
+
+        if ($req->rewrite_mode !== 'ai' || empty($req->rewrite_content['html'])) {
+            abort(404, 'CV not ready.');
+        }
+
+        // Clean the saved HTML again, so the PDF matches the sanitized preview
+        $html = CvHtmlSanitizer::clean($req->rewrite_content['html']);
+
+        if ($html === '') {
+            abort(404, 'CV not ready.');
+        }
+
+        $pdf = Pdf::loadView('pdf.cv-rewrite', [
+            'title'   => $req->target_job_title ?: 'Curriculum Vitae',
+            'content' => $html,
+        ])->setPaper('a4');
+
+        $name  = Str::slug($user->name ?: 'candidate');
+        $title = Str::slug($req->target_job_title ?: 'cv');
+
+        return $pdf->download("{$name}_{$title}_cv.pdf");
+    }
+
+    // ── Helper ─────────────────────────────────────────────────
+    protected function findOwn(Request $request, string $uuid): ?CvReviewRequest
+    {
+        return CvReviewRequest::where('uuid', $uuid)
+            ->where('user_id', $request->user()->id)
+            ->first();
     }
 }

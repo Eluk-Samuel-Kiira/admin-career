@@ -52,6 +52,16 @@ class CvReviewRequest extends Model
         'payment_method_id',
         'paid_for_service_key',
 
+        'rewrite_mode',
+        'rewrite_content',
+        'rewrite_content_original',
+        'rewrite_generated_at',
+        'rewrite_regeneration_count',
+        'rewrite_max_regenerations',
+        'rewrite_is_user_edited',
+        'rewrite_user_edited_at',
+        'rewrite_error_message',
+
     ];
 
     // ---------------------------------------------------------------
@@ -67,6 +77,14 @@ class CvReviewRequest extends Model
         'sla_due_at'           => 'datetime',
         'delivered_at'         => 'datetime',
         'review_delivered_at'  => 'datetime',
+
+        'rewrite_content'           => 'array',
+        'rewrite_content_original'  => 'array',
+        'rewrite_generated_at'      => 'datetime',
+        'rewrite_regeneration_count'=> 'integer',
+        'rewrite_max_regenerations' => 'integer',
+        'rewrite_is_user_edited'    => 'boolean',
+        'rewrite_user_edited_at'    => 'datetime',
     ];
 
     // ---------------------------------------------------------------
@@ -165,6 +183,11 @@ class CvReviewRequest extends Model
             'revision_requested' => 'light-warning',
             'completed'          => 'light-success',
             'cancelled'          => 'light-danger',
+            'paid_ai'     => 'light-info',
+            'paid_human'  => 'light-primary',
+            'generating'  => 'light-primary',
+            'generated'   => 'light-success',
+
         ];
         $color = $map[$this->status] ?? 'light-secondary';
         $label = ucwords(str_replace('_', ' ', (string) $this->status));
@@ -173,7 +196,10 @@ class CvReviewRequest extends Model
 
     public function getPaymentBadgeAttribute(): string
     {
-        $paidStatuses = ['paid', 'in_progress', 'delivered', 'revision_requested', 'completed'];
+        $paidStatuses = [
+            'paid', 'paid_ai', 'paid_human', 'in_progress', 'generating', 'generated',
+            'delivered', 'revision_requested', 'completed',
+        ];
 
         if (in_array($this->status, $paidStatuses, true)) {
             return '<span class="badge badge-light-success">✅ Paid</span>';
@@ -347,6 +373,10 @@ class CvReviewRequest extends Model
             'revision_requested'  => 'Revision Requested',
             'completed'           => 'Completed',
             'cancelled'           => 'Cancelled',
+            'paid_ai'     => 'Paid — Tool Rewrite',
+            'paid_human'  => 'Paid — HR Expert',
+            'generating'  => 'Generating',
+            'generated'   => 'Generated',
         ];
     }
 
@@ -359,7 +389,11 @@ class CvReviewRequest extends Model
         return match ($this->status) {
             'submitted'           => ['ai_reviewed', 'awaiting_payment', 'cancelled'],
             'ai_reviewed'         => ['awaiting_payment', 'cancelled'],
-            'awaiting_payment'    => ['paid', 'cancelled'],
+            'awaiting_payment' => ['paid', 'paid_ai', 'paid_human', 'cancelled'],
+            'paid_ai'          => ['generating', 'cancelled'],
+            'generating'       => ['generated', 'cancelled'],
+            'generated'        => ['completed'],
+            'paid_human'       => ['in_progress', 'cancelled'],
             'paid'                => ['in_progress', 'cancelled'],
             'in_progress'         => ['delivered', 'cancelled'],
             'delivered'           => ['revision_requested', 'completed'],
@@ -379,4 +413,43 @@ class CvReviewRequest extends Model
     {
         return in_array($newStatus, self::allStatuses(), true);
     }
+
+    public function getRewriteIsReadyAttribute(): bool
+    {
+        return $this->rewrite_mode === 'ai'
+            && $this->rewrite_generated_at !== null
+            && !empty($this->rewrite_content);
+    }
+
+    public function getRewriteIsAiModeAttribute(): bool
+    {
+        return $this->rewrite_mode === 'ai';
+    }
+
+    public function getRewriteIsHumanModeAttribute(): bool
+    {
+        return $this->rewrite_mode === 'human';
+    }
+
+    public function getRewriteCanRegenerateAttribute(): bool
+    {
+        return $this->rewrite_mode === 'ai'
+            && in_array($this->status, ['generated', 'generating'], true)
+            && $this->rewrite_regeneration_count < $this->rewrite_max_regenerations;
+    }
+
+    public function getRewriteDownloadUrlAttribute(): ?string
+    {
+        if ($this->rewrite_mode !== 'ai' || empty($this->rewrite_content)) {
+            return null;
+        }
+        return route('api.cv-review.rewrite.download', ['uuid' => $this->uuid]);
+    }
+
+
+    public function scopeAwaitingRewriteAi($query)
+    {
+        return $query->where('status', 'paid_ai');
+    }
+
 }

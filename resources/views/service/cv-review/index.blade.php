@@ -71,6 +71,12 @@
                 <option value="not_required">Not Required</option>
             </select>
 
+            <select id="modeFilter" class="form-select form-select-solid w-150px">
+                <option value="">All Modes</option>
+                <option value="ai">🤖 AI Rewrite</option>
+                <option value="human">👤 HR Expert</option>
+            </select>
+
             <select id="countryFilter" class="form-select form-select-solid w-175px">
                 <option value="">All Countries</option>
             </select>
@@ -256,6 +262,7 @@ let currentAssignee     = '';
 let currentSlaFilter    = '';
 let adminUsers          = [];
 let paymentMethods      = [];
+let currentMode = '';
 
 document.addEventListener('DOMContentLoaded', async function () {
     await loadFilters();
@@ -326,6 +333,11 @@ function setupEventListeners() {
     document.getElementById('countryFilter')?.addEventListener('change', function () {
         currentCountryCode = this.value; currentPage = 1; loadRequests();
     });
+    document.getElementById('modeFilter')?.addEventListener('change', function () {
+        currentMode = this.value;
+        currentPage = 1;
+        loadRequests();
+    });
     document.getElementById('assigneeFilter')?.addEventListener('change', function () {
         currentAssignee = this.value; currentPage = 1; loadRequests();
     });
@@ -353,6 +365,7 @@ function loadRequests() {
     if (currentCountryCode)  params.set('country_code', currentCountryCode);
     if (currentAssignee)     params.set('assigned_admin_id', currentAssignee);
     if (currentSlaFilter)    params.set('sla', currentSlaFilter);
+    if (currentMode) params.set('rewrite_mode', currentMode);
 
     fetch(`/admin/cv-review-requests/data?${params.toString()}`, { headers: { 'Accept': 'application/json' } })
         .then(r => r.json())
@@ -389,7 +402,18 @@ function renderTable(requests) {
                 <span class="text-muted fs-8">#${escapeHtml((req.uuid || '').substring(0, 8))}</span>
             </div>`;
 
-        row.insertCell(1).innerHTML = `<span class="fw-semibold">${escapeHtml(req.service_name)}</span>`;
+        row.insertCell(1).innerHTML = `
+            <div class="d-flex flex-column">
+                <span class="fw-semibold">${escapeHtml(req.service_name)}</span>
+                ${
+                    req.rewrite_mode === 'ai'
+                        ? '<span class="badge badge-light-info badge-sm mt-1">AI Rewrite</span>'
+                        : req.rewrite_mode === 'human'
+                            ? '<span class="badge badge-light-warning badge-sm mt-1">HR Expert</span>'
+                            : ''
+                }
+            </div>`;
+
         row.insertCell(2).innerHTML = req.target_job_title
             ? `<span class="text-truncate d-inline-block" style="max-width:150px;">${escapeHtml(req.target_job_title)}</span>`
             : '<span class="text-muted">—</span>';
@@ -404,7 +428,14 @@ function renderTable(requests) {
                     data-id="${req.id}" data-current="${req.status}">
                 ${buildStatusOptions(req.status, allowed)}
             </select>
-            <div class="mt-1">${req.status_badge}</div>`;
+            <div class="mt-1">${req.status_badge}</div>
+            ${
+                req.seeker_gap_answers && Object.keys(req.seeker_gap_answers).length > 0
+                    ? `<span class="badge badge-light-success badge-sm mt-1">
+                        ✓ ${Object.keys(req.seeker_gap_answers).length} answers
+                    </span>`
+                    : ''
+            }`;
 
         row.insertCell(7).innerHTML = req.sla_badge;
         row.insertCell(8).innerHTML = req.assignee_name
@@ -412,31 +443,53 @@ function renderTable(requests) {
             : '<span class="text-muted">Unassigned</span>';
 
         row.insertCell(9).innerHTML = `
-            <div class="d-flex justify-content-end gap-2">
+            <div class="d-flex justify-content-end gap-1">
+
+                ${/* 1. Original CV upload */ ''}
                 ${req.cv_download_url
                     ? `<a href="${req.cv_download_url}" target="_blank"
-                           class="btn btn-sm btn-icon btn-light"
-                           title="Download CV: ${escapeHtml(req.cv_name || 'CV')}">
-                           <i class="ki-duotone ki-file-down fs-3">
-                               <span class="path1"></span><span class="path2"></span>
-                           </i>
-                       </a>`
+                        class="btn btn-sm btn-icon btn-light"
+                        title="Download original CV: ${escapeHtml(req.cv_name || 'CV')}">
+                        <i class="ki-duotone ki-file-down fs-3">
+                            <span class="path1"></span><span class="path2"></span>
+                        </i>
+                    </a>`
                     : `<button class="btn btn-sm btn-icon btn-light" disabled
-                               title="CV file not available">
-                           <i class="ki-duotone ki-file-deleted fs-3 text-muted">
-                               <span class="path1"></span><span class="path2"></span>
-                           </i>
-                       </button>`
+                            title="Original CV file not available">
+                        <i class="ki-duotone ki-file-deleted fs-3 text-muted">
+                            <span class="path1"></span><span class="path2"></span>
+                        </i>
+                    </button>`
                 }
+
+                ${/* 2. AI-rewritten CV — only shows when the seeker paid for AI mode and generation succeeded */ ''}
+                ${req.rewrite_download_url
+                    ? `<a href="${req.rewrite_download_url}"
+                        class="btn btn-sm btn-icon btn-light-success"
+                        title="Download AI-rewritten CV${req.rewrite_is_user_edited ? ' (edited by seeker)' : ''}">
+                        <i class="ki-duotone ki-document fs-3">
+                            <span class="path1"></span><span class="path2"></span>
+                        </i>
+                        ${req.rewrite_is_user_edited
+                                ? '<span class="bullet bullet-dot bg-warning position-absolute translate-middle-x top-0 start-100 ms-n1 mt-1" style="width:6px;height:6px;"></span>'
+                                : ''}
+                    </a>`
+                    : ''
+                }
+
+                ${/* 3. Confirm payment — only when awaiting */ ''}
                 ${(req.payment_badge || '').includes('Awaiting')
                     ? `<button class="btn btn-sm btn-icon btn-light-success"
-                               onclick="openConfirmPayment(${req.id})"
-                               title="Confirm Payment">
-                           <i class="ki-duotone ki-dollar fs-3">
-                               <span class="path1"></span><span class="path2"></span>
-                           </i>
-                       </button>`
-                    : ''}
+                            onclick="openConfirmPayment(${req.id})"
+                            title="Confirm Payment">
+                        <i class="ki-duotone ki-dollar fs-3">
+                            <span class="path1"></span><span class="path2"></span>
+                        </i>
+                    </button>`
+                    : ''
+                }
+
+                ${/* 4. View details */ ''}
                 <button class="btn btn-sm btn-icon btn-light"
                         onclick="openDetail(${req.id})"
                         title="View details">
@@ -444,8 +497,10 @@ function renderTable(requests) {
                         <span class="path1"></span><span class="path2"></span><span class="path3"></span>
                     </i>
                 </button>
+
             </div>`;
-    });
+    
+        });
 
     document.querySelectorAll('.status-quick-change').forEach(sel => {
         sel.addEventListener('change', function () {
