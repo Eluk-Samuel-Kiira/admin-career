@@ -31,16 +31,27 @@ class GenerateCvRewriteJob implements ShouldQueue
         if (!$req) return;
 
         if ($req->status === 'generated') return;
-        if (!in_array($req->status, ['paid_ai', 'generating'], true)) return;
+        if (!in_array($req->status, ['paid_ai', 'generating', 'failed'], true)) return;
+
+        // If it's failed but the error was transient and retries remain, allow re-attempt
+        if ($req->status === 'failed' && $req->rewrite_error_message) {
+            $isTransient = (bool) preg_match('/\b(503|429|UNAVAILABLE|high demand|timeout|quota)\b/i', $req->rewrite_error_message);
+            if (!$isTransient || $this->attempts() > $this->tries) {
+                return;   // terminal, don't retry
+            }
+        }
 
         try {
             $service->generate($req);
-        } catch (ConnectionException $e) {
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            // Network — let the queue retry
             throw $e;
-        } catch (Throwable $e) {
+        } catch (\Throwable $e) {
+            // Terminal — log, service has already set status='failed'
             Log::warning('GenerateCvRewriteJob: terminal failure', [
-                'uuid'  => $req->uuid,
-                'error' => $e->getMessage(),
+                'uuid'    => $req->uuid,
+                'attempt' => $this->attempts(),
+                'error'   => $e->getMessage(),
             ]);
         }
     }
@@ -48,10 +59,14 @@ class GenerateCvRewriteJob implements ShouldQueue
     public function failed(?Throwable $e): void
     {
         $req = CvReviewRequest::find($this->cvReviewRequestId);
-        if ($req && $req->status !== 'generated') {
+        if (!$req) return;
+
+        // If the service already marked it 'failed' with a specific error, keep that.
+        // Only set our generic message if the status is still 'paid_ai'/'generating'.
+        if (in_array($req->status, ['paid_ai', 'generating'], true)) {
             $req->update([
-                'status'                => 'generated',
-                'rewrite_error_message' => 'Generation failed. Please retry.',
+                'status'                => 'failed',
+                'rewrite_error_message' => 'Generation failed after multiple attempts. Please try again.',
             ]);
         }
     }

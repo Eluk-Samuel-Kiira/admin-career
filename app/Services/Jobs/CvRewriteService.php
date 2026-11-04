@@ -82,7 +82,9 @@ class CvRewriteService
             ]);
 
             $request->update([
-                'status'                => 'generated',
+                'status'                => 'failed',  
+                'rewrite_content'       => null,       
+                'rewrite_generated_at'  => null,
                 'rewrite_error_message' => mb_substr($e->getMessage(), 0, 500),
             ]);
 

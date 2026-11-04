@@ -859,14 +859,15 @@ class CvReviewRequestController extends Controller
             return response()->json(['success' => false, 'message' => 'Not an AI rewrite request.'], 422);
         }
 
-        if (!in_array($req->status, ['paid_ai', 'generating', 'generated'], true)) {
+        if (!in_array($req->status, ['paid_ai', 'generating', 'generated', 'failed'], true)) {
             return response()->json([
                 'success' => false,
                 'message' => "Cannot regenerate in status '{$req->status}'.",
             ], 422);
         }
 
-        // First run — no count increment. Retries — increment.
+        // Only increment regeneration_count when the user is retrying
+        // an already-generated CV, not when the system failed and they're retrying
         if ($req->status === 'generated' && !empty($req->rewrite_generated_at)) {
             if ($req->rewrite_regeneration_count >= $req->rewrite_max_regenerations) {
                 return response()->json([
@@ -878,9 +879,12 @@ class CvReviewRequestController extends Controller
             $req->update(['rewrite_is_user_edited' => false, 'rewrite_user_edited_at' => null]);
         }
 
+        // Always reset state on retry
         $req->update([
             'status'                => 'paid_ai',
             'rewrite_error_message' => null,
+            'rewrite_content'       => null,
+            'rewrite_generated_at'  => null,
         ]);
 
         GenerateCvRewriteJob::dispatch($req->id)->onQueue('letters');
