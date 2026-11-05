@@ -120,8 +120,11 @@ Route::middleware(['verifycountry'])->group(function () {
 
     Route::middleware(['auth:sanctum'])->prefix('cv-review')->group(function () {
         Route::get('/quote', [CvReviewRequestController::class, 'quote']);
+        Route::get('/search-jobs', [CvReviewRequestController::class, 'searchJobs']);
         Route::post('/', [CvReviewRequestController::class, 'store']);
         Route::get('/', [CvReviewRequestController::class, 'index']);
+
+        Route::post('/{uuid}/kick', [CvReviewRequestController::class, 'kick']);
 
         // CV review (original)
         Route::get('/{uuid}', [CvReviewRequestController::class, 'show']);

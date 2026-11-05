@@ -134,8 +134,15 @@ class CvRewriteService
 
         $jobBlock = '';
         if ($jobTitle || $jobDesc) {
-            $jobBlock = "\nTARGET JOB:\nTitle: " . ($jobTitle ?: '-') . "\n"
-                . ($jobDesc ? "Description:\n" . strip_tags($jobDesc) . "\n" : '');
+            $cleanDesc = $jobDesc ? trim(strip_tags($jobDesc)) : '';
+
+            $jobBlock = "\nTARGET JOB (what the CV must be tailored for):\n"
+                . "Title: " . ($jobTitle ?: '-') . "\n";
+
+            if ($cleanDesc !== '') {
+                $jobBlock .= "\nFull job post (description, responsibilities, qualifications, skills):\n"
+                    . $cleanDesc . "\n";
+            }
         }
 
         return <<<PROMPT
@@ -151,6 +158,14 @@ class CvRewriteService
             ---
             {$cvText}
             ---
+
+            JOB-TAILORING RULES (when a target job is given above)
+            The target job block may contain a description, responsibilities, qualifications and required skills. Read all of it. Then:
+            - In PROFESSIONAL SUMMARY, mention the role type and highlight 1–2 areas where the candidate's real experience matches what the job asks for.
+            - In CORE SKILLS, list the skills the job asks for that the candidate genuinely has, first. Use the exact wording the candidate's CV uses for each skill — do not invent synonyms the CV doesn't use.
+            - In PROFESSIONAL EXPERIENCE, where a role clearly used a skill the target job requires, state that fact in the paragraph — but only using wording that already appears in the CV or the candidate's answers.
+            - Never add a skill, tool, technology, or responsibility the CV does not already mention, even if the job asks for it. The point is to *surface* matching facts, not invent them.
+            - If the job asks for something the candidate lacks, quietly omit it. Do not comment on the gap.
 
             OUTPUT FORMAT
             Return HTML only. Use only these tags: div, h1, h2, h3, p, strong, em, span, table, tr, td. Use only these classes: cv-header, cv-titles, cv-contact, entry, entry-line, dates, employer, referee. No other attributes, no inline styles, no lists, no <br>, no markdown, no code fences, no commentary.
