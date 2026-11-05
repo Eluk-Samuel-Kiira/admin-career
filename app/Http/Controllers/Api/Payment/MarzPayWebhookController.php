@@ -346,40 +346,53 @@ class MarzPayWebhookController extends Controller
             return;
         }
 
-        // Only AI-mode CVs get an automatic rewrite job.
         if ($cv->rewrite_mode !== 'ai') {
             return;
         }
 
-        // Must be in paid_ai (set by activate()).
         if ($cv->status !== 'paid_ai') {
-            Log::info('[dispatch] cv status not paid_ai, skipping', [
+            \Log::info('[dispatch] cv status not paid_ai, skipping', [
                 'uuid'   => $cv->uuid,
                 'status' => $cv->status,
             ]);
             return;
         }
 
-        // Already queued? Skip (webhook retry safety).
+        // Already queued? Skip.
         $isQueued = $this->isJobQueued('cv-rewrite', '"cvReviewRequestId":' . $cv->id);
         if ($isQueued) {
-            Log::info('[dispatch] cv job already queued, skipping', ['uuid' => $cv->uuid]);
+            \Log::info('[dispatch] cv job already queued, skipping', ['uuid' => $cv->uuid]);
             return;
         }
 
         // Currently running? Skip.
-        if (Cache::has("cv-rewrite-running:{$cv->id}")) {
-            Log::info('[dispatch] cv job running now, skipping', ['uuid' => $cv->uuid]);
+        if (\Cache::has("cv-rewrite-running:{$cv->id}")) {
+            \Log::info('[dispatch] cv job running now, skipping', ['uuid' => $cv->uuid]);
             return;
         }
 
-        Log::info('[dispatch] CV rewrite job dispatched', [
+        \Log::info('[dispatch] CV rewrite job dispatching', [
             'cv_id' => $cv->id,
             'uuid'  => $cv->uuid,
         ]);
 
-        // No ->onQueue() — the job's own constructor sets 'cv-rewrite'.
-        GenerateCvRewriteJob::dispatch($cv->id);
+        // Take the lock BEFORE dispatch — blocks a rapid kick() from duplicating.
+        \Cache::put("cv-rewrite-running:{$cv->id}", true, 300);
+
+        try {
+            GenerateCvRewriteJob::dispatch($cv->id);
+        } catch (\Throwable $e) {
+            // Dispatch failed — release the lock so kick() can recover later.
+            \Cache::forget("cv-rewrite-running:{$cv->id}");
+
+            \Log::error('[dispatch] cv dispatch failed', [
+                'cv_id' => $cv->id,
+                'uuid'  => $cv->uuid,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw $e;
+        }
     }
 
     protected function dispatchCoverLetterJob(Deposit $deposit): void

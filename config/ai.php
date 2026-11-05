@@ -171,10 +171,20 @@ return [
         'SG' => ['currency' => 'SGD', 'locale' => 'en_SG', 'timezone' => 'Asia/Singapore'],
     ],
 
-    'letter_gemini_keys' => [
-        // Order matters: index 0 is tried first, index 1 is fallback, etc.
-        'primary'   => env('GEMINI_LETTER_KEY_1'),
-        'fallbacks' => array_values(array_filter([
+
+    /*
+    |--------------------------------------------------------------------------
+    | Letter Generation — Multi-Provider Fallback Chain
+    |--------------------------------------------------------------------------
+    |
+    | The letter generator tries providers in this order. Each Gemini key is
+    | tried individually (round-robin style). If all Gemini keys fail, we
+    | move to OpenAI, then Claude.
+    |
+    */
+    'letter_providers' => [
+        'gemini_keys' => array_values(array_filter([
+            env('GEMINI_LETTER_KEY_1'),
             env('GEMINI_LETTER_KEY_2'),
             env('GEMINI_LETTER_KEY_3'),
             env('GEMINI_LETTER_KEY_4'),
@@ -182,8 +192,7 @@ return [
         ])),
     ],
 
-    'letter_gemini_model' => env('GEMINI_LETTER_MODEL', 'gemini-3.5-flash'),
-
+    'letter_gemini_model'    => env('GEMINI_LETTER_MODEL', 'gemini-3.5-flash'),
     'letter_gemini_endpoint' => 'https://generativelanguage.googleapis.com/v1beta/models',
 
 
