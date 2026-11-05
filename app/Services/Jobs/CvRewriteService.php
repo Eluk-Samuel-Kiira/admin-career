@@ -47,7 +47,7 @@ class CvRewriteService
 
             $words = str_word_count(strip_tags($html));
             if ($words < 150) {
-                throw new \Exception("AI returned too short a response ({$words} words).");
+                throw new \Exception("The CV Rewriter returned too short a response ({$words} words).");
             }
 
             // ── Fact check: every year in the output must come from the CV or the candidate's answers

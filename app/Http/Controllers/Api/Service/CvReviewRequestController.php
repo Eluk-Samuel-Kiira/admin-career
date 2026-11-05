@@ -918,6 +918,74 @@ class CvReviewRequestController extends Controller
         return response()->json(['success' => true, 'message' => 'Changes saved.']);
     }
 
+    /**
+     * Fallback when AI generation keeps failing: promote the last saved
+     * AI original (rewrite_content_original) to the current content,
+     * mark the request as generated, and let the user edit / download.
+     *
+     * Allowed when:
+     *   - rewrite_mode = 'ai'
+     *   - status = 'failed', OR status = 'generated' with empty content (corrupt)
+     *   - rewrite_content_original is not empty
+     */
+    public function promoteOriginal(Request $request, string $uuid): JsonResponse
+    {
+        $req = $this->findOwn($request, $uuid);
+        if (!$req) {
+            return response()->json(['success' => false, 'message' => 'Not found'], 404);
+        }
+
+        if ($req->rewrite_mode !== 'ai') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Not an AI rewrite request.',
+            ], 422);
+        }
+
+        $isFailed     = $req->status === 'failed';
+        $isCorruptGen = $req->status === 'generated' && empty($req->rewrite_content);
+
+        if (!$isFailed && !$isCorruptGen) {
+            return response()->json([
+                'success' => false,
+                'message' => "Cannot promote original from status '{$req->status}'.",
+            ], 422);
+        }
+
+        $original = $req->rewrite_content_original['html'] ?? null;
+        if (empty($original)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No original content is available to restore.',
+            ], 422);
+        }
+
+        $req->update([
+            'rewrite_content'        => ['html' => $original],
+            'status'                 => 'generated',
+            'rewrite_generated_at'   => now(),
+            'rewrite_error_message'  => null,
+            'rewrite_is_user_edited' => true,
+            'rewrite_user_edited_at' => now(),
+        ]);
+
+        \Log::info('CV rewrite: promoted original as fallback', [
+            'uuid'  => $req->uuid,
+            'user'  => $req->user_id,
+            'words' => str_word_count(strip_tags($original)),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Restored the last saved version. You can now edit it.',
+            'data'    => [
+                'status'                 => $req->status,
+                'rewrite_is_ready'       => $req->rewrite_is_ready,
+                'rewrite_is_user_edited' => $req->rewrite_is_user_edited,
+            ],
+        ]);
+    }
+
     // ── Reset to AI original ───────────────────────────────────
     public function resetEdited(Request $request, string $uuid): JsonResponse
     {
