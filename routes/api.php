@@ -136,6 +136,7 @@ Route::middleware(['verifycountry'])->group(function () {
         Route::post('/{uuid}/rewrite/regenerate',   [CvReviewRequestController::class, 'regenerate']);
         Route::post('/{uuid}/rewrite/save',         [CvReviewRequestController::class, 'saveEdited']);
         Route::post('/{uuid}/rewrite/reset',        [CvReviewRequestController::class, 'resetEdited']);
+        Route::post('/{uuid}/rewrite/promote-original', [CvReviewRequestController::class, 'promoteOriginal']);
         Route::post('/{uuid}/rewrite/complete',     [CvReviewRequestController::class, 'markComplete']);
         Route::get('/{uuid}/rewrite/download',      [CvReviewRequestController::class, 'download'])
             ->name('api.cv-review.rewrite.download');
