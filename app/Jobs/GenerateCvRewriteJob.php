@@ -11,6 +11,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 class GenerateCvRewriteJob implements ShouldQueue
@@ -28,25 +29,52 @@ class GenerateCvRewriteJob implements ShouldQueue
     public function handle(CvRewriteService $service): void
     {
         $req = CvReviewRequest::find($this->cvReviewRequestId);
-        if (!$req) return;
 
-        if ($req->status === 'generated') return;
-        if (!in_array($req->status, ['paid_ai', 'generating', 'failed'], true)) return;
+        if (!$req) {
+            \Log::warning('GenerateCvRewriteJob: CV not found', [
+                'id' => $this->cvReviewRequestId,
+            ]);
+            return;
+        }
 
-        // ── Lock so `kick()` knows not to re-dispatch while we run ──
+        // Already done — nothing to do.
+        if ($req->status === 'generated') {
+            \Log::info('GenerateCvRewriteJob: already generated, skipping', [
+                'uuid' => $req->uuid,
+            ]);
+            return;
+        }
+
+        // Only workable statuses.
+        if (!in_array($req->status, ['paid_ai', 'generating', 'failed'], true)) {
+            \Log::warning('GenerateCvRewriteJob: wrong status, skipping', [
+                'uuid'   => $req->uuid,
+                'status' => $req->status,
+            ]);
+            return;
+        }
+
+        // Take the lock (idempotent — kick()/webhook may have already set it).
+        // This blocks duplicate dispatches while we run.
         \Cache::put("cv-rewrite-running:{$req->id}", true, 300);
 
         try {
             $service->generate($req);
-        } catch (ConnectionException $e) {
-            throw $e;
-        } catch (Throwable $e) {
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            \Log::warning('GenerateCvRewriteJob: network error, will retry', [
+                'uuid'    => $req->uuid,
+                'attempt' => $this->attempts(),
+                'error'   => $e->getMessage(),
+            ]);
+            throw $e;   // finally still runs, then Laravel retries
+        } catch (\Throwable $e) {
             \Log::warning('GenerateCvRewriteJob: terminal failure', [
                 'uuid'    => $req->uuid,
                 'attempt' => $this->attempts(),
                 'error'   => $e->getMessage(),
             ]);
         } finally {
+            // ALWAYS release the lock — success, retry, or terminal failure.
             \Cache::forget("cv-rewrite-running:{$req->id}");
         }
     }
@@ -56,12 +84,15 @@ class GenerateCvRewriteJob implements ShouldQueue
         $req = CvReviewRequest::find($this->cvReviewRequestId);
         if (!$req) return;
 
-        // If the service already marked it 'failed' with a specific error, keep that.
-        // Only set our generic message if the status is still 'paid_ai'/'generating'.
+        // If the job was killed mid-run, the finally block might not have fired.
+        \Cache::forget("cv-rewrite-running:{$req->id}");
+
+        // Only set a generic message if the service didn't already mark it failed.
         if (in_array($req->status, ['paid_ai', 'generating'], true)) {
             $req->update([
                 'status'                => 'failed',
-                'rewrite_error_message' => 'Generation failed after multiple attempts. Please try again.',
+                'rewrite_error_message' => $e?->getMessage()
+                    ?? 'Generation failed after multiple attempts. Please try again.',
             ]);
         }
     }

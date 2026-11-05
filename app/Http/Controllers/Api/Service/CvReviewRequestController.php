@@ -965,7 +965,9 @@ class CvReviewRequestController extends Controller
     public function regenerate(Request $request, string $uuid): JsonResponse
     {
         $req = $this->findOwn($request, $uuid);
-        if (!$req) return response()->json(['success' => false, 'message' => 'Not found'], 404);
+        if (!$req) {
+            return response()->json(['success' => false, 'message' => 'Not found'], 404);
+        }
 
         if ($req->rewrite_mode !== 'ai') {
             return response()->json(['success' => false, 'message' => 'Not an AI rewrite request.'], 422);
@@ -978,8 +980,7 @@ class CvReviewRequestController extends Controller
             ], 422);
         }
 
-        // Only increment regeneration_count when the user is retrying
-        // an already-generated CV, not when the system failed and they're retrying
+        // User-initiated retry after a successful generation consumes budget.
         if ($req->status === 'generated' && !empty($req->rewrite_generated_at)) {
             if ($req->rewrite_regeneration_count >= $req->rewrite_max_regenerations) {
                 return response()->json([
@@ -988,10 +989,13 @@ class CvReviewRequestController extends Controller
                 ], 422);
             }
             $req->increment('rewrite_regeneration_count');
-            $req->update(['rewrite_is_user_edited' => false, 'rewrite_user_edited_at' => null]);
+            $req->update([
+                'rewrite_is_user_edited' => false,
+                'rewrite_user_edited_at' => null,
+            ]);
         }
 
-        // Always reset state on retry
+        // Reset to a clean "waiting for the job" state.
         $req->update([
             'status'                => 'paid_ai',
             'rewrite_error_message' => null,
@@ -999,13 +1003,33 @@ class CvReviewRequestController extends Controller
             'rewrite_generated_at'  => null,
         ]);
 
-        GenerateCvRewriteJob::dispatch($req->id);
+        // ── Take the lock BEFORE dispatch ───────────────────────
+        // Prevents a simultaneous kick() from double-dispatching.
+        \Cache::put("cv-rewrite-running:{$req->id}", true, 300);
+
+        try {
+            GenerateCvRewriteJob::dispatch($req->id);
+        } catch (\Throwable $e) {
+            \Cache::forget("cv-rewrite-running:{$req->id}");
+
+            \Log::error('[regenerate] dispatch failed', [
+                'uuid'  => $req->uuid,
+                'id'    => $req->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Could not start generation: ' . $e->getMessage(),
+            ], 500);
+        }
 
         return response()->json([
             'success' => true,
             'message' => 'Generating your rewritten CV…',
         ]);
     }
+    
 
     // ── Save edits (TinyMCE) ────────────────────────────────────
     public function saveEdited(Request $request, string $uuid): JsonResponse
