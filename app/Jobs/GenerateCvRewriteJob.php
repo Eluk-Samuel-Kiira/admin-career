@@ -33,26 +33,21 @@ class GenerateCvRewriteJob implements ShouldQueue
         if ($req->status === 'generated') return;
         if (!in_array($req->status, ['paid_ai', 'generating', 'failed'], true)) return;
 
-        // If it's failed but the error was transient and retries remain, allow re-attempt
-        if ($req->status === 'failed' && $req->rewrite_error_message) {
-            $isTransient = (bool) preg_match('/\b(503|429|UNAVAILABLE|high demand|timeout|quota)\b/i', $req->rewrite_error_message);
-            if (!$isTransient || $this->attempts() > $this->tries) {
-                return;   // terminal, don't retry
-            }
-        }
+        // ── Lock so `kick()` knows not to re-dispatch while we run ──
+        \Cache::put("cv-rewrite-running:{$req->id}", true, 300);
 
         try {
             $service->generate($req);
-        } catch (\Illuminate\Http\Client\ConnectionException $e) {
-            // Network — let the queue retry
+        } catch (ConnectionException $e) {
             throw $e;
-        } catch (\Throwable $e) {
-            // Terminal — log, service has already set status='failed'
-            Log::warning('GenerateCvRewriteJob: terminal failure', [
+        } catch (Throwable $e) {
+            \Log::warning('GenerateCvRewriteJob: terminal failure', [
                 'uuid'    => $req->uuid,
                 'attempt' => $this->attempts(),
                 'error'   => $e->getMessage(),
             ]);
+        } finally {
+            \Cache::forget("cv-rewrite-running:{$req->id}");
         }
     }
 

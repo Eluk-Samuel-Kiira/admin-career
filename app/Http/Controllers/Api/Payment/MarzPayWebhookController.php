@@ -4,12 +4,16 @@ namespace App\Http\Controllers\Api\Payment;
 
 use App\Http\Controllers\Controller;
 use App\Models\Deposit;
-use App\Models\Subscription\PaymentWebhook;
 use App\Models\Service\CvReviewRequest;
+use App\Models\Service\LetterRequest;
+use App\Models\Subscription\PaymentWebhook;
 use App\Services\Payment\MarzPayService;
 use App\Services\Payment\PaymentTransactionService;
+use App\Jobs\GenerateCvRewriteJob;
+use App\Jobs\GenerateLetterJob;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -20,6 +24,19 @@ class MarzPayWebhookController extends Controller
         protected PaymentTransactionService $transactionService,
     ) {}
 
+    /**
+     * POST /api/payments/marzpay/webhook
+     *
+     * MarzPay calls this endpoint on every collection event. We:
+     *   1. Log every call (audit row in payment_webhooks).
+     *   2. Find the matching deposit.
+     *   3. Idempotently flip the deposit + domain row inside a transaction.
+     *   4. Dispatch follow-up jobs AFTER the transaction commits.
+     *
+     * Never dispatch a job inside DB::transaction(): a rollback would
+     * silently delete the job row from `jobs`, leaving the domain row
+     * stuck in "paid_ai" with no worker to advance it.
+     */
     public function handle(Request $request): Response
     {
         $payload   = $request->all();
@@ -60,8 +77,7 @@ class MarzPayWebhookController extends Controller
                 'reference'  => $reference,
                 'event_type' => $eventType,
             ]);
-            // Return 200: MarzPay retrying won't help — this is a data problem
-            // on our side. We still have the webhook row for reconciliation.
+            // 200 — MarzPay retrying won't help. We have the audit row.
             return response('unknown reference', 200);
         }
 
@@ -75,7 +91,6 @@ class MarzPayWebhookController extends Controller
 
         $deposit = $candidates->first();
 
-        // Restore a soft-deleted deposit so downstream work isn't orphaned
         if (method_exists($deposit, 'trashed') && $deposit->trashed()) {
             Log::warning('MarzPay webhook: restoring soft-deleted deposit', [
                 'reference'  => $reference,
@@ -85,8 +100,7 @@ class MarzPayWebhookController extends Controller
         }
 
         // ─────────────────────────────────────────────────────────────
-        // Only act on terminal statuses. Ignore anything else (pending,
-        // processing) with a 200 so MarzPay stops retrying.
+        // Only act on terminal statuses.
         // ─────────────────────────────────────────────────────────────
         $webhookStatus = $payload['transaction']['status'] ?? null;
 
@@ -100,8 +114,7 @@ class MarzPayWebhookController extends Controller
         }
 
         // ─────────────────────────────────────────────────────────────
-        // Idempotency: if the deposit is already in the target state,
-        // don't re-process. Prevents duplicate transaction logs on retry.
+        // Idempotency: deposit already in the target state?
         // ─────────────────────────────────────────────────────────────
         $alreadyFinal = ($webhookStatus === 'completed' && $deposit->status === 'completed')
                      || ($webhookStatus === 'failed'    && $deposit->status === 'failed');
@@ -115,8 +128,7 @@ class MarzPayWebhookController extends Controller
         }
 
         // ─────────────────────────────────────────────────────────────
-        // Amount sanity check. MarzPay adds its fee on top, so the
-        // webhook amount should be >= what we charged (never below).
+        // Amount sanity check.
         // ─────────────────────────────────────────────────────────────
         $webhookAmount = (float) ($payload['transaction']['amount']['raw'] ?? 0);
 
@@ -142,7 +154,8 @@ class MarzPayWebhookController extends Controller
         }
 
         // ─────────────────────────────────────────────────────────────
-        // Apply the change
+        // Commit the deposit + domain row inside a transaction.
+        // NOTE: NO job dispatch happens in here. See dispatchFollowUpJobs().
         // ─────────────────────────────────────────────────────────────
         try {
             DB::transaction(function () use ($deposit, $payload, $webhookStatus) {
@@ -168,27 +181,6 @@ class MarzPayWebhookController extends Controller
 
                     // Flip the domain row (CV review, cover letter, etc.)
                     $this->activate($deposit->fresh());
-
-                    // Dispatch generation for letters that just became paid
-                    if ($deposit->purpose_type === 'cover_letter') {
-                        $letter = \App\Models\Service\LetterRequest::where('uuid', $deposit->purpose_reference)->first();
-                        if ($letter && $letter->status === 'paid') {
-                            \App\Jobs\GenerateLetterJob::dispatch($letter->id)->onQueue('default');
-                        }
-                    }
-
-                    if ($webhookStatus === 'completed' && $deposit->purpose_type === 'cv_review') {
-                        $cv = CvReviewRequest::where('uuid', $deposit->purpose_reference)->first();
-                        if ($cv
-                            && $cv->rewrite_mode === 'ai'
-                            && $cv->status === 'paid_ai'
-                            && empty($cv->rewrite_generated_at)
-                            && empty($cv->rewrite_error_message)
-                        ) {
-                            \App\Jobs\GenerateCvRewriteJob::dispatch($cv->id)->onQueue('letters');
-                        }
-                    }
-
                 } else {
                     // 'failed'
                     $reason = $collection['failure_reason']
@@ -197,9 +189,7 @@ class MarzPayWebhookController extends Controller
 
                     $deposit->update([
                         'status' => 'failed',
-                        'notes'  => trim(
-                            ($deposit->notes ?? '') . "\n" . $reason
-                        ),
+                        'notes'  => trim(($deposit->notes ?? '') . "\n" . $reason),
                     ]);
                 }
             });
@@ -210,8 +200,27 @@ class MarzPayWebhookController extends Controller
                 'error'      => $e->getMessage(),
                 'trace'      => $e->getTraceAsString(),
             ]);
-            // 500 → MarzPay retries. Only transient errors should reach here.
+            // 500 — MarzPay retries. Only transient errors should reach here.
             return response('processing error', 500);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // Dispatch follow-up jobs AFTER the transaction has committed.
+        // Dispatch failures here are non-fatal: the deposit is committed
+        // and the user can recover via /kick on the next page load.
+        // ─────────────────────────────────────────────────────────────
+        if ($webhookStatus === 'completed') {
+            try {
+                $this->dispatchFollowUpJobs($deposit->fresh());
+            } catch (\Throwable $e) {
+                Log::error('MarzPay webhook: dispatch failed (non-fatal)', [
+                    'reference'  => $reference,
+                    'deposit_id' => $deposit->id,
+                    'error'      => $e->getMessage(),
+                ]);
+                // Return 200 anyway — a webhook retry would create
+                // duplicate jobs once the queue recovers.
+            }
         }
 
         // Mark the webhook row processed for audit
@@ -236,40 +245,9 @@ class MarzPayWebhookController extends Controller
         return response('ok', 200);
     }
 
-    public function update(Request $request, $uuid)
-    {
-        if (!Session::has('user')) {
-            return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
-        }
-
-        // Forward to the main app's update endpoint
-        $params = $request->only(['job_title', 'company_name']);
-
-        $files = [];
-        if ($request->hasFile('cv_file')) {
-            $files['cv_file'] = $request->file('cv_file');
-        }
-
-        $response = $this->countryService->api(
-            "letters/{$uuid}/update",
-            $params,
-            'POST',      // or 'PUT' — see main app below
-            0,
-            false,
-            $files
-        );
-
-        return response()->json(
-            $response,
-            ($response['success'] ?? false) ? 200 : ($response['status'] ?? 422)
-        );
-    }
-
-
-
     /**
      * Flip the domain row that this deposit paid for.
-     * Add one match arm per new service.
+     * Does NOT dispatch any job. Handled by dispatchFollowUpJobs().
      */
     protected function activate(Deposit $deposit): void
     {
@@ -278,42 +256,172 @@ class MarzPayWebhookController extends Controller
         }
 
         match ($deposit->purpose_type) {
-            'cv_review' => (function () use ($deposit) {
-                $cv = CvReviewRequest::where('uuid', $deposit->purpose_reference)->first();
-                if (!$cv) return;
-
-                if ($cv->rewrite_mode === 'ai') {
-                    $cv->update([
-                        'status'            => 'paid_ai',
-                        'payment_reference' => $deposit->deposit_ref,
-                    ]);
-                    \App\Jobs\GenerateCvRewriteJob::dispatch($cv->id)->onQueue('letters');
-                } else {
-                    // HR expert path — existing workflow
-                    $cv->update([
-                        'status'            => 'paid_human',
-                        'payment_reference' => $deposit->deposit_ref,
-                    ]);
-                }
-            })(),
-
-            'cover_letter' => \App\Models\Service\LetterRequest::where('uuid', $deposit->purpose_reference)
-                ->whereIn('status', ['pending_payment'])
-                ->update([
-                    'status'            => 'paid',
-                    'payment_reference' => $deposit->deposit_ref,
-                    'paid_at'           => now(),
-                ]),
-
-            // Ready for when you build these:
-            //                         ->first()?->markPaid($deposit->deposit_ref),
-            // 'job_submission' => JobSubmission::where('uuid', $deposit->purpose_reference)
-            //                         ->first()?->markPaid($deposit->deposit_ref),
-            // 'subscription'   => Subscription::where('uuid', $deposit->purpose_reference)
-            //                         ->first()?->activateFromDeposit($deposit),
-
+            'cv_review' => $this->activateCvReview($deposit),
+            'cover_letter' => $this->activateCoverLetter($deposit),
             default => null,
         };
+    }
+
+    protected function activateCvReview(Deposit $deposit): void
+    {
+        $cv = CvReviewRequest::where('uuid', $deposit->purpose_reference)->first();
+        if (!$cv) {
+            Log::warning('[activate] cv_review not found', [
+                'deposit_ref' => $deposit->deposit_ref,
+                'uuid'        => $deposit->purpose_reference,
+            ]);
+            return;
+        }
+
+        // Don't downgrade an already-advanced row.
+        if (in_array($cv->status, ['generated', 'generating', 'completed'], true)) {
+            Log::info('[activate] cv already advanced, skipping', [
+                'uuid'   => $cv->uuid,
+                'status' => $cv->status,
+            ]);
+            return;
+        }
+
+        $newStatus = $cv->rewrite_mode === 'ai' ? 'paid_ai' : 'paid_human';
+
+        $cv->update([
+            'status'            => $newStatus,
+            'payment_reference' => $deposit->deposit_ref,
+        ]);
+
+        Log::info('[activate] cv status flipped', [
+            'uuid'   => $cv->uuid,
+            'status' => $newStatus,
+            'mode'   => $cv->rewrite_mode,
+        ]);
+    }
+
+    protected function activateCoverLetter(Deposit $deposit): void
+    {
+        $letter = LetterRequest::where('uuid', $deposit->purpose_reference)
+            ->whereIn('status', ['pending_payment'])
+            ->first();
+
+        if (!$letter) {
+            Log::info('[activate] cover_letter not in pending_payment', [
+                'uuid' => $deposit->purpose_reference,
+            ]);
+            return;
+        }
+
+        $letter->update([
+            'status'            => 'paid',
+            'payment_reference' => $deposit->deposit_ref,
+            'paid_at'           => now(),
+        ]);
+
+        Log::info('[activate] letter status flipped', [
+            'uuid'   => $letter->uuid,
+            'status' => 'paid',
+        ]);
+    }
+
+    /**
+     * After the payment transaction commits, decide whether a follow-up
+     * generation job is needed and dispatch it idempotently.
+     *
+     * Idempotency rules:
+     *   - Skip if the domain row already reached a post-generation state.
+     *   - Skip if the job is already in the queue (webhook retry safety).
+     *   - Skip if a running-lock is set (worker is currently processing).
+     */
+    protected function dispatchFollowUpJobs(Deposit $deposit): void
+    {
+        match ($deposit->purpose_type) {
+            'cv_review'    => $this->dispatchCvRewriteJob($deposit),
+            'cover_letter' => $this->dispatchCoverLetterJob($deposit),
+            default        => null,
+        };
+    }
+
+    protected function dispatchCvRewriteJob(Deposit $deposit): void
+    {
+        $cv = CvReviewRequest::where('uuid', $deposit->purpose_reference)->first();
+        if (!$cv) {
+            return;
+        }
+
+        // Only AI-mode CVs get an automatic rewrite job.
+        if ($cv->rewrite_mode !== 'ai') {
+            return;
+        }
+
+        // Must be in paid_ai (set by activate()).
+        if ($cv->status !== 'paid_ai') {
+            Log::info('[dispatch] cv status not paid_ai, skipping', [
+                'uuid'   => $cv->uuid,
+                'status' => $cv->status,
+            ]);
+            return;
+        }
+
+        // Already queued? Skip (webhook retry safety).
+        $isQueued = $this->isJobQueued('cv-rewrite', '"cvReviewRequestId":' . $cv->id);
+        if ($isQueued) {
+            Log::info('[dispatch] cv job already queued, skipping', ['uuid' => $cv->uuid]);
+            return;
+        }
+
+        // Currently running? Skip.
+        if (Cache::has("cv-rewrite-running:{$cv->id}")) {
+            Log::info('[dispatch] cv job running now, skipping', ['uuid' => $cv->uuid]);
+            return;
+        }
+
+        Log::info('[dispatch] CV rewrite job dispatched', [
+            'cv_id' => $cv->id,
+            'uuid'  => $cv->uuid,
+        ]);
+
+        // No ->onQueue() — the job's own constructor sets 'cv-rewrite'.
+        GenerateCvRewriteJob::dispatch($cv->id);
+    }
+
+    protected function dispatchCoverLetterJob(Deposit $deposit): void
+    {
+        $letter = LetterRequest::where('uuid', $deposit->purpose_reference)->first();
+        if (!$letter) {
+            return;
+        }
+
+        if ($letter->status !== 'paid') {
+            return;
+        }
+
+        if (!empty($letter->generated_at)) {
+            return;
+        }
+
+        // Already queued? Skip.
+        $isQueued = $this->isJobQueued('default', '"letterRequestId":' . $letter->id);
+        if ($isQueued) {
+            Log::info('[dispatch] letter job already queued, skipping', ['uuid' => $letter->uuid]);
+            return;
+        }
+
+        Log::info('[dispatch] letter job dispatched', [
+            'letter_id' => $letter->id,
+            'uuid'      => $letter->uuid,
+        ]);
+
+        GenerateLetterJob::dispatch($letter->id)->onQueue('default');
+    }
+
+    /**
+     * Does the `jobs` table already contain a job whose serialized payload
+     * contains the given needle? Cheap and reliable enough for idempotency.
+     */
+    protected function isJobQueued(string $queue, string $needle): bool
+    {
+        return DB::table('jobs')
+            ->where('queue', $queue)
+            ->where('payload', 'like', '%' . $needle . '%')
+            ->exists();
     }
 
     protected function toCents($raw, Deposit $deposit): int

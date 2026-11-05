@@ -20,7 +20,7 @@ use Illuminate\Support\Str;
 
 // ── EDIT THIS — the deposit you want to mark paid ─────────────
 if (!isset($depositRef) || !$depositRef) {
-    $depositRef = '50266a7a-544d-440e-b2cb-a13e8cf40fbb';
+    $depositRef = '66dd5e8a-e56b-4a8b-abf1-8a98634637a6';
 }
 // ──────────────────────────────────────────────────────────────
 
@@ -254,7 +254,7 @@ if ($jobDispatched) {
             Log::info("[{$runId}] dispatching GenerateCvRewriteJob", ['id' => $jobDispatched['id']]);
             echo "[debug] calling GenerateCvRewriteJob::dispatch({$jobDispatched['id']})...\n";
 
-            $job = GenerateCvRewriteJob::dispatch($jobDispatched['id'])->onQueue('letters');
+            $job = GenerateCvRewriteJob::dispatch($jobDispatched['id']);
 
             Log::info("[{$runId}] GenerateCvRewriteJob dispatched", [
                 'returned_class' => get_class($job),
@@ -278,7 +278,7 @@ if ($jobDispatched) {
         }
 
         // ── Verify the row is actually in the jobs table ────────
-        $queue = $jobDispatched['type'] === 'cv_rewrite' ? 'letters' : 'default';
+        $queue = $jobDispatched['type'] === 'cv_rewrite' ? 'cv-rewrite' : 'default';
         $count = DB::table('jobs')->where('queue', $queue)->count();
         Log::info("[{$runId}] jobs table check", ['queue' => $queue, 'count' => $count]);
         echo "[debug] jobs on '{$queue}': {$count}\n";

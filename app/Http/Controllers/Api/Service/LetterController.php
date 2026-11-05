@@ -402,82 +402,82 @@ class LetterController extends Controller
         ]);
     }
 
-    public function generate(LetterRequest $request): void
-    {
-        $t0  = microtime(true);
-        $tag = "[letter:{$request->uuid}]";
+    // public function generate(LetterRequest $request): void
+    // {
+    //     $t0  = microtime(true);
+    //     $tag = "[letter:{$request->uuid}]";
 
-        $request->update(['status' => 'processing', 'error_message' => null]);
+    //     $request->update(['status' => 'processing', 'error_message' => null]);
 
-        Log::info("{$tag} generate() START", [
-            'cv_source'   => $request->cv_source,
-            'cv_path'     => $request->cv_path,
-            'letter_type' => $request->letter_type,
-        ]);
+    //     Log::info("{$tag} generate() START", [
+    //         'cv_source'   => $request->cv_source,
+    //         'cv_path'     => $request->cv_path,
+    //         'letter_type' => $request->letter_type,
+    //     ]);
 
-        try {
-            // 1. Extract
-            Log::info("{$tag} STEP 1 extracting CV");
-            $cvText = $this->resolveCvText($request);
+    //     try {
+    //         // 1. Extract
+    //         Log::info("{$tag} STEP 1 extracting CV");
+    //         $cvText = $this->resolveCvText($request);
 
-            Log::info("{$tag} STEP 1 done", [
-                'chars' => strlen($cvText),
-                'words' => str_word_count($cvText),
-                'secs'  => round(microtime(true) - $t0, 2),
-            ]);
+    //         Log::info("{$tag} STEP 1 done", [
+    //             'chars' => strlen($cvText),
+    //             'words' => str_word_count($cvText),
+    //             'secs'  => round(microtime(true) - $t0, 2),
+    //         ]);
 
-            if ($cvText === '' || !$this->isPlausibleCv($cvText)) {
-                throw new \Exception(
-                    'We could not read your CV. It may be a scanned image, password-protected, or not a CV. '
-                    . 'Please upload a PDF or Word version of your actual CV and try again.'
-                );
-            }
+    //         if ($cvText === '' || !$this->isPlausibleCv($cvText)) {
+    //             throw new \Exception(
+    //                 'We could not read your CV. It may be a scanned image, password-protected, or not a CV. '
+    //                 . 'Please upload a PDF or Word version of your actual CV and try again.'
+    //             );
+    //         }
 
-            // 2. Job context
-            $jobContext = [
-                'job_title'       => $request->job_title,
-                'company_name'    => $request->company_name,
-                'job_description' => $this->resolveJobDescription($request),
-            ];
+    //         // 2. Job context
+    //         $jobContext = [
+    //             'job_title'       => $request->job_title,
+    //             'company_name'    => $request->company_name,
+    //             'job_description' => $this->resolveJobDescription($request),
+    //         ];
 
-            // 3. Single AI attempt
-            Log::info("{$tag} STEP 2 calling AI (single attempt)");
-            $aiStart = microtime(true);
-            $html = $this->ai->generateLetterOnce($cvText, $jobContext, $request->letter_type);
-            Log::info("{$tag} STEP 2 AI done", [
-                'secs'  => round(microtime(true) - $aiStart, 2),
-                'words' => str_word_count(strip_tags($html)),
-            ]);
+    //         // 3. Single AI attempt
+    //         Log::info("{$tag} STEP 2 calling AI (single attempt)");
+    //         $aiStart = microtime(true);
+    //         $html = $this->ai->generateLetterOnce($cvText, $jobContext, $request->letter_type);
+    //         Log::info("{$tag} STEP 2 AI done", [
+    //             'secs'  => round(microtime(true) - $aiStart, 2),
+    //             'words' => str_word_count(strip_tags($html)),
+    //         ]);
 
-            // 4. Persist
-            $request->update([
-                'content'      => $html,
-                'status'       => 'generated',
-                'generated_at' => now(),
-            ]);
+    //         // 4. Persist
+    //         $request->update([
+    //             'content'      => $html,
+    //             'status'       => 'generated',
+    //             'generated_at' => now(),
+    //         ]);
 
-            Log::info("{$tag} generate() COMPLETE", [
-                'total_secs' => round(microtime(true) - $t0, 2),
-            ]);
+    //         Log::info("{$tag} generate() COMPLETE", [
+    //             'total_secs' => round(microtime(true) - $t0, 2),
+    //         ]);
 
-        } catch (\Throwable $e) {
-            Log::warning("{$tag} generate() FAILED", [
-                'elapsed_secs' => round(microtime(true) - $t0, 2),
-                'class'        => get_class($e),
-                'message'      => $e->getMessage(),
-            ]);
+    //     } catch (\Throwable $e) {
+    //         Log::warning("{$tag} generate() FAILED", [
+    //             'elapsed_secs' => round(microtime(true) - $t0, 2),
+    //             'class'        => get_class($e),
+    //             'message'      => $e->getMessage(),
+    //         ]);
 
-            $request->update([
-                'status'        => 'failed',
-                'error_message' => $e->getMessage(),
-            ]);
+    //         $request->update([
+    //             'status'        => 'failed',
+    //             'error_message' => $e->getMessage(),
+    //         ]);
 
-            throw $e;
+    //         throw $e;
 
-        } finally {
-            $this->cleanupTempCv($request);
-        }
-    }
+    //     } finally {
+    //         $this->cleanupTempCv($request);
+    //     }
+    // }
 
     public function updateInputs(Request $request, string $uuid): JsonResponse
     {

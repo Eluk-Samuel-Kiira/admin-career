@@ -93,17 +93,28 @@ class CvReviewRequestController extends Controller
         ]);
     }
 
-    // =================================================================
-    // STORE
-    // =================================================================
+    /**
+     * Submit request to the API.
+     */
     public function store(Request $request): JsonResponse
     {
+        // \Log::info('CV review API — received', [
+        //     'job_source'             => $request->input('job_source'),
+        //     'job_post_id'            => $request->input('job_post_id'),
+        //     'target_job_title'       => $request->input('target_job_title'),
+        //     'target_company_name'    => $request->input('target_company_name'),
+        //     'desc_len'               => strlen((string) $request->input('target_job_description', '')),
+        // ]);
+
+        // die();
+
+
         $user = $request->user();
         if (!$user) {
             return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
         }
 
-        // ── Limit check ──────────────────────────────────────────────
+        // ── Limit check ──────────────────────────────────────────
         $activeCount = CvReviewRequest::where('user_id', $user->id)
             ->whereNotIn('status', ['paid', 'completed'])
             ->count();
@@ -118,11 +129,15 @@ class CvReviewRequestController extends Controller
             ], 422);
         }
 
+        // ── Validation ────────────────────────────────────────────
         $request->validate([
             'cv_file'                => 'nullable|file|mimes:pdf,doc,docx|max:10240',
             'existing_cv_path'       => 'nullable|string',
+            'job_source'             => 'nullable|in:db,manual,paste,none',
+            'job_post_id'            => 'nullable|integer|exists:job_posts,id',
             'target_job_title'       => 'nullable|string|max:255',
-            'target_job_description' => 'nullable|string|max:10000',
+            'target_company_name'    => 'nullable|string|max:255',
+            'target_job_description' => 'nullable|string|max:20000',
             'country_code'           => 'nullable|string|size:2',
         ]);
 
@@ -133,6 +148,10 @@ class CvReviewRequestController extends Controller
             ], 422);
         }
 
+        // ── Resolve job context (DB / manual / paste / none) ──────
+        [$targetTitle, $targetCompany, $targetDescription] =
+            $this->resolveTargetJob($request);
+
         $service = Service::where('key', 'cv_review')->where('is_active', true)->firstOrFail();
 
         $countryCode = strtoupper(
@@ -142,7 +161,6 @@ class CvReviewRequestController extends Controller
         );
 
         $price = $this->pricing->priceFor('cv_review', $countryCode);
-
         if ($price === null) {
             return response()->json([
                 'success' => false,
@@ -165,8 +183,8 @@ class CvReviewRequestController extends Controller
                 'country_code'           => $countryCode,
                 'currency_id'            => $currency->id,
                 'amount_cents'           => $price['amount_cents'],
-                'target_job_title'       => $request->input('target_job_title'),
-                'target_job_description' => $request->input('target_job_description'),
+                'target_job_title'       => $targetTitle,
+                'target_job_description' => $targetDescription,   // ← now includes skills + qualifications
                 'original_cv_path'       => $path,
                 'original_cv_name'       => $originalName,
                 'ai_gap_review'          => null,
@@ -197,6 +215,100 @@ class CvReviewRequestController extends Controller
                 'message' => 'Failed to submit request: ' . $e->getMessage(),
             ], 500);
         }
+    }
+
+    /**
+     * Resolve job context from the request:
+     *  - db:     load the JobPost and merge description + responsibilities + qualifications + skills
+     *  - manual: use provided title + company
+     *  - paste:  use provided title + description
+     *  - none:   all nulls (general review)
+     *
+     * @return array{0: ?string, 1: ?string, 2: ?string}  [title, company, description]
+     */
+    protected function resolveTargetJob(Request $request): array
+    {
+        $source = $request->input('job_source', 'none');
+
+        if ($source === 'db' && $request->filled('job_post_id')) {
+            $job = \App\Models\Job\JobPost::with('company:id,name')->find($request->input('job_post_id'));
+
+            if ($job) {
+                $sections = array_filter([
+                    !empty($job->job_description)
+                        ? trim(strip_tags((string) $job->job_description))
+                        : null,
+                    !empty($job->responsibilities)
+                        ? "Key Responsibilities:\n" . trim(strip_tags((string) $job->responsibilities))
+                        : null,
+                    !empty($job->qualifications)
+                        ? "Qualifications & Requirements:\n" . trim(strip_tags((string) $job->qualifications))
+                        : null,
+                    !empty($job->skills)
+                        ? "Required Skills:\n" . trim(strip_tags((string) $job->skills))
+                        : null,
+                ]);
+
+                return [
+                    $job->job_title,
+                    optional($job->company)->name,
+                    implode("\n\n", $sections) ?: null,
+                ];
+            }
+            // Fall through to manual if job_post_id was invalid (shouldn't happen — validated)
+        }
+
+        if ($source === 'manual') {
+            return [
+                $request->input('target_job_title'),
+                $request->input('target_company_name'),
+                null,
+            ];
+        }
+
+        if ($source === 'paste') {
+            return [
+                $request->input('target_job_title'),
+                $request->input('target_company_name'),
+                $request->input('target_job_description'),
+            ];
+        }
+
+        return [null, null, null];
+    }
+
+    /**
+     * Search active job posts for the CV review picker.
+     */
+    public function searchJobs(Request $request): JsonResponse
+    {
+        $q = trim((string) $request->get('q', ''));
+        if (mb_strlen($q) < 2) {
+            return response()->json(['success' => true, 'data' => []]);
+        }
+
+        $countryCode = strtoupper($request->header('X-Country-Code') ?: 'UG');
+
+        $jobs = \App\Models\Job\JobPost::with('company:id,name')
+            ->where('is_active', true)
+            ->where('country_code', $countryCode)
+            ->where(function ($query) use ($q) {
+                $query->where('job_title', 'like', "%{$q}%")
+                    ->orWhereHas('company', fn ($cq) => $cq->where('name', 'like', "%{$q}%"));
+            })
+            ->orderByDesc('updated_at')
+            ->limit(30)
+            ->get(['id', 'job_title', 'company_id', 'country_code']);
+
+        return response()->json([
+            'success' => true,
+            'data'    => $jobs->map(fn ($j) => [
+                'id'        => $j->id,
+                'job_title' => $j->job_title,
+                'company'   => optional($j->company)->name,
+                'label'     => $j->job_title . ' — ' . (optional($j->company)->name ?? 'Company'),
+            ]),
+        ]);
     }
 
     // =================================================================
@@ -887,7 +999,7 @@ class CvReviewRequestController extends Controller
             'rewrite_generated_at'  => null,
         ]);
 
-        GenerateCvRewriteJob::dispatch($req->id)->onQueue('letters');
+        GenerateCvRewriteJob::dispatch($req->id);
 
         return response()->json([
             'success' => true,
@@ -1042,4 +1154,111 @@ class CvReviewRequestController extends Controller
             ->where('user_id', $request->user()->id)
             ->first();
     }
+
+
+    /**
+     * POST /api/cv-review/{uuid}/kick
+     *
+     * Called by the proxy on every show load when status is paid_ai/generating.
+     * Idempotent: only re-dispatches if the row looks genuinely stuck.
+     */
+    public function kick(Request $request, string $uuid): JsonResponse
+    {
+        $user = $request->user();
+
+        $cv = CvReviewRequest::where('uuid', $uuid)
+            ->where('user_id', $user->id)
+            ->first();
+
+        if (!$cv) {
+            return response()->json(['success' => false, 'message' => 'Not found'], 404);
+        }
+
+        // Only act on in-progress states
+        if (!in_array($cv->status, ['paid_ai', 'generating'], true)) {
+            return response()->json([
+                'success' => true,
+                'kicked'  => false,
+                'reason'  => "status '{$cv->status}' not in-progress",
+                'status'  => $cv->status,
+            ]);
+        }
+
+        if ($cv->rewrite_mode !== 'ai') {
+            return response()->json([
+                'success' => true,
+                'kicked'  => false,
+                'reason'  => 'not an AI rewrite',
+                'status'  => $cv->status,
+            ]);
+        }
+
+        // ── Check queue + cache lock ─────────────────────────────
+        $isQueued = \DB::table('jobs')
+            ->where('queue', 'cv-rewrite')
+            ->where('payload', 'like', '%"cvReviewRequestId":' . $cv->id . '%')
+            ->exists();
+
+        $isRunning = \Cache::has("cv-rewrite-running:{$cv->id}");
+
+        if ($isQueued || $isRunning) {
+            return response()->json([
+                'success' => true,
+                'kicked'  => false,
+                'reason'  => $isRunning ? 'running' : 'already queued',
+                'status'  => $cv->status,
+            ]);
+        }
+
+        // ── Stuck: not queued, not running → re-dispatch ─────────
+        \Log::warning('[kick] re-dispatching stuck CV rewrite', [
+            'uuid'          => $cv->uuid,
+            'id'            => $cv->id,
+            'status'        => $cv->status,
+            'updated_at'    => $cv->updated_at?->toIso8601String(),
+            'regen_count'   => $cv->rewrite_regeneration_count,
+        ]);
+
+        // Reset the row to a clean "waiting for the job" state.
+        // Do NOT touch rewrite_regeneration_count — that's user retry budget.
+        $cv->update([
+            'status'                => 'paid_ai',
+            'rewrite_error_message' => null,
+            'rewrite_content'       => null,
+            'rewrite_generated_at'  => null,
+        ]);
+
+        // Take the lock BEFORE dispatch, so a second simultaneous kick
+        // sees "running" and returns cleanly.
+        \Cache::put("cv-rewrite-running:{$cv->id}", true, 300);
+
+        try {
+            \App\Jobs\GenerateCvRewriteJob::dispatch($cv->id);
+        } catch (\Throwable $e) {
+            // Dispatch failed — release the lock so a later kick can retry
+            \Cache::forget("cv-rewrite-running:{$cv->id}");
+
+            \Log::error('[kick] dispatch failed', [
+                'uuid'  => $cv->uuid,
+                'id'    => $cv->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'kicked'  => false,
+                'reason'  => 'dispatch failed: ' . $e->getMessage(),
+                'status'  => $cv->status,
+            ], 500);
+        }
+
+        return response()->json([
+            'success' => true,
+            'kicked'  => true,
+            'reason'  => 'dispatched',
+            'status'  => $cv->status,
+        ]);
+    }
+
+
 }
