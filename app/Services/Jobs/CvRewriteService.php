@@ -128,6 +128,16 @@ class CvRewriteService
         ?string $jobTitle,
         ?string $jobDesc
     ): string {
+        $sourceWords = str_word_count(strip_tags($cvText));
+        $answerWords = str_word_count(strip_tags($answers));
+        $combined    = max(1, $sourceWords + $answerWords);
+
+        // Realistic output-length target derived from what the source supports.
+        // Gemini can comfortably expand a CV to 1.2x–2x its source length using
+        // natural prose, but any more becomes padding or invention.
+        $targetMin = max(80,  min(400, (int) round($combined * 1.2)));
+        $targetMax = max($targetMin + 100, min(800, (int) round($combined * 2.0)));
+
         $answersBlock = $answers !== ''
             ? "ADDITIONAL INFORMATION FROM THE CANDIDATE (use it to fill CV gaps, never invent beyond this):\n{$answers}"
             : 'No additional information was provided.';
@@ -135,10 +145,8 @@ class CvRewriteService
         $jobBlock = '';
         if ($jobTitle || $jobDesc) {
             $cleanDesc = $jobDesc ? trim(strip_tags($jobDesc)) : '';
-
             $jobBlock = "\nTARGET JOB (what the CV must be tailored for):\n"
                 . "Title: " . ($jobTitle ?: '-') . "\n";
-
             if ($cleanDesc !== '') {
                 $jobBlock .= "\nFull job post (description, responsibilities, qualifications, skills):\n"
                     . $cleanDesc . "\n";
@@ -213,7 +221,7 @@ class CvRewriteService
             SECTION RULES
             - Section order is fixed: header, PROFESSIONAL SUMMARY, CORE SKILLS, PROFESSIONAL EXPERIENCE, EDUCATION, LANGUAGES, REFEREES.
             - Leave out any section the CV gives no content for, except PROFESSIONAL SUMMARY and PROFESSIONAL EXPERIENCE.
-            - PROFESSIONAL SUMMARY: one paragraph of 5 to 7 sentences. Open with the highest qualification and current role. Give years of experience, the scale of the current role, one measurable achievement with its number, and availability, only where the CV states them. Use personal traits only if the CV states them. No bullets.
+            - PROFESSIONAL SUMMARY: one paragraph of 3 to 7 sentences. Open with the highest qualification and current role. Give years of experience, the scale of the current role, one measurable achievement with its number, and availability, only where the CV states them. Use personal traits only if the CV states them. No bullets.
             - CORE SKILLS: 3 to 5 lines, each label in <strong>, skills separated by commas. Do not list languages here. If a target job is given, list the most relevant skills first.
             - PROFESSIONAL EXPERIENCE: reverse chronological. Job title in <h3>. Dates in the td.dates cell, copied from the CV, with an en dash between years and "Present" for current roles. Employer line in italic: employer, city, country. Then one paragraph per role, starting with a strong action verb. Convert bullets into one paragraph. Do not repeat sentences across roles. Do not add duties the CV does not give.
             - EDUCATION: reverse chronological. Qualification and grade in <h3>. Years in the dates cell, exactly as the CV gives them. If the CV gives only an end year, write only that year. Institution in italic. Add no paragraph unless the CV gives a real detail, such as a thesis or award.
@@ -223,7 +231,9 @@ class CvRewriteService
             STYLE RULES
             - Plain English. No emojis. Do not use the words "dynamic", "passionate", "leverage", "delve", or "synergy".
             - No em dashes (—). En dashes (–) only in date ranges.
-            - Target 500 to 800 words, excluding HTML tags.
+            - Target {$targetMin} to {$targetMax} words, excluding HTML tags. This is a guide, not a hard limit.
+            If the source CV contains fewer facts than needed to reach this target, write fewer words.
+            A short, honest CV beats a padded, invented one.
 
             Begin now. Output only the HTML.
             PROMPT;
