@@ -26,7 +26,7 @@ Route::get('/ping', function () {
 // ✅ Protected routes with middleware
 Route::middleware(['verifycountry'])->group(function () {
     
-    // Country route
+    Route::get('/countries',        [CountryController::class, 'index']);   // ← ADD THIS
     Route::get('/countries/{code}', [CountryController::class, 'show']);
     
     // Job routes - All in one controller
