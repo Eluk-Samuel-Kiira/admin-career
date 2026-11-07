@@ -14,6 +14,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use App\Models\Subscription\Subscription;
 use App\Models\Subscription\SubscriptionPayment;
+use App\Models\Service\CvReviewRequest;
+use App\Models\Service\LetterRequest;
 
 class DashboardController extends Controller
 {
@@ -224,26 +226,78 @@ class DashboardController extends Controller
         $hiredCount     = JobSeekerJob::where('seeker_profile_id', $profile->id)->where('is_got_job', true)->count();
         $rejectedCount  = JobSeekerJob::where('seeker_profile_id', $profile->id)->where('is_rejected', true)->count();
 
-        // ── AI feedback on applications (new)
-        $aiScreenedCount = JobSeekerJob::where('seeker_profile_id', $profile->id)
-            ->where('is_applied', true)
-            ->whereNotNull('ai_screened_at')
-            ->count();
+        
+        // ── Skill match preferences (from alert preferences) ───────────
+        $prefs = $profile->job_preferences ?? [];
 
-        $avgAiScore = JobSeekerJob::where('seeker_profile_id', $profile->id)
-            ->where('is_applied', true)
-            ->whereNotNull('ai_score')
-            ->avg('ai_score');
+        $skillMatchEnabled   = !empty($prefs['alert_by_skill_match']);
+        $skillMatchThreshold = (int) ($prefs['skill_match_threshold'] ?? 0);
+        $hasSkills           = is_array($profile->skills)
+                                ? count(array_filter($profile->skills)) > 0
+                                : trim((string) $profile->skills) !== '';
 
-        $strongYesCount = JobSeekerJob::where('seeker_profile_id', $profile->id)
-            ->where('is_applied', true)
-            ->where('ai_recommendation', 'strong_yes')
-            ->count();
+        // Show the threshold only when skill match is on AND the user has skills
+        $skillMatchConfigured = $skillMatchEnabled && $skillMatchThreshold > 0 && $hasSkills;
+
+        // Optional: count live jobs at or above the user's threshold so the
+        // number isn't just a setting, it's "here's what's waiting for you"
+        $skillMatchedJobs = 0;
+        if ($skillMatchConfigured) {
+            $matcher = app(\App\Services\Skills\SkillMatcher::class);
+            $matcherNormaliser = app(\App\Services\Skills\SkillNormaliser::class);
+
+            $seekerTokens = $matcherNormaliser->canonicalise($profile->skills);
+            $countryCode  = strtoupper($profile->preferred_country_code ?? $user->country_code ?? 'UG');
+
+            if (!empty($seekerTokens)) {
+                // Coarse pre-filter: any token appearing in skills/title/description
+                $candidates = \App\Models\Job\JobPost::where('is_active', true)
+                    ->where('country_code', $countryCode)
+                    ->where(function ($q) use ($seekerTokens) {
+                        foreach ($seekerTokens as $token) {
+                            $like = '%' . $token . '%';
+                            $q->orWhere('skills',          'LIKE', $like)
+                            ->orWhere('job_title',       'LIKE', $like)
+                            ->orWhere('job_description', 'LIKE', $like);
+                        }
+                    })
+                    ->limit(200)
+                    ->get();
+
+                $skillMatchedJobs = $candidates
+                    ->filter(fn ($job) => $matcher->score($profile, $job) >= $skillMatchThreshold)
+                    ->count();
+            }
+        }
+
 
         // ── Auto-apply (new)
         $autoAppliedCount = JobSeekerJob::where('seeker_profile_id', $profile->id)
             ->where('is_applied', true)
             ->where('notes', 'like', 'Auto-applied%')
+            ->count();
+
+        // ── CV review service (things the user bought or ran) ────────
+        $cvReviewsTotal = CvReviewRequest::where('user_id', $user->id)->count();
+
+        $cvReviewsCompleted = CvReviewRequest::where('user_id', $user->id)
+            ->whereIn('status', ['delivered', 'generated', 'completed'])
+            ->count();
+
+        $cvRewritesReady = CvReviewRequest::where('user_id', $user->id)
+            ->where('rewrite_mode', 'ai')
+            ->where('status', 'generated')
+            ->count();
+
+        // ── Cover / application letters ──────────────────────────────
+        $lettersTotal = LetterRequest::where('user_id', $user->id)->count();
+
+        $lettersGenerated = LetterRequest::where('user_id', $user->id)
+            ->where('status', 'generated')
+            ->count();
+
+        $lettersPending = LetterRequest::where('user_id', $user->id)
+            ->where('status', 'pending_payment')
             ->count();
 
         // Relays the seeker still needs to action — sent but not yet applied by them
@@ -354,10 +408,10 @@ class DashboardController extends Controller
                 'hired_count'        => $hiredCount,
                 'rejected_count'     => $rejectedCount,
 
-                // AI feedback (new)
-                'ai_screened_count'  => $aiScreenedCount,
-                'avg_ai_score'       => $avgAiScore ? (int) round($avgAiScore) : null,
-                'strong_yes_count'   => $strongYesCount,
+                'skill_match_configured' => $skillMatchConfigured,
+                'skill_match_threshold'  => $skillMatchConfigured ? $skillMatchThreshold : null,
+                'skill_matched_jobs'     => $skillMatchedJobs,
+                'has_skills'             => $hasSkills,
 
                 // Auto-apply (new)
                 'auto_applied_count' => $autoAppliedCount,
@@ -367,6 +421,17 @@ class DashboardController extends Controller
                 'profile_completion' => $this->calculateSeekerCompletion($profile),
                 'cv_count'           => is_array($profile->cv_files) ? count($profile->cv_files) : 0,
                 'is_profile_complete'=> $profile->is_profile_complete,
+
+                // CV review
+                'cv_reviews_total'      => $cvReviewsTotal,
+                'cv_reviews_completed'  => $cvReviewsCompleted,
+                'cv_rewrites_ready'     => $cvRewritesReady,
+
+                // Letters
+                'letters_total'         => $lettersTotal,
+                'letters_generated'     => $lettersGenerated,
+                'letters_pending'       => $lettersPending,
+
             ],
             'recentActivity' => $recentActivity,
             'subscription'    => $this->subscriptionBlock($user),

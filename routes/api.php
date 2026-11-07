@@ -105,8 +105,11 @@ Route::middleware(['verifycountry'])->group(function () {
     });
 
     
-    Route::post('jobs/{id}/track-application-guest', [JobController::class, 'trackApplication']);
+    // PUBLIC — guests only need a counter bump
+    Route::post('jobs/{id}/track-application-guest', [JobController::class, 'trackApplication'])
+        ->middleware('throttle:10,1');
 
+    // AUTH — logged-in users
     Route::middleware(['auth:sanctum'])->prefix('job-action')->group(function () {
         Route::post('/{id}/save', [JobActionController::class, 'toggleSave']);
         Route::post('/{id}/track-application', [JobActionController::class, 'trackApplication']);
@@ -115,8 +118,6 @@ Route::middleware(['verifycountry'])->group(function () {
         Route::get('/applied', [JobActionController::class, 'getAppliedJobs']);
         Route::put('/{id}/application-status', [JobActionController::class, 'updateApplicationStatus']);
     });
-
-
 
     Route::middleware(['auth:sanctum'])->prefix('cv-review')->group(function () {
         Route::get('/quote', [CvReviewRequestController::class, 'quote']);
@@ -266,7 +267,9 @@ Route::middleware(['verifycountry'])->group(function () {
         Route::post('/payments/initiate', [\App\Http\Controllers\Api\Payment\PaymentController::class, 'initiate']);
     });
 
-
+    Route::middleware(['auth:sanctum'])->prefix('my-jobs')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Api\Jobs\MyJobsController::class, 'index']);
+    });
 
     
 });

@@ -29,14 +29,38 @@ class LetterController extends Controller
     public function index(Request $request): JsonResponse
     {
         $user = $request->user();
-        if (!$user) return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+        }
 
-        $letters = LetterRequest::where('user_id', $user->id)
-            ->orderByDesc('id')
-            ->get()
-            ->map(fn($l) => $this->format($l));
+        $perPage = max(1, min(50, (int) $request->get('per_page', 10)));
+        $page    = max(1, (int) $request->get('page', 1));
 
-        return response()->json(['success' => true, 'data' => $letters]);
+        // Optional status filter — useful if the Blade adds tabs later
+        $query = LetterRequest::where('user_id', $user->id)
+            ->orderByDesc('id');
+
+        if ($status = $request->get('status')) {
+            $query->where('status', $status);
+        }
+
+        $paginator = $query->paginate($perPage, ['*'], 'page', $page);
+
+        return response()->json([
+            'success'    => true,
+            'data'       => collect($paginator->items())
+                                ->map(fn ($l) => $this->format($l))
+                                ->values()
+                                ->all(),
+            'total'      => $paginator->total(),
+            'pagination' => [
+                'current_page' => $paginator->currentPage(),
+                'last_page'    => $paginator->lastPage(),
+                'per_page'     => $paginator->perPage(),
+                'total'        => $paginator->total(),
+                'has_more'     => $paginator->hasMorePages(),
+            ],
+        ]);
     }
 
     // ─────────────────────────────────────────────────────────────

@@ -83,14 +83,14 @@ class JobActionController extends Controller
         }
 
         // ✅ Enforce profile completeness BEFORE tracking anything
-        if (!$seekerProfile->is_profile_complete) {
-            return response()->json([
-                'success' => false,
-                'code'    => 'profile_incomplete',
-                'message' => 'Please complete your profile (category, industry, location, experience, education, and skills) before applying.',
-                'redirect' => '/profile',
-            ], 422);
-        }
+        // if (!$seekerProfile->is_profile_complete) {
+        //     return response()->json([
+        //         'success' => false,
+        //         'code'    => 'profile_incomplete',
+        //         'message' => 'Please complete your profile (category, industry, location, experience, education, and skills) before applying.',
+        //         'redirect' => '/profile',
+        //     ], 422);
+        // }
 
         $jobPost = JobPost::find($jobId);
         if (!$jobPost) {
@@ -174,41 +174,76 @@ class JobActionController extends Controller
 
         if (!$user) {
             return response()->json([
-                'success' => false,
-                'message' => 'Please login',
-                'requires_login' => true
+                'success'         => false,
+                'message'         => 'Please login',
+                'requires_login'  => true,
             ], 401);
         }
 
         $seekerProfile = $user->seekerProfile;
         if (!$seekerProfile) {
             return response()->json([
-                'success' => true,
-                'data' => [],
-                'total' => 0,
+                'success'    => true,
+                'data'       => [],
+                'total'      => 0,
+                'pagination' => [
+                    'current_page' => 1,
+                    'last_page'    => 1,
+                    'per_page'     => 10,
+                    'total'        => 0,
+                ],
             ]);
         }
 
-        $savedJobs = JobSeekerJob::with(['jobPost.company', 'jobPost.jobLocation', 'jobPost.jobType'])
+        $perPage = max(1, min(50, (int) $request->get('per_page', 10)));
+
+        $paginator = JobSeekerJob::with([
+                'jobPost.company',
+                'jobPost.jobLocation',
+                'jobPost.jobType',
+            ])
             ->where('seeker_profile_id', $seekerProfile->id)
             ->where('is_saved', true)
-            ->orderBy('saved_at', 'desc')
-            ->get()
+            // Only rows whose parent job is still active, live and not soft-deleted
+            ->whereHas('jobPost', function ($q) {
+                $q->where('is_active', true)
+                ->where(function ($date) {
+                    $date->whereNull('deadline')
+                        ->orWhere('deadline', '>=', now()->toDateString());
+                });
+            })
+            ->orderByDesc('saved_at')
+            ->paginate($perPage, ['*'], 'page', (int) $request->get('page', 1));
+
+        $data = collect($paginator->items())
+            ->filter(fn ($item) => $item->jobPost !== null)
             ->map(function ($item) {
                 $job = $item->jobPost;
-                
-                // ✅ FIX: Add logo_url to the company data
+
+                $job->is_saved   = true;
+                $job->is_applied = (bool) $item->is_applied;
+
+                // The accessor already exposes logo_url on the Company model.
+                // setAttribute() makes it explicit that we want it in the payload.
                 if ($job->company) {
-                    $job->company->logo_url = $job->company->logo_url;
+                    $job->company->setAttribute('logo_url', $job->company->logo_url);
                 }
-                
+
                 return $job;
-            });
+            })
+            ->values();
 
         return response()->json([
-            'success' => true,
-            'data' => $savedJobs,
-            'total' => $savedJobs->count(),
+            'success'    => true,
+            'data'       => $data,
+            'total'      => $paginator->total(),
+            'pagination' => [
+                'current_page' => $paginator->currentPage(),
+                'last_page'    => $paginator->lastPage(),
+                'per_page'     => $paginator->perPage(),
+                'total'        => $paginator->total(),
+                'has_more'     => $paginator->hasMorePages(),
+            ],
         ]);
     }
 
@@ -218,45 +253,99 @@ class JobActionController extends Controller
 
         if (!$user) {
             return response()->json([
-                'success' => false,
-                'message' => 'Please login',
-                'requires_login' => true
+                'success'        => false,
+                'message'        => 'Please login',
+                'requires_login' => true,
             ], 401);
         }
 
         $seekerProfile = $user->seekerProfile;
         if (!$seekerProfile) {
             return response()->json([
-                'success' => true,
-                'data' => [],
-                'total' => 0,
+                'success'    => true,
+                'data'       => [],
+                'total'      => 0,
+                'pagination' => [
+                    'current_page' => 1,
+                    'last_page'    => 1,
+                    'per_page'     => 10,
+                    'total'        => 0,
+                ],
             ]);
         }
 
-        $appliedJobs = JobSeekerJob::with(['jobPost.company', 'jobPost.jobLocation', 'jobPost.jobType'])
+        $perPage  = max(1, min(50, (int) $request->get('per_page', 10)));
+        $page     = (int) $request->get('page', 1);
+        $status   = $request->get('status'); // optional filter: applied|interviewing|hired|rejected
+
+        $query = JobSeekerJob::with([
+                'jobPost.company',
+                'jobPost.jobLocation',
+                'jobPost.jobType',
+            ])
             ->where('seeker_profile_id', $seekerProfile->id)
             ->where('is_applied', true)
-            ->orderBy('applied_at', 'desc')
-            ->get()
+            // Only filter soft-deleted / hard-deleted jobs.
+            // Expired jobs (deadline in the past) MUST still appear —
+            // the seeker wants their full application trail.
+            ->whereHas('jobPost');
+
+        // Optional status filter
+        if ($status && in_array($status, ['applied', 'interviewing', 'hired', 'rejected'], true)) {
+            match ($status) {
+                'hired'        => $query->where('is_got_job', true),
+                'interviewing' => $query->where('is_called_for_interview', true)
+                                        ->where('is_got_job', false),
+                'rejected'     => $query->where('is_rejected', true)
+                                        ->where('is_got_job', false),
+                'applied'      => $query->where('is_called_for_interview', false)
+                                        ->where('is_got_job', false)
+                                        ->where('is_rejected', false),
+                default        => null,
+            };
+        }
+
+        $paginator = $query
+            ->orderByDesc('applied_at')
+            ->paginate($perPage, ['*'], 'page', $page);
+
+        $data = collect($paginator->items())
+            ->filter(fn ($item) => $item->jobPost !== null)
             ->map(function ($item) {
                 $job = $item->jobPost;
-                
-                // ✅ FIX: Add logo_url to the company data
+
+                $job->is_saved   = (bool) $item->is_saved;
+                $job->is_applied = true;
+
                 if ($job->company) {
-                    $job->company->logo_url = $job->company->logo_url;
+                    $job->company->setAttribute('logo_url', $job->company->logo_url);
                 }
-                
+
+                // Expose whether the job is expired so the frontend can badge it
+                $isExpired = $job->deadline && $job->deadline->isPast();
+                $isActive  = (bool) $job->is_active;
+
                 return [
-                    'job' => $job,
-                    'applied_at' => $item->applied_at,
-                    'status' => $this->getApplicationStatus($item),
+                    'job'          => $job,
+                    'applied_at'   => $item->applied_at,
+                    'status'       => $this->getApplicationStatus($item),
+                    'is_expired'   => $isExpired,
+                    'is_inactive'  => !$isActive,
                 ];
-            });
+            })
+            ->values();
 
         return response()->json([
-            'success' => true,
-            'data' => $appliedJobs,
-            'total' => $appliedJobs->count(),
+            'success'    => true,
+            'data'       => $data,
+            'total'      => $paginator->total(),
+            'pagination' => [
+                'current_page' => $paginator->currentPage(),
+                'last_page'    => $paginator->lastPage(),
+                'per_page'     => $paginator->perPage(),
+                'total'        => $paginator->total(),
+                'has_more'     => $paginator->hasMorePages(),
+            ],
         ]);
     }
 
