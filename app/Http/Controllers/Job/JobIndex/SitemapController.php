@@ -155,77 +155,86 @@ class SitemapController extends Controller
             'country' => 'nullable|string|size:2',
         ]);
 
-        $jobIds = $request->input('job_ids', []);
+        $jobIds  = $request->input('job_ids', []);
         $country = $request->input('country');
 
         try {
-            $now = now();
-            $fiftyYearsFromNow = $now->copy()->addYears(50);
-            $updated = 0;
-            $message = '';
+            $updated  = 0;
+            $message  = '';
+            $pingResults = [];
 
-            // ✅ STEP 1: Update selected jobs
+            // ── CASE A: Specific jobs selected ──────────────────────
             if (!empty($jobIds)) {
+                $now = now();
+                $fiftyYearsFromNow = $now->copy()->addYears(50);
+
                 $jobs = JobPost::whereIn('id', $jobIds)
-                    ->whereNull('last_pinged_at')  // Only update unpinged jobs
+                    ->whereNull('last_pinged_at')
                     ->get();
-                
+
                 foreach ($jobs as $job) {
-                    $job->is_pinged = true;
-                    $job->last_pinged_at = $now;
-                    $job->published_at = $now;
+                    $job->is_pinged       = true;
+                    $job->last_pinged_at  = $now;
+                    $job->published_at    = $now;
                     $job->published_until = $fiftyYearsFromNow;
                     $job->save();
                     $updated++;
                 }
-                $message = "Successfully pinged {$updated} job(s)";
-            } else {
-                $message = "No specific jobs selected";
-            }
 
-            // ✅ STEP 2 & 3: If country is specified, regenerate sitemap and ping search engines
-            $pingResults = [];
-            if ($country) {
-                $pingResults = $this->sitemapService->pingSearchEngines($country);
-                
-                // Check if ping was skipped or failed
-                if (isset($pingResults['status']) && $pingResults['status'] === 'skipped') {
-                    return response()->json([
-                        'success' => true,
-                        'message' => $message . ". Search engine ping skipped in " . config('app.env') . " environment. Sitemap regenerated.",
-                        'updated' => $updated,
-                        'ping_status' => 'skipped',
-                        'environment' => config('app.env'),
-                        'ping_results' => $pingResults,
-                    ]);
+                $message = "Successfully pinged {$updated} selected job(s)";
+
+                // If a country was also sent, also regenerate that country's sitemap
+                if ($country) {
+                    $pingResults = $this->sitemapService->pingSearchEngines($country);
+                    $message .= " for country {$country}";
                 }
+            }
+            // ── CASE B: Country-wide ping (no specific IDs) ────────
+            elseif ($country) {
+                // pingSearchEngines() updates ALL unpinged jobs in the country,
+                // regenerates the sitemap, and pings search engines.
+                // It returns the count it updated via the "jobs_updated" key.
+                $pingResults = $this->sitemapService->pingSearchEngines($country);
 
                 if (isset($pingResults['status']) && $pingResults['status'] === 'error') {
                     return response()->json([
-                        'success' => true,
-                        'message' => $message . ". " . $pingResults['message'],
-                        'updated' => $updated,
+                        'success'     => false,
+                        'message'     => $pingResults['message'] ?? 'Failed to ping country',
                         'ping_status' => 'error',
-                        'ping_results' => $pingResults,
-                    ]);
+                        'ping_results'=> $pingResults,
+                    ], 500);
                 }
+
+                $updated = (int) ($pingResults['jobs_updated'] ?? 0);
+                $message = "Pinged all unpinged jobs in {$country} ({$updated} updated)";
+            }
+            // ── CASE C: Nothing to do ──────────────────────────────
+            else {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No jobs or country provided to ping.',
+                ], 422);
             }
 
+            // Report final status from the ping results
+            $pingStatus = $pingResults['status'] ?? 'success';
+
             return response()->json([
-                'success' => true,
-                'message' => $message . ($country ? " for country {$country}" : ""),
-                'updated' => $updated,
+                'success'      => true,
+                'message'      => $message,
+                'updated'      => $updated,
+                'ping_status'  => $pingStatus,
                 'ping_results' => $pingResults,
-                'ping_status' => isset($pingResults['status']) ? $pingResults['status'] : 'success',
             ]);
+
         } catch (\Exception $e) {
             \Log::error('Ping jobs failed: ' . $e->getMessage(), [
-                'trace' => $e->getTraceAsString()
+                'trace' => $e->getTraceAsString(),
             ]);
-            
+
             return response()->json([
-                'success' => false,
-                'message' => 'Failed to ping jobs: ' . $e->getMessage(),
+                'success'    => false,
+                'message'    => 'Failed to ping jobs: ' . $e->getMessage(),
                 'error_type' => get_class($e),
             ], 500);
         }

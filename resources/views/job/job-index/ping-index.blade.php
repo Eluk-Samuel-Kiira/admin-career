@@ -531,33 +531,77 @@ function renderPagination(pagination) {
     const el = document.getElementById('pagination');
     const info = document.getElementById('paginationInfo');
     if (!el) return;
-    
+
     el.innerHTML = '';
-    info.innerHTML = `Showing ${pagination.from || 0} to ${pagination.to || 0} of ${pagination.total} entries`;
-    
-    const addPage = (page, text, isActive = false, isDisabled = false) => {
+    info.textContent = `Showing ${pagination.from || 0} to ${pagination.to || 0} of ${pagination.total} entries`;
+
+    if ((pagination.last_page || 1) <= 1) {
+        // Just one page — no pagination controls needed
+        return;
+    }
+
+    const current = pagination.current_page;
+    const last    = pagination.last_page;
+
+    // ── Reusable builder that returns a real DOM node ─────
+    function buildPageItem(page, text, opts = {}) {
         const li = document.createElement('li');
-        li.className = `page-item ${isActive ? 'active' : ''} ${isDisabled ? 'disabled' : ''}`;
+        li.className = 'page-item'
+            + (opts.active ? ' active' : '')
+            + (opts.disabled ? ' disabled' : '');
+
         const a = document.createElement('a');
         a.className = 'page-link';
-        a.href = '#';
+        a.href = 'javascript:void(0)';
         a.textContent = text;
-        if (!isDisabled) a.onclick = (e) => { e.preventDefault(); changePage(page); };
+
+        if (!opts.disabled && !opts.active) {
+            a.addEventListener('click', function (e) {
+                e.preventDefault();
+                changePage(page);
+            });
+        }
+
         li.appendChild(a);
-        el.appendChild(li);
-    };
-    
-    addPage(pagination.current_page - 1, 'Previous', false, !pagination.current_page > 1);
-    
-    let start = Math.max(1, pagination.current_page - 2);
-    let end = Math.min(pagination.last_page, pagination.current_page + 2);
-    
-    if (start > 1) addPage(1, '1');
-    if (start > 2) el.innerHTML += '<li class="page-item disabled"><span class="page-link">...</span></li>';
-    for (let i = start; i <= end; i++) addPage(i, i, i === pagination.current_page);
-    if (end < pagination.last_page - 1) el.innerHTML += '<li class="page-item disabled"><span class="page-link">...</span></li>';
-    if (end < pagination.last_page) addPage(pagination.last_page, pagination.last_page);
-    addPage(pagination.current_page + 1, 'Next', false, pagination.current_page >= pagination.last_page);
+        return li;
+    }
+
+    function buildEllipsis() {
+        const li = document.createElement('li');
+        li.className = 'page-item disabled';
+        const span = document.createElement('span');
+        span.className = 'page-link';
+        span.textContent = '…';
+        li.appendChild(span);
+        return li;
+    }
+
+    // Prev
+    el.appendChild(buildPageItem(current - 1, 'Previous', {
+        disabled: current <= 1,
+    }));
+
+    const start = Math.max(1, current - 2);
+    const end   = Math.min(last, current + 2);
+
+    if (start > 1) {
+        el.appendChild(buildPageItem(1, '1', { active: current === 1 }));
+        if (start > 2) el.appendChild(buildEllipsis());
+    }
+
+    for (let i = start; i <= end; i++) {
+        el.appendChild(buildPageItem(i, String(i), { active: i === current }));
+    }
+
+    if (end < last) {
+        if (end < last - 1) el.appendChild(buildEllipsis());
+        el.appendChild(buildPageItem(last, String(last), { active: current === last }));
+    }
+
+    // Next
+    el.appendChild(buildPageItem(current + 1, 'Next', {
+        disabled: current >= last,
+    }));
 }
 
 function changePage(page) {

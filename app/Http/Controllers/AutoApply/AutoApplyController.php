@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Http\Controllers\AutoApply;
+namespace App\Http\Controllers\Api\Seeker;
 
 use App\Http\Controllers\Controller;
 use App\Models\AutoApplyRun;
@@ -10,104 +10,121 @@ use Illuminate\Http\Request;
 
 class AutoApplyController extends Controller
 {
-    public function index()
+    /**
+     * GET /api/seeker/auto-apply
+     *
+     * Returns:
+     *  - feature_enabled (bool) — plan-gated
+     *  - runs (paginated, 10 per page) with their relays
+     *  - stats (global summary)
+     *  - pagination
+     */
+    public function index(Request $request): JsonResponse
     {
-        if (!auth()->user()->can('manage job alerts')) abort(403);
+        $user = $request->user();
 
-        return view('job-seeker.auto-apply.index');
-    }
-
-    public function stats(): JsonResponse
-    {
-        if (!auth()->user()->can('manage job alerts')) {
-            return response()->json(['success' => false], 403);
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
         }
 
-        $today = today();
+        $featureEnabled = $this->isFeatureEnabled($user);
+
+        // If the plan doesn't include auto-apply, return early — no need to query.
+        if (!$featureEnabled) {
+            return response()->json([
+                'success'         => true,
+                'feature_enabled' => false,
+                'runs'            => [],
+                'stats'           => [],
+                'pagination'      => [
+                    'current_page' => 1, 'last_page' => 1,
+                    'per_page' => 10, 'total' => 0,
+                ],
+            ]);
+        }
+
+        $perPage = max(1, min(50, (int) $request->get('per_page', 10)));
+        $page    = max(1, (int) $request->get('page', 1));
+
+        // ── Paginated runs ────────────────────────────────────
+        $paginator = AutoApplyRun::where('user_id', $user->id)
+            ->orderByDesc('run_date')
+            ->orderByDesc('id')
+            ->paginate($perPage, ['*'], 'page', $page);
+
+        // Load relays only for the current page's runs, filtering
+        // soft-deleted jobs but keeping expired ones.
+        $runIds = collect($paginator->items())->pluck('id')->all();
+
+        $relaysByRun = AutoApplyRelay::with('jobPost')
+            ->whereIn('auto_apply_run_id', $runIds)
+            // Only hide soft-deleted jobs — expired ones stay visible.
+            ->whereHas('jobPost')
+            ->get()
+            ->groupBy('auto_apply_run_id');
+
+        $runs = collect($paginator->items())->map(function ($run) use ($relaysByRun) {
+            $relays = $relaysByRun[$run->id] ?? collect();
+
+            $expiredRelays = $relays->map(function ($relay) {
+                $job = $relay->jobPost;
+
+                return [
+                    'id'         => $relay->id,
+                    'job_title'  => $job?->job_title,
+                    'company'    => $job?->company?->name,
+                    'job_slug'   => $job?->slug,
+                    'reason'     => $relay->reason,
+                    'status'     => $relay->status,
+                    // Extra: whether this job is now expired
+                    'is_expired' => $job?->deadline && $job->deadline->isPast(),
+                ];
+            })->values()->all();
+
+            return [
+                'uuid'            => $run->uuid ?? (string) $run->id,
+                'run_date'        => $run->run_date?->toDateString(),
+                'applied_count'   => (int) $run->applied_count,
+                'relayed_count'   => (int) $run->relayed_count,
+                'skipped_count'   => (int) $run->skipped_count,
+                'failed_count'    => (int) $run->failed_count,
+                'status'          => $run->status,
+                'status_label'    => $run->status_badge ?? ucfirst((string) $run->status),
+                'relays'          => $expiredRelays,
+            ];
+        })->values()->all();
+
+        // ── Global stats (across all runs — not paginated) ─────
+        $stats = [
+            'total_applied' => (int) AutoApplyRun::where('user_id', $user->id)->sum('applied_count'),
+            'total_relayed' => (int) AutoApplyRun::where('user_id', $user->id)->sum('relayed_count'),
+            'this_month'    => (int) AutoApplyRun::where('user_id', $user->id)
+                                ->whereBetween('run_date', [now()->startOfMonth(), now()->endOfMonth()])
+                                ->sum('applied_count'),
+        ];
 
         return response()->json([
-            'success' => true,
-            'stats' => [
-                'runs_today'        => AutoApplyRun::where('run_date', $today)->count(),
-                'completed_today'   => AutoApplyRun::where('run_date', $today)->where('status', 'completed')->count(),
-                'failed_today'      => AutoApplyRun::where('run_date', $today)->where('status', 'failed')->count(),
-                'applications_today'=> AutoApplyRun::where('run_date', $today)->sum('applied_count'),
-                'relays_today'      => AutoApplyRun::where('run_date', $today)->sum('relayed_count'),
-                'runs_this_month'   => AutoApplyRun::whereBetween('run_date', [now()->startOfMonth(), $today])->count(),
-                'applications_this_month' => AutoApplyRun::whereBetween('run_date', [now()->startOfMonth(), $today])->sum('applied_count'),
-                'relays_this_month' => AutoApplyRun::whereBetween('run_date', [now()->startOfMonth(), $today])->sum('relayed_count'),
+            'success'         => true,
+            'feature_enabled' => true,
+            'runs'            => $runs,
+            'stats'           => $stats,
+            'pagination'      => [
+                'current_page' => $paginator->currentPage(),
+                'last_page'    => $paginator->lastPage(),
+                'per_page'     => $paginator->perPage(),
+                'total'        => $paginator->total(),
+                'has_more'     => $paginator->hasMorePages(),
             ],
         ]);
     }
 
-    public function runs(Request $request): JsonResponse
+    /**
+     * Feature gating — plan check. Adjust to your actual service.
+     */
+    private function isFeatureEnabled($user): bool
     {
-        if (!auth()->user()->can('manage job alerts')) {
-            return response()->json(['success' => false], 403);
-        }
-
-        $query = AutoApplyRun::with(['user:id,name,email'])
-            ->orderByDesc('id');
-
-        if ($d = $request->get('date')) {
-            $query->where('run_date', $d);
-        }
-        if ($s = $request->get('status')) {
-            $query->where('status', $s);
-        }
-        if ($search = $request->get('search')) {
-            $query->whereHas('user', fn($q) => $q
-                ->where('name', 'like', "%{$search}%")
-                ->orWhere('email', 'like', "%{$search}%"));
-        }
-
-        $runs = $query->paginate(30);
-
-        return response()->json([
-            'success' => true,
-            'data' => $runs->through(fn($r) => [
-                'id'              => $r->id,
-                'run_date'        => $r->run_date?->toDateString(),
-                'user'            => $r->user?->name ?? 'Unknown',
-                'email'           => $r->user?->email,
-                'jobs_scanned'    => $r->jobs_scanned,
-                'applied_count'   => $r->applied_count,
-                'relayed_count'   => $r->relayed_count,
-                'skipped_count'   => $r->skipped_count,
-                'failed_count'    => $r->failed_count,
-                'status'          => $r->status,
-                'status_badge'    => $r->status_badge,
-                'quota_total'     => $r->quota_total,
-                'quota_remaining' => $r->quota_remaining,
-                'started_at'      => $r->started_at?->toISOString(),
-                'completed_at'    => $r->completed_at?->toISOString(),
-            ]),
-        ]);
-    }
-
-    public function relays(Request $request): JsonResponse
-    {
-        if (!auth()->user()->can('manage job alerts')) {
-            return response()->json(['success' => false], 403);
-        }
-
-        $relays = AutoApplyRelay::with(['user:id,name,email', 'jobPost:id,job_title,slug'])
-            ->orderByDesc('id')
-            ->paginate(30);
-
-        return response()->json([
-            'success' => true,
-            'data' => $relays->through(fn($r) => [
-                'id'         => $r->id,
-                'user'       => $r->user?->name ?? 'Unknown',
-                'email'      => $r->user?->email,
-                'job_title'  => $r->jobPost?->job_title,
-                'job_slug'   => $r->jobPost?->slug,
-                'reason'     => $r->reason,
-                'channels_sent' => $r->channels_sent ?? [],
-                'status'     => $r->status,
-                'sent_at'    => $r->sent_at?->toISOString(),
-            ]),
-        ]);
+        // If using Spatie permissions, adapt accordingly
+        return $user->can('use auto apply')
+            || (bool) ($user->activeSubscription?->hasFeature('auto_apply') ?? false);
     }
 }

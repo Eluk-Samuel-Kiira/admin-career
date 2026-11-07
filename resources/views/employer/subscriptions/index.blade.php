@@ -21,10 +21,11 @@
 @section('content')
 @can('view subscriptions')
 
-{{-- Hidden role, resolved by the controller from ?role= --}}
 <input type="hidden" id="filterRole" value="{{ $initialRole }}">
 
-{{-- Stats strip --}}
+{{-- ══════════════════════════════════════════════════════ --}}
+{{-- STATS STRIP                                            --}}
+{{-- ══════════════════════════════════════════════════════ --}}
 <div class="row g-5 g-xl-8 mb-6">
     <div class="col-xl-3 col-md-6">
         <div class="card card-flush bg-light-success">
@@ -95,7 +96,9 @@
     </div>
 </div>
 
-{{-- Table --}}
+{{-- ══════════════════════════════════════════════════════ --}}
+{{-- MAIN CARD — TABS (Subscriptions | Payments)            --}}
+{{-- ══════════════════════════════════════════════════════ --}}
 <div class="card card-flush">
     <div class="card-header align-items-center py-5">
         <h3 class="card-title fw-bold mb-0">
@@ -119,80 +122,173 @@
 
     <div class="card-body pt-0">
 
-        {{-- Filters --}}
-        <div class="row g-3 mb-5">
-            <div class="col-md-3">
-                <input type="text" id="search" class="form-control form-control-solid"
-                       placeholder="Search by customer or service...">
-            </div>
-            <div class="col-md-2">
-                <select id="filterStatus" class="form-select form-select-solid">
-                    <option value="">Any Status</option>
-                    <option value="trialing">Trialing</option>
-                    <option value="active">Active</option>
-                    <option value="past_due">Past Due</option>
-                    <option value="cancelled">Cancelled</option>
-                    <option value="expired">Expired</option>
-                </select>
-            </div>
-            <div class="col-md-2">
-                <select id="filterKind" class="form-select form-select-solid">
-                    <option value="">Any Kind</option>
-                    <option value="subscription">Subscription</option>
-                    <option value="one_time">One-Time</option>
-                </select>
-            </div>
-            <div class="col-md-2">
-                <select id="filterCountry" class="form-select form-select-solid">
-                    <option value="">All Countries</option>
-                    @foreach(\App\Models\Job\Country::where('is_active', true)->orderBy('name')->get(['code','name','flag']) as $c)
-                        <option value="{{ $c->code }}">{{ $c->flag ?? '' }} {{ $c->name }}</option>
-                    @endforeach
-                </select>
-            </div>
-            <div class="col-md-3">
-                <div class="d-flex gap-2">
-                    <input type="date" id="filterFrom" class="form-control form-control-solid">
-                    <input type="date" id="filterTo" class="form-control form-control-solid">
+        {{-- Tabs --}}
+        <ul class="nav nav-tabs nav-line-tabs nav-line-tabs-2x mb-6 fs-6" id="mainTabs">
+            <li class="nav-item">
+                <a class="nav-link active" data-tab="subscriptions" href="javascript:;">
+                    Subscriptions
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" data-tab="payments" href="javascript:;">
+                    Payments
+                    <span class="badge badge-light-primary ms-2" id="paymentsCountBadge">0</span>
+                </a>
+            </li>
+        </ul>
+
+        {{-- ══════════════════════════════════════════════════ --}}
+        {{-- PANE: Subscriptions                                --}}
+        {{-- ══════════════════════════════════════════════════ --}}
+        <div id="paneSubscriptions">
+
+            {{-- Filters --}}
+            <div class="row g-3 mb-5">
+                <div class="col-md-3">
+                    <input type="text" id="search" class="form-control form-control-solid"
+                           placeholder="Search by customer or service...">
+                </div>
+                <div class="col-md-2">
+                    <select id="filterStatus" class="form-select form-select-solid">
+                        <option value="">Any Status</option>
+                        <option value="trialing">Trialing</option>
+                        <option value="active">Active</option>
+                        <option value="past_due">Past Due</option>
+                        <option value="cancelled">Cancelled</option>
+                        <option value="expired">Expired</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <select id="filterKind" class="form-select form-select-solid">
+                        <option value="">Any Kind</option>
+                        <option value="subscription">Subscription</option>
+                        <option value="one_time">One-Time</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <select id="filterCountry" class="form-select form-select-solid">
+                        <option value="">All Countries</option>
+                        @foreach(\App\Models\Job\Country::where('is_active', true)->orderBy('name')->get(['code','name','flag']) as $c)
+                            <option value="{{ $c->code }}">{{ $c->flag ?? '' }} {{ $c->name }}</option>
+                        @endforeach
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <div class="d-flex gap-2">
+                        <input type="date" id="filterFrom" class="form-control form-control-solid">
+                        <input type="date" id="filterTo" class="form-control form-control-solid">
+                    </div>
+                </div>
+                <div class="col-12 d-flex flex-wrap gap-2 align-items-center">
+                    <button class="btn btn-sm btn-light-primary" id="applyFilters">
+                        <i class="ki-duotone ki-magnifier fs-4 me-1">
+                            <span class="path1"></span><span class="path2"></span>
+                        </i>
+                        Apply
+                    </button>
+                    <button class="btn btn-sm btn-light" id="clearFilters">Clear</button>
+
+                    <span class="text-muted fs-8 ms-auto" id="countsRow">
+                        <span class="badge badge-light-secondary me-1" id="countAll">0</span> total
+                        <span class="badge badge-light-success ms-2 me-1" id="countActive">0</span> active
+                        <span class="badge badge-light-info ms-2 me-1" id="countTrialing">0</span> trialing
+                        <span class="badge badge-light-danger ms-2 me-1" id="countPastDue">0</span> past due
+                    </span>
+
+                    <select id="perPage" class="form-select form-select-sm w-auto ms-2">
+                        <option value="10">10 / page</option>
+                        <option value="25" selected>25 / page</option>
+                        <option value="50">50 / page</option>
+                        <option value="100">100 / page</option>
+                    </select>
                 </div>
             </div>
-            <div class="col-12 d-flex flex-wrap gap-2 align-items-center">
-                <button class="btn btn-sm btn-light-primary" id="applyFilters">
-                    <i class="ki-duotone ki-magnifier fs-4 me-1">
-                        <span class="path1"></span><span class="path2"></span>
-                    </i>
-                    Apply
-                </button>
-                <button class="btn btn-sm btn-light" id="clearFilters">Clear</button>
 
-                <span class="text-muted fs-8 ms-auto" id="countsRow">
-                    <span class="badge badge-light-secondary me-1" id="countAll">0</span> total
-                    <span class="badge badge-light-success ms-2 me-1" id="countActive">0</span> active
-                    <span class="badge badge-light-info ms-2 me-1" id="countTrialing">0</span> trialing
-                    <span class="badge badge-light-danger ms-2 me-1" id="countPastDue">0</span> past due
-                </span>
+            <div id="tableWrap" class="text-center py-10">
+                <div class="spinner-border text-primary"></div>
+            </div>
 
-                <select id="perPage" class="form-select form-select-sm w-auto ms-2">
-                    <option value="10">10 / page</option>
-                    <option value="25" selected>25 / page</option>
-                    <option value="50">50 / page</option>
-                    <option value="100">100 / page</option>
-                </select>
+            <div id="paginationWrap" class="d-none d-flex flex-wrap justify-content-between align-items-center gap-3 mt-5">
+                <div id="paginationInfo" class="text-muted fs-7"></div>
+                <nav><ul class="pagination m-0" id="paginationList"></ul></nav>
             </div>
         </div>
 
-        <div id="tableWrap" class="text-center py-10">
-            <div class="spinner-border text-primary"></div>
+        {{-- ══════════════════════════════════════════════════ --}}
+        {{-- PANE: Payments                                     --}}
+        {{-- ══════════════════════════════════════════════════ --}}
+        <div id="panePayments" class="d-none">
+
+            {{-- Filters --}}
+            <div class="row g-3 mb-5">
+                <div class="col-md-3">
+                    <input type="text" id="paySearch" class="form-control form-control-solid"
+                           placeholder="Search by customer or reference...">
+                </div>
+                <div class="col-md-2">
+                    <select id="payFilterStatus" class="form-select form-select-solid">
+                        <option value="">Any Status</option>
+                        <option value="completed">Paid</option>
+                        <option value="pending">Pending</option>
+                        <option value="failed">Failed</option>
+                        <option value="cancelled">Cancelled</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <select id="payFilterCountry" class="form-select form-select-solid">
+                        <option value="">All Countries</option>
+                        @foreach(\App\Models\Job\Country::where('is_active', true)->orderBy('name')->get(['code','name','flag']) as $c)
+                            <option value="{{ $c->code }}">{{ $c->flag ?? '' }} {{ $c->name }}</option>
+                        @endforeach
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <div class="d-flex gap-2">
+                        <input type="date" id="payFilterFrom" class="form-control form-control-solid">
+                        <input type="date" id="payFilterTo" class="form-control form-control-solid">
+                    </div>
+                </div>
+                <div class="col-12 d-flex flex-wrap gap-2 align-items-center">
+                    <button class="btn btn-sm btn-light-primary" id="payApplyFilters">
+                        <i class="ki-duotone ki-magnifier fs-4 me-1">
+                            <span class="path1"></span><span class="path2"></span>
+                        </i>
+                        Apply
+                    </button>
+                    <button class="btn btn-sm btn-light" id="payClearFilters">Clear</button>
+
+                    <span class="text-muted fs-8 ms-auto">
+                        <span class="badge badge-light-secondary me-1" id="payCountAll">0</span> total
+                        <span class="badge badge-light-success ms-2 me-1" id="payCountCompleted">0</span> paid
+                        <span class="badge badge-light-warning ms-2 me-1" id="payCountPending">0</span> pending
+                        <span class="badge badge-light-danger ms-2 me-1" id="payCountFailed">0</span> failed
+                    </span>
+
+                    <select id="payPerPage" class="form-select form-select-sm w-auto ms-2">
+                        <option value="10">10 / page</option>
+                        <option value="25" selected>25 / page</option>
+                        <option value="50">50 / page</option>
+                        <option value="100">100 / page</option>
+                    </select>
+                </div>
+            </div>
+
+            <div id="payTableWrap" class="text-center py-10">
+                <div class="spinner-border text-primary"></div>
+            </div>
+
+            <div id="payPaginationWrap" class="d-none d-flex flex-wrap justify-content-between align-items-center gap-3 mt-5">
+                <div id="payPaginationInfo" class="text-muted fs-7"></div>
+                <nav><ul class="pagination m-0" id="payPaginationList"></ul></nav>
+            </div>
         </div>
 
-        <div id="paginationWrap" class="d-none d-flex flex-wrap justify-content-between align-items-center gap-3 mt-5">
-            <div id="paginationInfo" class="text-muted fs-7"></div>
-            <nav><ul class="pagination m-0" id="paginationList"></ul></nav>
-        </div>
     </div>
 </div>
 
-{{-- View modal --}}
+{{-- ══════════════════════════════════════════════════════ --}}
+{{-- DETAIL MODAL                                           --}}
+{{-- ══════════════════════════════════════════════════════ --}}
 <div class="modal fade" id="kt_subscription_modal" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-xl">
         <div class="modal-content">
@@ -221,60 +317,131 @@
 (function () {
     'use strict';
 
-    const CSRF = '{{ csrf_token() }}';
+    const CSRF  = '{{ csrf_token() }}';
+    const ROLE  = document.getElementById('filterRole')?.value || 'all';
 
-    const state = {
-        page: 1,
-        perPage: 25,
-        role: document.getElementById('filterRole')?.value || 'all',
-        search: '',
-        status: '',
-        kind: '',
-        country: '',
-        from: '',
-        to: '',
+    // ─────────────────────────────────────────────────────────
+    // Shared state
+    // ─────────────────────────────────────────────────────────
+    const subsState = {
+        page: 1, perPage: 25,
+        search: '', status: '', kind: '', country: '', from: '', to: '',
     };
 
-    // ── Filters
-    document.getElementById('applyFilters')?.addEventListener('click', () => {
-        state.search  = document.getElementById('search').value.trim();
-        state.status  = document.getElementById('filterStatus').value;
-        state.kind    = document.getElementById('filterKind').value;
-        state.country = document.getElementById('filterCountry').value;
-        state.from    = document.getElementById('filterFrom').value;
-        state.to      = document.getElementById('filterTo').value;
-        state.page    = 1;
-        load();
-    });
+    const payState = {
+        page: 1, perPage: 25,
+        search: '', status: '', country: '', from: '', to: '',
+        loadedOnce: false,
+    };
 
-    document.getElementById('clearFilters')?.addEventListener('click', () => {
-        ['search','filterStatus','filterKind','filterCountry','filterFrom','filterTo']
-            .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
-        Object.assign(state, { search:'', status:'', kind:'', country:'', from:'', to:'', page:1 });
-        load();
-    });
+    // ─────────────────────────────────────────────────────────
+    // Utilities
+    // ─────────────────────────────────────────────────────────
+    function esc(t) {
+        if (t === null || t === undefined) return '';
+        const div = document.createElement('div');
+        div.textContent = String(t);
+        return div.innerHTML;
+    }
+    function formatDate(d) {
+        if (!d) return '—';
+        return new Date(d).toLocaleString();
+    }
+    function formatMoney(cents) {
+        return (cents || 0).toLocaleString();
+    }
+    function debounce(fn, wait) {
+        let timer;
+        return (...a) => { clearTimeout(timer); timer = setTimeout(() => fn(...a), wait); };
+    }
+    function roleBadge(role) {
+        if (role === 'employer')   return '<span class="badge badge-light-primary ms-1">Employer</span>';
+        if (role === 'job_seeker') return '<span class="badge badge-light-success ms-1">Seeker</span>';
+        return '';
+    }
+    function emptyState(msg) {
+        return `
+            <div class="text-center py-15">
+                <i class="ki-duotone ki-information-5 fs-5tx text-muted mb-4 d-block">
+                    <span class="path1"></span><span class="path2"></span><span class="path3"></span>
+                </i>
+                <h4 class="fw-bold text-gray-800 mb-2">Nothing here</h4>
+                <p class="text-muted">${esc(msg)}</p>
+            </div>`;
+    }
 
-    document.getElementById('search')?.addEventListener('input', debounce(() => {
-        document.getElementById('applyFilters').click();
-    }, 400));
+    // ─────────────────────────────────────────────────────────
+    // Reusable paginator
+    // ─────────────────────────────────────────────────────────
+    function renderPager(listId, infoId, meta, onPage) {
+        const el   = document.getElementById(listId);
+        const info = document.getElementById(infoId);
+        if (!el || !info) return;
 
-    document.getElementById('perPage')?.addEventListener('change', function () {
-        state.perPage = parseInt(this.value) || 25;
-        state.page = 1;
-        load();
-    });
+        el.innerHTML = '';
+        info.textContent = meta.total
+            ? `Showing ${meta.from || 0} to ${meta.to || 0} of ${meta.total}`
+            : '0 records';
 
-    document.getElementById('reloadBtn')?.addEventListener('click', () => { loadStats(); load(); });
+        if (!meta || meta.last_page <= 1) return;
 
-    // ── Stats
+        const add = (page, text, active = false, disabled = false) => {
+            const li = document.createElement('li');
+            li.className = `page-item ${active ? 'active' : ''} ${disabled ? 'disabled' : ''}`;
+            const a = document.createElement('a');
+            a.className = 'page-link';
+            a.href = '#';
+            a.textContent = text;
+            if (!disabled && !active) {
+                a.addEventListener('click', (e) => { e.preventDefault(); onPage(page); });
+            }
+            li.appendChild(a);
+            el.appendChild(li);
+        };
+
+        add(meta.current_page - 1, 'Prev', false, meta.current_page <= 1);
+        const start = Math.max(1, meta.current_page - 2);
+        const end   = Math.min(meta.last_page, meta.current_page + 2);
+        if (start > 1) add(1, '1');
+        if (start > 2) el.insertAdjacentHTML('beforeend',
+            '<li class="page-item disabled"><span class="page-link">…</span></li>');
+        for (let i = start; i <= end; i++) add(i, String(i), i === meta.current_page);
+        if (end < meta.last_page - 1) el.insertAdjacentHTML('beforeend',
+            '<li class="page-item disabled"><span class="page-link">…</span></li>');
+        if (end < meta.last_page) add(meta.last_page, String(meta.last_page));
+        add(meta.current_page + 1, 'Next', false, meta.current_page >= meta.last_page);
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // Tabs
+    // ─────────────────────────────────────────────────────────
+    function bindTabs() {
+        document.querySelectorAll('#mainTabs [data-tab]').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('#mainTabs .nav-link').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+
+                const which = tab.dataset.tab;
+                document.getElementById('paneSubscriptions').classList.toggle('d-none', which !== 'subscriptions');
+                document.getElementById('panePayments').classList.toggle('d-none', which !== 'payments');
+
+                if (which === 'payments' && !payState.loadedOnce) {
+                    payState.loadedOnce = true;
+                    loadPayments();
+                }
+            });
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // STATS
+    // ─────────────────────────────────────────────────────────
     async function loadStats() {
         try {
             const url = new URL('{{ route("admin.employer-subscriptions.stats") }}');
-            url.searchParams.set('role', state.role);
+            url.searchParams.set('role', ROLE);
 
-            const res = await fetch(url.toString(), {
-                headers: { 'Accept': 'application/json' },
-            });
+            const res = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
             const data = await res.json();
             if (!data.success) return;
 
@@ -290,20 +457,22 @@
         } catch (e) { /* ignore */ }
     }
 
-    // ── Table
-    async function load() {
-        const wrap = document.getElementById('tableWrap');
+    // ─────────────────────────────────────────────────────────
+    // SUBSCRIPTIONS
+    // ─────────────────────────────────────────────────────────
+    async function loadSubs() {
+        const wrap  = document.getElementById('tableWrap');
         const pager = document.getElementById('paginationWrap');
         pager.classList.add('d-none');
         wrap.innerHTML = '<div class="text-center py-10"><div class="spinner-border text-primary"></div></div>';
 
         const params = new URLSearchParams({
-            page: state.page,
-            per_page: state.perPage,
-            role: state.role,
+            page: subsState.page,
+            per_page: subsState.perPage,
+            role: ROLE,
         });
         ['search','status','kind','country','from','to'].forEach(k => {
-            if (state[k]) params.set(k, state[k]);
+            if (subsState[k]) params.set(k, subsState[k]);
         });
 
         try {
@@ -313,14 +482,15 @@
             const data = await res.json();
 
             if (data.counts) {
-                document.getElementById('countAll').textContent     = data.counts.all ?? 0;
-                document.getElementById('countActive').textContent  = data.counts.active ?? 0;
-                document.getElementById('countTrialing').textContent= data.counts.trialing ?? 0;
-                document.getElementById('countPastDue').textContent = data.counts.past_due ?? 0;
+                document.getElementById('countAll').textContent      = data.counts.all ?? 0;
+                document.getElementById('countActive').textContent   = data.counts.active ?? 0;
+                document.getElementById('countTrialing').textContent = data.counts.trialing ?? 0;
+                document.getElementById('countPastDue').textContent  = data.counts.past_due ?? 0;
             }
 
-            if (!data.success || !data.data?.data?.length) {
-                wrap.innerHTML = empty('No subscriptions match.');
+            const rows = data.data?.data || [];
+            if (!data.success || rows.length === 0) {
+                wrap.innerHTML = emptyState('No subscriptions match.');
                 return;
             }
 
@@ -340,7 +510,7 @@
                             </tr>
                         </thead>
                         <tbody>
-                            ${data.data.data.map(row).join('')}
+                            ${rows.map(subscriptionRow).join('')}
                         </tbody>
                     </table>
                 </div>`;
@@ -349,26 +519,23 @@
                 btn.addEventListener('click', () => openDetail(btn.dataset.view));
             });
 
-            renderPagination(data.data);
+            renderPager('paginationList', 'paginationInfo', data.pagination, (page) => {
+                subsState.page = page;
+                loadSubs();
+            });
             pager.classList.remove('d-none');
         } catch (e) {
-            wrap.innerHTML = `<div class="alert alert-danger">Failed to load subscriptions.</div>`;
+            wrap.innerHTML = '<div class="alert alert-danger">Failed to load subscriptions.</div>';
         }
     }
 
-    function roleBadge(role) {
-        if (role === 'employer')   return '<span class="badge badge-light-primary ms-1">Employer</span>';
-        if (role === 'job_seeker') return '<span class="badge badge-light-success ms-1">Seeker</span>';
-        return '';
-    }
-
-    function row(s) {
+    function subscriptionRow(s) {
         return `
             <tr>
                 <td class="text-start">
                     <div class="fw-bold text-gray-800">
                         ${esc(s.user)}
-                        ${state.role === 'all' ? roleBadge(s.user_role) : ''}
+                        ${ROLE === 'all' ? roleBadge(s.user_role) : ''}
                     </div>
                     <div class="text-muted fs-8">${esc(s.email || '')}</div>
                 </td>
@@ -389,7 +556,7 @@
                 <td class="text-start">${s.status_badge}</td>
                 <td class="text-start text-muted fs-8">${formatDate(s.created_at)}</td>
                 <td class="text-end">
-                    <button class="btn btn-sm btn-icon btn-light" data-view="${s.uuid}" title="View">
+                    <button class="btn btn-sm btn-icon btn-light" data-view="${esc(s.uuid)}" title="View">
                         <i class="ki-duotone ki-eye fs-3">
                             <span class="path1"></span><span class="path2"></span><span class="path3"></span>
                         </i>
@@ -398,45 +565,136 @@
             </tr>`;
     }
 
-    function renderPagination(meta) {
-        const el = document.getElementById('paginationList');
-        const info = document.getElementById('paginationInfo');
-        el.innerHTML = '';
+    // ─────────────────────────────────────────────────────────
+    // PAYMENTS
+    // ─────────────────────────────────────────────────────────
+    async function loadPayments() {
+        const wrap  = document.getElementById('payTableWrap');
+        const pager = document.getElementById('payPaginationWrap');
+        pager.classList.add('d-none');
+        wrap.innerHTML = '<div class="text-center py-10"><div class="spinner-border text-primary"></div></div>';
 
-        info.textContent = meta.total
-            ? `Showing ${meta.from || 0} to ${meta.to || 0} of ${meta.total}`
-            : '0 records';
+        const params = new URLSearchParams({
+            page: payState.page,
+            per_page: payState.perPage,
+            role: ROLE,
+        });
+        ['search','status','country','from','to'].forEach(k => {
+            if (payState[k]) params.set(k, payState[k]);
+        });
 
-        const add = (page, text, active = false, disabled = false) => {
-            const li = document.createElement('li');
-            li.className = `page-item ${active ? 'active' : ''} ${disabled ? 'disabled' : ''}`;
-            const a = document.createElement('a');
-            a.className = 'page-link';
-            a.href = '#';
-            a.textContent = text;
-            if (!disabled && !active) {
-                a.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    state.page = page;
-                    load();
-                });
+        try {
+            const res = await fetch(`{{ route("admin.employer-subscriptions.payments") }}?${params}`, {
+                headers: { 'Accept': 'application/json' },
+            });
+            const data = await res.json();
+
+            if (data.counts) {
+                document.getElementById('payCountAll').textContent       = data.counts.all ?? 0;
+                document.getElementById('payCountCompleted').textContent = data.counts.completed ?? 0;
+                document.getElementById('payCountPending').textContent   = data.counts.pending ?? 0;
+                document.getElementById('payCountFailed').textContent    = data.counts.failed ?? 0;
+                document.getElementById('paymentsCountBadge').textContent = data.counts.all ?? 0;
             }
-            li.appendChild(a);
-            el.appendChild(li);
-        };
 
-        if (meta.current_page > 1) add(meta.current_page - 1, 'Prev');
-        const start = Math.max(1, meta.current_page - 2);
-        const end   = Math.min(meta.last_page, meta.current_page + 2);
-        if (start > 1) add(1, '1');
-        if (start > 2) el.insertAdjacentHTML('beforeend', '<li class="page-item disabled"><span class="page-link">…</span></li>');
-        for (let i = start; i <= end; i++) add(i, i, i === meta.current_page);
-        if (end < meta.last_page - 1) el.insertAdjacentHTML('beforeend', '<li class="page-item disabled"><span class="page-link">…</span></li>');
-        if (end < meta.last_page) add(meta.last_page, meta.last_page);
-        if (meta.current_page < meta.last_page) add(meta.current_page + 1, 'Next');
+            if (!data.success || !data.data?.length) {
+                wrap.innerHTML = emptyState('No payments match.');
+                return;
+            }
+
+            wrap.innerHTML = `
+                <div class="table-responsive">
+                    <table class="table align-middle table-row-dashed table-row-gray-300 fs-7 gy-3">
+                        <thead>
+                            <tr class="text-start text-gray-500 fw-bold fs-7 text-uppercase gs-0">
+                                <th class="text-start min-w-220px">Customer</th>
+                                <th class="text-start min-w-160px">Purpose</th>
+                                <th class="text-start min-w-140px">Amount</th>
+                                <th class="text-start min-w-120px">Status</th>
+                                <th class="text-start min-w-240px">Reference</th>
+                                <th class="text-start min-w-160px">When</th>
+                                <th class="text-end min-w-100px">Subscription</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.data.map(paymentRow).join('')}
+                        </tbody>
+                    </table>
+                </div>`;
+
+            wrap.querySelectorAll('[data-open-sub]').forEach(btn => {
+                btn.addEventListener('click', () => openDetail(btn.dataset.openSub));
+            });
+
+            renderPager('payPaginationList', 'payPaginationInfo', data.pagination, (page) => {
+                payState.page = page;
+                loadPayments();
+            });
+            pager.classList.remove('d-none');
+        } catch (e) {
+            wrap.innerHTML = '<div class="alert alert-danger">Failed to load payments.</div>';
+        }
     }
 
-    // ── Detail modal
+    function paymentRow(p) {
+        const color = {
+            completed: 'success',
+            pending:   'info',
+            failed:    'danger',
+            cancelled: 'secondary',
+            approved:  'primary',
+            refunded:  'warning',
+        }[p.status] || 'secondary';
+
+        const purposeColor = {
+            subscription:     'primary',
+            cv_review:        'info',
+            cv_rewrite:       'success',
+            cv_rewrite_human: 'success',
+            cover_letter:     'warning',
+            job_submission:   'dark',
+        }[p.purpose_type] || 'secondary';
+
+        return `
+            <tr>
+                <td class="text-start">
+                    <div class="fw-bold text-gray-800">
+                        ${esc(p.user)}
+                        ${ROLE === 'all' ? roleBadge(p.user_role) : ''}
+                    </div>
+                    <div class="text-muted fs-8">${esc(p.email || '')}</div>
+                </td>
+                <td class="text-start">
+                    <span class="badge badge-light-${purposeColor}">${esc(p.purpose_label)}</span>
+                    ${p.description ? `<div class="text-muted fs-8 mt-1">${esc(p.description.substring(0, 50))}</div>` : ''}
+                </td>
+                <td class="text-start fw-bold text-gray-800">${esc(p.amount_formatted)}</td>
+                <td class="text-start">
+                    <span class="badge badge-light-${color}">${esc(p.status_label)}</span>
+                </td>
+                <td class="text-start text-muted fs-8">
+                    <div>${esc(p.gateway)}</div>
+                    <div style="font-family:monospace;">${esc(p.reference || '—')}</div>
+                </td>
+                <td class="text-start text-muted fs-8">
+                    ${p.paid_at ? 'Paid ' + formatDate(p.paid_at) : 'Attempted ' + formatDate(p.created_at)}
+                </td>
+                <td class="text-end">
+                    ${p.purpose_reference ? `
+                        <button class="btn btn-sm btn-icon btn-light"
+                                data-open-sub="${esc(p.purpose_reference)}" title="View subscription">
+                            <i class="ki-duotone ki-eye fs-3">
+                                <span class="path1"></span><span class="path2"></span><span class="path3"></span>
+                            </i>
+                        </button>
+                    ` : '<span class="text-muted fs-8">—</span>'}
+                </td>
+            </tr>`;
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // DETAIL MODAL
+    // ─────────────────────────────────────────────────────────
     async function openDetail(uuid) {
         const body = document.getElementById('subDetailBody');
         body.innerHTML = '<div class="text-center py-10"><div class="spinner-border text-primary"></div></div>';
@@ -477,8 +735,7 @@
                     <td class="text-start">${p.status_badge}</td>
                     <td class="text-start text-muted fs-8">${p.failure_reason ? esc(p.failure_reason) : '—'}</td>
                     <td class="text-start text-muted fs-8">${p.paid_at ? formatDate(p.paid_at) : formatDate(p.created_at)}</td>
-                </tr>
-            `).join('')
+                </tr>`).join('')
             : '<tr><td colspan="5" class="text-center text-muted py-4">No payments recorded.</td></tr>';
 
         const webhookRows = webhooks.length
@@ -500,8 +757,7 @@
                         ${w.error_message ? esc(w.error_message.substring(0, 60)) : '—'}
                     </td>
                     <td class="text-start text-muted fs-8">${formatDate(w.created_at)}</td>
-                </tr>
-            `).join('')
+                </tr>`).join('')
             : '<tr><td colspan="6" class="text-center text-muted py-4">No webhook events for this subscription.</td></tr>';
 
         return `
@@ -608,46 +864,100 @@
                     </thead>
                     <tbody>${webhookRows}</tbody>
                 </table>
-            </div>
-        `;
-    }
-
-    // ── Helpers
-    function formatDate(d) {
-        if (!d) return '—';
-        return new Date(d).toLocaleString();
-    }
-    function formatMoney(cents) {
-        const amount = (cents || 0) / 100;
-        return amount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
-    }
-    function esc(t) {
-        if (t === null || t === undefined) return '';
-        const div = document.createElement('div');
-        div.textContent = String(t);
-        return div.innerHTML;
-    }
-    function empty(msg) {
-        return `
-            <div class="text-center py-15">
-                <i class="ki-duotone ki-information-5 fs-5tx text-muted mb-4 d-block">
-                    <span class="path1"></span><span class="path2"></span><span class="path3"></span>
-                </i>
-                <h4 class="fw-bold text-gray-800 mb-2">Nothing here</h4>
-                <p class="text-muted">${esc(msg)}</p>
             </div>`;
     }
-    function debounce(fn, wait) {
-        let timer;
-        return (...args) => {
-            clearTimeout(timer);
-            timer = setTimeout(() => fn(...args), wait);
-        };
-    }
 
-    // ── Boot
+    // ─────────────────────────────────────────────────────────
+    // Filter bindings — Subscriptions
+    // ─────────────────────────────────────────────────────────
+    document.getElementById('applyFilters')?.addEventListener('click', () => {
+        subsState.search  = document.getElementById('search').value.trim();
+        subsState.status  = document.getElementById('filterStatus').value;
+        subsState.kind    = document.getElementById('filterKind').value;
+        subsState.country = document.getElementById('filterCountry').value;
+        subsState.from    = document.getElementById('filterFrom').value;
+        subsState.to      = document.getElementById('filterTo').value;
+        subsState.page    = 1;
+        loadSubs();
+    });
+
+    document.getElementById('clearFilters')?.addEventListener('click', () => {
+        ['search','filterStatus','filterKind','filterCountry','filterFrom','filterTo']
+            .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+        Object.assign(subsState, { search:'', status:'', kind:'', country:'', from:'', to:'', page:1 });
+        loadSubs();
+    });
+
+    document.getElementById('search')?.addEventListener('input', debounce(() => {
+        document.getElementById('applyFilters').click();
+    }, 400));
+
+    document.getElementById('perPage')?.addEventListener('change', function () {
+        subsState.perPage = parseInt(this.value) || 25;
+        subsState.page = 1;
+        loadSubs();
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // Filter bindings — Payments
+    // ─────────────────────────────────────────────────────────
+    document.getElementById('payApplyFilters')?.addEventListener('click', () => {
+        payState.search  = document.getElementById('paySearch').value.trim();
+        payState.status  = document.getElementById('payFilterStatus').value;
+        payState.country = document.getElementById('payFilterCountry').value;
+        payState.from    = document.getElementById('payFilterFrom').value;
+        payState.to      = document.getElementById('payFilterTo').value;
+        payState.page    = 1;
+        loadPayments();
+    });
+
+    document.getElementById('payClearFilters')?.addEventListener('click', () => {
+        ['paySearch','payFilterStatus','payFilterCountry','payFilterFrom','payFilterTo']
+            .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+        Object.assign(payState, { search:'', status:'', country:'', from:'', to:'', page:1 });
+        loadPayments();
+    });
+
+    document.getElementById('paySearch')?.addEventListener('input', debounce(() => {
+        document.getElementById('payApplyFilters').click();
+    }, 400));
+
+    document.getElementById('payPerPage')?.addEventListener('change', function () {
+        payState.perPage = parseInt(this.value) || 25;
+        payState.page = 1;
+        loadPayments();
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // Reload
+    // ─────────────────────────────────────────────────────────
+    document.getElementById('reloadBtn')?.addEventListener('click', () => {
+        loadStats();
+        loadSubs();
+        if (payState.loadedOnce) loadPayments();
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // Boot
+    // ─────────────────────────────────────────────────────────
+    bindTabs();
     loadStats();
-    load();
+    loadSubs();
+
+    // Load payments count on boot so the badge isn't stuck at 0
+    (async () => {
+        try {
+            const url = new URL('{{ route("admin.employer-subscriptions.payments") }}');
+            url.searchParams.set('role', ROLE);
+            url.searchParams.set('per_page', '1');
+
+            const res = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
+            const data = await res.json();
+            if (data.success && data.counts) {
+                document.getElementById('paymentsCountBadge').textContent = data.counts.all ?? 0;
+            }
+        } catch (e) { /* ignore */ }
+    })();
 })();
 </script>
 @endpush

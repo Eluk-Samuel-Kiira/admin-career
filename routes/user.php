@@ -233,10 +233,9 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
 use App\Http\Controllers\Employer\EmployerSubscriptionController;
 
 Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () {
-    // ... existing
-
     Route::get('/employer-subscriptions',              [EmployerSubscriptionController::class, 'index'])->name('employer-subscriptions.index');
     Route::get('/employer-subscriptions/stats',        [EmployerSubscriptionController::class, 'stats'])->name('employer-subscriptions.stats');
     Route::get('/employer-subscriptions/data',         [EmployerSubscriptionController::class, 'data'])->name('employer-subscriptions.data');
+    Route::get('/employer-subscriptions/payments',     [EmployerSubscriptionController::class, 'payments'])->name('employer-subscriptions.payments');  // ← ADD
     Route::get('/employer-subscriptions/{uuid}',       [EmployerSubscriptionController::class, 'show'])->name('employer-subscriptions.show');
 });
