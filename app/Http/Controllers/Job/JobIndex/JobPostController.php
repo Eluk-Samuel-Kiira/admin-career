@@ -240,27 +240,30 @@ class JobPostController extends Controller
         if (!auth()->user()->can('feature jobs')) {
             return response()->json([
                 'success' => false,
-                'message' => 'You do not have permission to feature jobs.'
-            ]);
+                'message' => 'You do not have permission to feature jobs.',
+            ], 403);
         }
-        try {
-            $jobPost = JobPost::findOrFail($id);
-            $jobPost->is_featured = !$jobPost->is_featured;
-            $jobPost->save();
 
-            return response()->json([
-                'success' => true,
-                'message' => $jobPost->is_featured ? 'Job post featured successfully!' : 'Job post unfeatured!',
-                'is_featured' => $jobPost->is_featured
-            ]);
+        $jobPost = JobPost::findOrFail($id);
 
-        } catch (\Exception $e) {
-            \Log::error('Failed to toggle featured: ' . $e->getMessage());
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to toggle featured: ' . $e->getMessage()
-            ], 500);
+        if ($jobPost->is_featured) {
+            // Unfeaturing — clear both the flag and the window
+            $jobPost->is_featured    = false;
+            $jobPost->featured_until = null;
+        } else {
+            // Featuring without a duration — default to 7 days
+            $jobPost->is_featured    = true;
+            $jobPost->featured_until = now()->addDays(7);
         }
+
+        $jobPost->save();
+
+        return response()->json([
+            'success'        => true,
+            'message'        => $jobPost->is_featured ? 'Job post featured for 7 days.' : 'Job post unfeatured.',
+            'is_featured'    => $jobPost->is_featured,
+            'featured_until' => $jobPost->featured_until?->toISOString(),
+        ]);
     }
 
     /**
@@ -328,35 +331,26 @@ class JobPostController extends Controller
         if (!auth()->user()->can('feature jobs')) {
             return response()->json([
                 'success' => false,
-                'message' => 'You do not have permission to feature jobs.'
-            ]);
+                'message' => 'You do not have permission to feature jobs.',
+            ], 403);   // ← add 403 status code
         }
-        
-        try {
-            $request->validate([
-                'days' => 'required|integer|min:1|max:365',
-            ]);
 
-            $jobPost = JobPost::findOrFail($id);
-            $days = (int) $request->input('days');
-            
-            $jobPost->is_featured = true;
-            $jobPost->featured_until = now()->addDays($days);
-            $jobPost->save();
+        $request->validate([
+            'days' => 'required|integer|min:1|max:365',
+        ]);
 
-            return response()->json([
-                'success' => true,
-                'message' => "Job post featured successfully until {$jobPost->featured_until->format('M d, Y')}!",
-                'featured_until' => $jobPost->featured_until
-            ]);
+        $jobPost = JobPost::findOrFail($id);
+        $days    = (int) $request->input('days');
 
-        } catch (\Exception $e) {
-            \Log::error('Failed to feature job post: ' . $e->getMessage());
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to feature job post: ' . $e->getMessage()
-            ], 500);
-        }
+        $jobPost->is_featured    = true;
+        $jobPost->featured_until = now()->addDays($days);
+        $jobPost->save();   // saving hook keeps is_featured in sync
+
+        return response()->json([
+            'success'        => true,
+            'message'        => "Job post featured successfully until {$jobPost->featured_until->format('M d, Y')}!",
+            'featured_until' => $jobPost->featured_until->toISOString(),
+        ]);
     }
 
     

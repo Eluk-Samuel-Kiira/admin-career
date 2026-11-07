@@ -178,6 +178,24 @@ class JobPost extends Model
         'experience_months' => 'integer',
     ];
 
+
+    protected static function booted(): void
+    {
+        // Whenever featured_until changes, keep is_featured in sync
+        static::saving(function (self $model) {
+            if ($model->isDirty('featured_until')) {
+                // If the window has passed, auto-unfeature
+                if ($model->featured_until && $model->featured_until->isPast()) {
+                    $model->is_featured = false;
+                }
+                // If they're explicitly setting a future window, ensure the flag is on
+                elseif ($model->featured_until && $model->featured_until->isFuture()) {
+                    $model->is_featured = true;
+                }
+            }
+        });
+    }
+
     // Relationships
     public function company()
     {
@@ -272,6 +290,37 @@ class JobPost extends Model
     public function scopePending($query)
     {
         return $query->whereNull('migrated_at');
+    }
+
+    /**
+     * Is the featured window still open?
+     * This is the source of truth — `is_featured` is just a static flag.
+     */
+    public function getIsFeaturedActiveAttribute(): bool
+    {
+        if (!$this->is_featured) {
+            return false;
+        }
+
+        // NULL featured_until means "always featured" (no expiry set)
+        if (is_null($this->featured_until)) {
+            return true;
+        }
+
+        return $this->featured_until->isFuture();
+    }
+
+    /**
+     * Scope: jobs whose featured window is currently open.
+     * Use this everywhere instead of `->where('is_featured', true)`.
+     */
+    public function scopeCurrentlyFeatured($query)
+    {
+        return $query->where('is_featured', true)
+            ->where(function ($q) {
+                $q->whereNull('featured_until')
+                ->orWhere('featured_until', '>=', now());
+            });
     }
 
     public function scopeByCountry($query, $countryCode)
