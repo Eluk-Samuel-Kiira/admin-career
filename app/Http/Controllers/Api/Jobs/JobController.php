@@ -221,40 +221,47 @@ class JobController extends Controller
     {
         try {
             $countryCode = $request->input('country_code', 'AU');
-            $limit = $request->input('limit', 10);
+            $limit       = (int) $request->input('limit', 10);
 
             $jobs = JobPost::with([
-                'company',
-                'jobLocation',
-                'jobType'
-            ])
-            ->where('country_code', $countryCode)
-            ->where('is_active', true)
-            ->where('is_featured', true)
-            ->whereNotNull('published_at')
-            ->where('published_at', '<=', now())
-            ->where(function($query) {
-                $query->whereNull('featured_until')
-                    ->orWhere('featured_until', '>=', now());
-            })
-            ->orderByRaw('(legacy_id IS NULL) DESC')
-            ->orderBy('published_at', 'desc')
-            ->limit($limit)
-            ->get()
-            ->map(function($job) {
-                return $this->formatJobData($job);
-            });
+                    'company',
+                    'jobLocation',
+                    'jobType',
+                ])
+                ->where('country_code', $countryCode)
+                ->where('is_active', true)
+                ->where('is_featured', true)
+                ->whereNotNull('published_at')
+                ->where('published_at', '<=', now())
+                // ── Featured window still open ────────────────────────
+                ->where(function ($query) {
+                    $query->whereNull('featured_until')
+                        ->orWhere('featured_until', '>=', now());
+                })
+                // ── Application deadline still open ───────────────────
+                // NULL deadline = "never expires" (legacy posts often have
+                // a placeholder 2076 deadline; those still resolve to future
+                // dates and pass this filter, which is fine).
+                ->where(function ($query) {
+                    $query->whereNull('deadline')
+                        ->orWhere('deadline', '>=', now()->toDateString());
+                })
+                ->orderByRaw('(legacy_id IS NULL) DESC')
+                ->orderBy('published_at', 'desc')
+                ->limit($limit)
+                ->get()
+                ->map(fn ($job) => $this->formatJobData($job));
 
             return response()->json([
                 'success' => true,
-                'data' => $jobs
+                'data'    => $jobs,
             ]);
 
         } catch (\Exception $e) {
             Log::error('Error fetching featured jobs: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
-                'data' => []
+                'data'    => [],
             ]);
         }
     }
