@@ -4,253 +4,274 @@ namespace App\Http\Controllers\Job\JobPosting;
 
 use App\Http\Controllers\Controller;
 use App\Services\Jobs\AiService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Validator;
 
 class AiJobController extends Controller
 {
-    protected AiService $aiService;
+    public function __construct(protected AiService $aiService) {}
 
-    public function __construct(AiService $aiService)
+    public function getModels(): JsonResponse
     {
-        $this->aiService = $aiService;
-    }
-
-    public function getModels()
-    {
-        return response()->json([
-            'success' => true,
-            'data' => $this->aiService->getAvailableModels(),
+        return $this->success([
+            'data'    => $this->aiService->getAvailableModels(),
             'default' => config('ai.default', 'gemini'),
         ]);
     }
 
-    public function extractJobData(Request $request)
+    public function extractJobData(Request $request): JsonResponse
     {
-        $request->validate([
-            'model' => 'nullable|string',
-            'content' => 'required|string',
+        if ($bad = $this->invalid($request, [
+            'model'       => 'nullable|string',
+            'content'     => 'required|string',
             'source_type' => 'required|in:text,url',
-            'country' => 'nullable|string|size:2',
-            'position' => 'nullable|string|max:150', // pick one position when an advert lists several
-        ]);
+            'country'     => 'nullable|string|size:2',
+            'position'    => 'nullable|string|max:150',
+        ])) {
+            return $bad;
+        }
 
-        $model = $request->model ?? config('ai.default');
+        $model = $request->input('model') ?: config('ai.default');
 
         try {
             $result = $this->aiService->extractJobData(
-                $request->content,
-                $request->source_type,
+                $request->input('content'),
+                $request->input('source_type'),
                 $model,
-                $request->country,
-                $request->position
+                $request->input('country'),
+                $request->input('position')
             );
 
-            return response()->json([
-                'success' => true,
-                'data' => $result,
-            ]);
+            return $this->success(['data' => $result]);
         } catch (\Throwable $e) {
-            $errorMessage = $e->getMessage();
-            
-            // Parse the error message to extract per-model errors
-            $modelErrors = $this->parseModelErrors($errorMessage);
-            
-            Log::error('AI extraction failed', ['model' => $model, 'error' => $errorMessage]);
-
-            return response()->json([
-                'success' => false,
-                'errors' => $modelErrors,
-                'message' => 'AI extraction failed'
-            ], 422);
+            return $this->failure($e, 'extract_job', $model);
         }
     }
 
-    public function extractFromImage(Request $request)
+    public function extractFromImage(Request $request): JsonResponse
     {
-        $request->validate([
-            'model' => 'nullable|string',
+        if ($bad = $this->invalid($request, [
+            'model'        => 'nullable|string',
             'image_base64' => 'required|string',
-            'country' => 'nullable|string|size:2',
-        ]);
+            'country'      => 'nullable|string|size:2',
+        ])) {
+            return $bad;
+        }
 
-        $model = $request->model ?? config('ai.default');
+        $model = $request->input('model') ?: config('ai.default');
 
         try {
-            $result = $this->aiService->extractFromImage($request->image_base64, $model, $request->country);
+            $result = $this->aiService->extractFromImage(
+                $request->input('image_base64'),
+                $model,
+                $request->input('country')
+            );
 
-            return response()->json([
-                'success' => true,
-                'data' => $result,
-            ]);
+            return $this->success(['data' => $result]);
         } catch (\Throwable $e) {
-            $errorMessage = $e->getMessage();
-            $modelErrors = $this->parseModelErrors($errorMessage);
-            
-            Log::error('Image extraction failed', ['model' => $model, 'error' => $errorMessage]);
-
-            return response()->json([
-                'success' => false,
-                'errors' => $modelErrors,
-                'message' => 'Image extraction failed'
-            ], 422);
+            return $this->failure($e, 'extract_image', $model);
         }
     }
 
-    public function enhanceField(Request $request)
+    public function enhanceField(Request $request): JsonResponse
     {
-        $request->validate([
-            'model' => 'nullable|string',
-            'field_name' => 'required|string',
-            'content' => 'required|string',
+        if ($bad = $this->invalid($request, [
+            'model'       => 'nullable|string',
+            'field_name'  => 'required|string',
+            'content'     => 'required|string',
             'instruction' => 'required|string',
-        ]);
+        ])) {
+            return $bad;
+        }
 
-        $model = $request->model ?? config('ai.default');
+        $model = $request->input('model') ?: config('ai.default');
 
         try {
             $enhanced = $this->aiService->enhanceField(
-                $request->field_name,
-                $request->content,
-                $request->instruction,
+                $request->input('field_name'),
+                $request->input('content'),
+                $request->input('instruction'),
                 $model
             );
 
-            return response()->json([
-                'success' => true,
-                'enhanced' => $enhanced,
-            ]);
+            return $this->success(['enhanced' => $enhanced]);
         } catch (\Throwable $e) {
-            $errorMessage = $e->getMessage();
-            $modelErrors = $this->parseModelErrors($errorMessage);
-            
-            Log::error('AI enhance field failed', [
-                'model' => $model,
-                'field_name' => $request->field_name,
-                'error' => $errorMessage,
-            ]);
-            
-            return response()->json([
-                'success' => false,
-                'errors' => $modelErrors,
-                'message' => 'Failed to enhance field'
-            ], 422);
+            return $this->failure($e, 'enhance_field', $model);
         }
     }
 
-    public function generateFromTitle(Request $request)
+    public function generateFromTitle(Request $request): JsonResponse
     {
-        $request->validate([
-            'model' => 'nullable|string',
-            'title' => 'required|string',
+        if ($bad = $this->invalid($request, [
+            'model'   => 'nullable|string',
+            'title'   => 'required|string',
             'company' => 'nullable|string',
             'country' => 'nullable|string|size:2',
-        ]);
+        ])) {
+            return $bad;
+        }
 
-        $model = $request->model ?? config('ai.default');
+        $model = $request->input('model') ?: config('ai.default');
 
         try {
             $result = $this->aiService->generateFromTitle(
-                $request->title,
-                $request->company,
-                $request->country,
+                $request->input('title'),
+                $request->input('company'),
+                $request->input('country'),
                 $model
             );
 
-            return response()->json([
-                'success' => true,
-                'data' => $result,
-            ]);
+            return $this->success(['data' => $result]);
         } catch (\Throwable $e) {
-            $errorMessage = $e->getMessage();
-            $modelErrors = $this->parseModelErrors($errorMessage);
-            
-            Log::error('AI generate from title failed', [
-                'model' => $model,
-                'title' => $request->title,
-                'error' => $errorMessage,
-            ]);
-            
-            return response()->json([
-                'success' => false,
-                'errors' => $modelErrors,
-                'message' => 'Failed to generate job posting'
-            ], 422);
+            return $this->failure($e, 'generate_from_title', $model);
         }
     }
 
+    /* ==================================================================
+     | Response helpers
+     * ================================================================== */
+
+    private function success(array $payload): JsonResponse
+    {
+        return response()->json(['success' => true] + $payload);
+    }
+
     /**
-     * Parse the error message to extract per-model errors.
-     * Now handles both the old string format and the new JSON-encoded format.
+     * Validation failures are always returned as JSON, never as a redirect or HTML page.
+     */
+    private function invalid(Request $request, array $rules): ?JsonResponse
+    {
+        $validator = Validator::make($request->all(), $rules);
+
+        if (!$validator->fails()) {
+            return null;
+        }
+
+        return response()->json([
+            'success'   => false,
+            'type'      => 'validation',
+            'message'   => 'Some details are missing or invalid. Please check the form and try again.',
+            'fields'    => $validator->errors(),
+            'errors'    => [],
+            'retryable' => false,
+        ], 422);
+    }
+
+    /**
+     * Every failure goes through here. The response always carries:
+     *  - type      : a machine-readable category the front end can branch on
+     *  - message   : a plain-English explanation for the user
+     *  - errors    : per-model reasons, e.g. ["Gemini" => "quota exceeded"]
+     *  - retryable : whether trying again might work
+     */
+    private function failure(\Throwable $e, string $context, ?string $model): JsonResponse
+    {
+        $raw    = $e->getMessage();
+        $errors = $this->parseModelErrors($raw);
+        $type   = $this->classify($raw, $errors);
+
+        Log::warning('AI request failed', [
+            'context' => $context,
+            'model'   => $model,
+            'type'    => $type,
+            'error'   => mb_substr($raw, 0, 500),
+        ]);
+
+        $payload = [
+            'success'   => false,
+            'type'      => $type,
+            'message'   => $this->friendlyMessage($type),
+            'errors'    => $errors,
+            'retryable' => in_array($type, ['timeout', 'quota', 'model_unavailable', 'incomplete_reply', 'unknown'], true),
+        ];
+
+        // Show the raw technical detail only on a development server
+        if (app()->hasDebugMode()) {
+            $payload['debug'] = mb_substr($raw, 0, 1000);
+        }
+
+        return response()->json($payload, 422);
+    }
+
+    /* ==================================================================
+     | Error interpretation
+     * ================================================================== */
+
+    /**
+     * Turns the exception text into per-model reasons. Always returns at least one entry.
      */
     private function parseModelErrors(string $message): array
     {
-        // First, try to decode as JSON
         $decoded = json_decode($message, true);
-        if (isset($decoded['type']) && $decoded['type'] === 'model_errors' && isset($decoded['errors'])) {
-            // Return the errors array directly (model names as keys, error messages as values)
-            return $decoded['errors'];
+
+        if (is_array($decoded) && ($decoded['type'] ?? null) === 'model_errors' && !empty($decoded['errors'])) {
+            return array_map(fn ($e) => $this->cleanError((string) $e), $decoded['errors']);
         }
 
-        // Fallback: old parsing logic for string format
-        $errors = [];
-        
-        // Split by " | " to get each model's error
-        $parts = explode(' | ', $message);
-        
-        if (count($parts) > 1) {
-            foreach ($parts as $part) {
-                if (preg_match('/\[([^\]]+)\]\s*(.*)/', $part, $matches)) {
-                    $model = $matches[1];
-                    $error = $matches[2];
-                    
-                    // Try to extract "message" from JSON
-                    if (preg_match('/"message"\s*:\s*"([^"]+)"/', $error, $msgMatch)) {
-                        $error = $msgMatch[1];
-                    } else {
-                        // Clean up the error text
-                        $error = preg_replace('/HTTP request returned status code \d+:\s*/', '', $error);
-                        $error = preg_replace('/\{.*\}/', '', $error);
-                        $error = preg_replace('/\\n/', ' ', $error);
-                        $error = trim($error);
-                    }
-                    
-                    if (!empty($error)) {
-                        $errors[$model] = $error;
-                    }
-                }
-            }
-        } else {
-            // Single error or unparseable format
-            $error = $message;
-            
-            // Try to extract "message" from JSON
-            if (preg_match('/"message"\s*:\s*"([^"]+)"/', $error, $msgMatch)) {
-                $error = $msgMatch[1];
-            } else {
-                $error = preg_replace('/All AI models failed:\s*/', '', $error);
-                $error = preg_replace('/HTTP request returned status code \d+:\s*/', '', $error);
-                $error = preg_replace('/\{.*\}/', '', $error);
-                $error = preg_replace('/\\n/', ' ', $error);
-                $error = trim($error);
-            }
-            
-            if (!empty($error)) {
-                // Try to determine the model name from the message
-                $modelName = 'AI Service';
-                if (stripos($message, 'gemini') !== false) $modelName = 'Gemini';
-                elseif (stripos($message, 'openai') !== false) $modelName = 'OpenAI';
-                elseif (stripos($message, 'claude') !== false) $modelName = 'Claude';
-                elseif (stripos($message, 'grok') !== false) $modelName = 'Grok';
-                elseif (stripos($message, 'cohere') !== false) $modelName = 'Cohere';
-                elseif (stripos($message, 'mistral') !== false) $modelName = 'Mistral';
-                
-                $errors[$modelName] = $error ?: 'Extraction failed. Please try again.';
-            } else {
-                $errors['AI Service'] = 'Extraction failed. Please check your API keys and try again.';
+        // A single-model error, e.g. "API error (gemini): ..."
+        $model = 'AI Service';
+        if (preg_match('/API error \((\w+)\)/i', $message, $m)) {
+            $model = ucfirst(strtolower($m[1]));
+        }
+
+        return [$model => $this->cleanError($message)];
+    }
+
+    private function cleanError(string $text): string
+    {
+        $text = preg_replace('/^API error \([^)]+\):\s*/', '', $text);
+        $text = trim(preg_replace('/\s+/', ' ', $text));
+
+        return $text !== '' ? mb_substr($text, 0, 300) : 'No details were returned.';
+    }
+
+    /**
+     * Works out what kind of failure this was, so the page can show the right advice.
+     * Timeouts are checked first, so a URL that timed out is not reported as "no posting".
+     */
+    private function classify(string $raw, array $errors): string
+    {
+        $text = strtolower($raw . ' ' . implode(' ', $errors));
+
+        if (preg_match('/timed out|timeout/', $text)) {
+            return 'timeout';
+        }
+        if (preg_match('/status code 429|quota|resource_exhausted|rate limit|too many requests/', $text)) {
+            return 'quota';
+        }
+
+        if (!empty($errors)) {
+            $notEnabled = count(array_filter($errors, fn ($e) => str_contains(strtolower($e), 'not enabled')));
+            if ($notEnabled === count($errors)) {
+                return 'not_configured';
             }
         }
-        
-        return $errors;
+
+        if (preg_match('/no valid job posting|no job posting could be read|does not exist|not a real job/', $text)) {
+            return 'no_posting';
+        }
+        if (preg_match('/cut off|cut short|not valid json|could not be parsed|too short|is missing/', $text)) {
+            return 'incomplete_reply';
+        }
+        if (!empty($errors)) {
+            return 'model_unavailable';
+        }
+
+        return 'unknown';
+    }
+
+    private function friendlyMessage(string $type): string
+    {
+        return match ($type) {
+            'no_posting'       => 'No job advert was found in the text or page you provided. Paste the full advert, or check that the link opens in a browser.',
+            'timeout'          => 'The AI took too long to reply. Very long adverts can take a few minutes, so please try again.',
+            'quota'            => 'The AI providers have reached their usage limit for now. Please try again in a few minutes.',
+            'not_configured'   => 'No AI model is set up on the server. Check the API keys in the settings.',
+            'incomplete_reply' => 'The AI reply was incomplete, so nothing was saved. Please try again.',
+            'model_unavailable'=> 'The AI models could not complete this request. See the details for each model below.',
+            default            => 'Extraction failed for an unexpected reason. Please try again.',
+        };
     }
 }

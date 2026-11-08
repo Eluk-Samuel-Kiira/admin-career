@@ -197,10 +197,10 @@ class BlogController extends Controller
             $validated = $request->validate([
                 'title' => 'required|string|max:255',
                 'content' => 'required|string',
-                'excerpt' => 'nullable|string|max:500',
+                'excerpt' => 'nullable|string|max:400',
                 'category' => 'nullable|string|max:100',
                 'tags' => 'nullable|array',
-                'cover_image' => 'nullable|string|max:500',
+                'cover_image' => 'required|string|max:500',
                 'cover_image_alt' => 'nullable|string|max:255',
                 'cover_image_caption' => 'nullable|string|max:255',
                 'author_id' => 'nullable|exists:users,id',

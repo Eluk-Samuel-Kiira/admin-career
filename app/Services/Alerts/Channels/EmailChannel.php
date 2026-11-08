@@ -56,8 +56,8 @@ class EmailChannel
      */
     protected function resolveCountry($seeker): ?Country
     {
-        \Log::info($seeker->country);
-        \Log::info($seeker->country);
+        // \Log::info($seeker->country);
+        // \Log::info($seeker->country);
 
         $candidates = array_filter([
             $seeker->preferred_country_code ?? null,

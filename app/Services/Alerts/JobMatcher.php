@@ -2,69 +2,121 @@
 
 namespace App\Services\Alerts;
 
+use App\Models\Job\Country;
 use App\Models\Job\JobPost;
 use App\Models\SeekerProfile;
+use App\Services\Skills\SkillMatcher;
 use Illuminate\Support\Collection;
 
 class JobMatcher
 {
-    public const MAX_JOBS = 15;
+    public const MAX_JOBS = 10;
 
-    /**
-     * Given a seeker's parsed preferences, return the top matching active jobs.
-     * Order: featured first, then by published_at desc.
-     */
+    /** Request-scoped cache: name/code → ISO code */
+    protected static array $countryCache = [];
+
+    public function __construct(protected SkillMatcher $skillMatcher) {}
+
     public function match(SeekerProfile $seeker, array $prefs, int $limit = self::MAX_JOBS): Collection
     {
-        $query = JobPost::query()
-            ->with(['company:id,name,logo', 'jobLocation:id,district,city,country_code'])
+        $wantsAll  = !empty($prefs['all_job_alerts']);
+        $cats      = array_values(array_filter((array) ($prefs['alert_by_category'] ?? [])));
+        $useSkill  = !empty($prefs['alert_by_skill_match']) || !empty($prefs['alert_by_cv_skill']);
+        $threshold = (int) ($prefs['skill_match_threshold'] ?? 50);
+
+        $query = JobPost::with(['company:id,name', 'jobLocation'])
             ->where('is_active', true)
-            ->where(function ($q) {
-                $q->whereNull('published_until')
-                  ->orWhere('published_until', '>=', now());
-            })
-            ->where(function ($q) {
-                $q->whereNull('deadline')->orWhere('deadline', '>=', now());
-            });
+            ->whereNotNull('published_at')
+            ->where('deadline', '>=', now())
+            ->orderByDesc('published_at');
 
-        // Country scope — use the seeker's preferred country if set, else their country
-        $country = $seeker->preferred_country_code
-            ?: $seeker->country
-            ?: $seeker->user?->country_code
-            ?: 'UG';
-        $country = strtoupper(substr($country, 0, 2) === $country ? $country : strtoupper($country));
-        // Some rows store the country name; only filter when we have a 2-letter code
-        if (strlen($country) === 2) {
-            $query->where('country_code', $country);
+        // ── Country (resolve name → ISO code via Country model)
+        $countryCode = $this->resolveCountryCode($seeker);
+        if ($countryCode) {
+            $query->where('country_code', $countryCode);
         }
 
-        // Category filter — the heart of the preference model
-        $categories = $prefs['alert_by_category'] ?? [];
-        if (!empty($categories)) {
-            $query->whereIn('job_category_id', $categories);
+        // ── Category filter (job_category_id IN …) unless "all jobs" mode
+        if (!$wantsAll && !empty($cats)) {
+            $query->whereIn('job_category_id', $cats);
         }
 
-        // Skill matching
-        if (!empty($prefs['alert_by_cv_skill']) || !empty($prefs['alert_by_skill_match'])) {
-            $skills = $seeker->skills_array;
-            if (!empty($skills)) {
-                $threshold = (int) ($prefs['skill_match_threshold'] ?? 50);
-                $query->where(function ($q) use ($skills) {
-                    foreach ($skills as $skill) {
-                        $q->orWhere('skills', 'like', '%' . $skill . '%');
-                    }
-                });
+        $jobs = $query->limit(500)->get();
 
-                // If both flags are on, honour the threshold by only accepting jobs
-                // where at least one skill was matched. The like-filter above already
-                // guarantees that. The threshold is reserved for future scoring.
+        // ── Skill threshold (only when enabled)
+        if ($useSkill && $jobs->isNotEmpty()) {
+            $scored = $jobs->map(fn ($j) => [
+                'job'   => $j,
+                'score' => $this->skillMatcher->score($seeker, $j),
+            ]);
+
+            $anyScore = (int) ($scored->max('score') ?? 0);
+
+            if ($anyScore > 0) {
+                $jobs = $scored
+                    ->filter(fn ($r) => $r['score'] >= $threshold)
+                    ->sortByDesc('score')
+                    ->pluck('job')
+                    ->values();
+            } else {
+                // Seeker has no usable skills OR job fields are empty.
+                // Don't nuke the whole list — fall back to category/country filtered jobs.
+                \Log::info('JobMatcher: skill score was 0 for every candidate — skipping threshold', [
+                    'seeker_id'  => $seeker->id,
+                    'candidates' => $jobs->count(),
+                ]);
+                $jobs = $scored->pluck('job')->values();
             }
         }
 
-        return $query
-            ->orderByDesc('is_featured')
-            ->orderByDesc('published_at')
-            ->limit($limit)
-            ->get();
+        return $jobs->take($limit)->values();
+    }
+
+    /**
+     * Try preferred_country_code → user.country_code → seeker.country,
+     * return a 2-char ISO code. Handles both "UG" and "Uganda".
+     */
+    protected function resolveCountryCode(SeekerProfile $seeker): ?string
+    {
+        $candidates = [
+            $seeker->preferred_country_code,
+            $seeker->user?->country_code,
+            $seeker->country,
+        ];
+
+        foreach ($candidates as $value) {
+            $code = $this->toCode($value);
+            if ($code) return $code;
+        }
+
+        return null;
+    }
+
+    /**
+     * "UG" → "UG"; "Uganda" → "UG"; "uganda" → "UG"; "" → null.
+     */
+    protected function toCode(?string $value): ?string
+    {
+        if ($value === null) return null;
+
+        $value = trim($value);
+        if ($value === '') return null;
+
+        // Already a 2-letter code
+        if (preg_match('/^[A-Za-z]{2}$/', $value)) {
+            return strtoupper($value);
+        }
+
+        $key = strtolower($value);
+        if (array_key_exists($key, self::$countryCache)) {
+            return self::$countryCache[$key];
+        }
+
+        // Look up via Country model (name is unique enough; also try code)
+        $code = Country::whereRaw('LOWER(name) = ?', [$key])
+            ->orWhereRaw('LOWER(code) = ?', [$key])
+            ->value('code');
+
+        return self::$countryCache[$key] = $code ? strtoupper($code) : null;
     }
 }
