@@ -12,8 +12,8 @@ use Illuminate\Support\Str;
 class JobSharingController extends Controller
 {
     private const PER_BATCH        = 10;
-    private const MAX_SKILLS       = 4;   // show at most 4 skills per job
-    private const SKILLS_MAX_CHARS = 60;  // and keep the skills line short
+    private const MAX_SKILLS       = 4;   
+    private const SKILLS_MAX_CHARS = 60;  
     private const BRAND            = 'Stardena Careers';
     private const CONTACT_PHONE    = '+256 754 428612';
     private const CONTACT_EMAIL    = 'stardenacareers@gmail.com';

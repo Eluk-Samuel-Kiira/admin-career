@@ -27,8 +27,6 @@ class JobAlertMail extends Mailable
             ?: 'there';
 
         $subject = match ($this->decision['kind']) {
-            'cv_prompt'          => "{$firstName}, upload your CV to get noticed",
-            'profile_prompt'     => "{$firstName}, finish your profile to get more jobs",
             'preferences_prompt' => "{$firstName}, set your job preferences",
             default              => "New jobs for you, {$firstName}",
         };

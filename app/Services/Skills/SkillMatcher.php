@@ -10,10 +10,15 @@ class SkillMatcher
     public function __construct(protected SkillNormaliser $normaliser) {}
 
     /**
-     * Score = (unique_seeker_tokens_found_anywhere / total_seeker_tokens) * 100
+     * Score = (matched / job_target_tokens) * 100
      *
-     * "Anywhere" means: job.skills OR job.title OR job.description.
-     * A hit in ANY field counts once — we dedupe.
+     * Job "target tokens" come ONLY from fields that actually list skills:
+     *   - job.skills       (recruiter-curated skill list)
+     *   - job.job_title    (role keywords)
+     *
+     * We deliberately exclude job_description / responsibilities /
+     * qualifications — those are prose, and tokenising them produces
+     * 90–150 words that are NOT skills, which destroys the score.
      */
     public function score(SeekerProfile $seeker, JobPost $job): int
     {
@@ -22,25 +27,27 @@ class SkillMatcher
             return 0;
         }
 
-        // All tokens the job advertises, from every field
+        // ── Collect ONLY skill-bearing tokens
         $jobTokens = [];
-        foreach ([
-            $job->skills ?? '',
-            $job->job_title ?? '',
-            $job->job_description ?? '',
-            $job->qualifications ?? '',
-            $job->responsibilities ?? '',
-        ] as $field) {
-            foreach ($this->normaliser->canonicalise($this->stripHtml($field)) as $t) {
-                $jobTokens[$t] = true;
-            }
-        }
-        $jobTokens = array_keys($jobTokens);
 
-        // How many seeker tokens are in the job?
+        // 1. skills field (highest priority)
+        foreach ($this->normaliser->canonicalise($this->stripHtml((string) $job->skills)) as $t) {
+            $jobTokens[$t] = true;
+        }
+
+        // 2. job title keywords
+        foreach ($this->normaliser->canonicalise((string) $job->job_title) as $t) {
+            $jobTokens[$t] = true;
+        }
+
+        $jobTokens = array_keys($jobTokens);
+        if (empty($jobTokens)) {
+            return 0;
+        }
+
         $matched = count(array_intersect($seekerTokens, $jobTokens));
 
-        return (int) round(($matched / count($seekerTokens)) * 100);
+        return (int) round(($matched / count($jobTokens)) * 100);
     }
 
     private function stripHtml(string $html): string

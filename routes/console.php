@@ -11,28 +11,89 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 // ═══════════════════════════════════════════════════════════════════
-//  QUEUE WORKER — the most important command on the whole site
+//  QUEUE WORKERS
 //
-//  Runs every minute via schedule:run. Drains every queue that
-//  your job classes use, for up to 50 seconds, then exits so the
-//  next cron cycle starts a fresh process.
+//  Strategy:
+//  ────────────────────────────────────────────────────────────────
+//  · Alerts get their own dedicated queues — they are time-sensitive
+//    and must never be starved by slow AI jobs.
+//  · WhatsApp / Telegram are rate-limited by the provider, so they
+//    run at their own pace with a slower --sleep.
+//  · Letters (CV / cover letter, Gemini API) run separately so a
+//    backlog of 100 AI jobs never blocks alert delivery.
+//  · Every worker exits after 50s so the next minute's cron cycle
+//    always starts a fresh process — no long-lived zombie workers.
 //
-//  When you add a new queue name in a future job class, just add
-//  it to the --queue= list below. Order = priority (left is first).
+//  Queue → worker mapping:
+//    alerts-email     ┐
+//    default          ┴── worker A (fast: ~200/min)
+//    alerts-whatsapp  ─── worker B (slow: ~30/min, sleeps 3s)
+//    alerts-telegram  ─── worker C (slow: ~30/min, sleeps 3s)
+//    letters, auto-apply, ai-screening, emails
+//                     ─── worker D (background: AI + support work)
 // ═══════════════════════════════════════════════════════════════════
+
+// ── Worker A — fast path: email alerts + generic default queue
 Schedule::command(
     'queue:work ' .
-    '--queue=letters,default,auto-apply,ai-screening,emails ' .
+    '--queue=alerts-email,default ' .
+    '--stop-when-empty ' .
+    '--max-time=50 ' .
+    '--max-jobs=200 ' .
+    '--timeout=90 ' .
+    '--tries=1 ' .
+    '--sleep=1'
+)
+    ->everyMinute()
+    ->runInBackground()
+    ->name('queue-worker-alerts-email');
+
+// ── Worker B — WhatsApp alerts (rate-limited by Meta)
+Schedule::command(
+    'queue:work ' .
+    '--queue=alerts-whatsapp ' .
     '--stop-when-empty ' .
     '--max-time=50 ' .
     '--max-jobs=30 ' .
+    '--timeout=60 ' .
+    '--tries=1 ' .
+    '--sleep=3'
+)
+    ->everyMinute()
+    ->runInBackground()
+    ->name('queue-worker-alerts-whatsapp');
+
+// ── Worker C — Telegram alerts (rate-limited by Telegram)
+Schedule::command(
+    'queue:work ' .
+    '--queue=alerts-telegram ' .
+    '--stop-when-empty ' .
+    '--max-time=50 ' .
+    '--max-jobs=30 ' .
+    '--timeout=60 ' .
+    '--tries=1 ' .
+    '--sleep=3'
+)
+    ->everyMinute()
+    ->runInBackground()
+    ->name('queue-worker-alerts-telegram');
+
+// ── Worker D — CV / cover letter generation + AI screening + misc
+//   Gemini calls can take 30–120s each. Generous --timeout, low
+//   --max-jobs so a slow batch doesn't eat the whole minute.
+Schedule::command(
+    'queue:work ' .
+    '--queue=letters,auto-apply,ai-screening,emails ' .
+    '--stop-when-empty ' .
+    '--max-time=50 ' .
+    '--max-jobs=10 ' .
     '--timeout=180 ' .
     '--tries=3 ' .
     '--sleep=1'
 )
     ->everyMinute()
-    ->withoutOverlapping(5)
-    ->runInBackground();
+    ->runInBackground()
+    ->name('queue-worker-letters');
 
 // ═══════════════════════════════════════════════════════════════════
 //  WATCHDOG — re-dispatch letters/CVs stuck at "paid"
@@ -44,13 +105,17 @@ Schedule::command('queue:redispatch-stuck --minutes=15')
 // ═══════════════════════════════════════════════════════════════════
 //  HOUSEKEEPING
 // ═══════════════════════════════════════════════════════════════════
-Schedule::command('screening:cleanup-stuck')->hourly();
+Schedule::command('screening:cleanup-stuck')
+    ->hourly()
+    ->withoutOverlapping();
 
 Schedule::command('auto-apply:run')
     ->dailyAt('03:00')
     ->withoutOverlapping();
 
-Schedule::command('queue:prune-failed --hours=168')->dailyAt('04:00');
+Schedule::command('queue:prune-failed --hours=168')
+    ->dailyAt('04:00')
+    ->withoutOverlapping();
 
 Schedule::command('letters:cleanup-temp-cvs --hours=24 --max-age-days=3')
     ->dailyAt('03:00')

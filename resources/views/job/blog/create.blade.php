@@ -501,57 +501,124 @@ document.getElementById('addBlogForm').addEventListener('submit', function(e) {
         },
         body: formData
     })
-    .then(response => {
-        if (!response.ok) {
-            return response.json().then(data => {
-                throw new Error(data.message || 'Server error');
-            });
+    .then(async response => {
+        const data = await response.json().catch(() => ({}));
+
+        // Handle 422 validation errors explicitly
+        if (response.status === 422 && data.errors) {
+            showValidationErrors(data.errors);
+            resetButtons();
+            return null; // signal "handled"
         }
-        return response.json();
+
+        if (!response.ok) {
+            throw new Error(data.message || `Server error (${response.status})`);
+        }
+
+        return data;
     })
     .then(data => {
+        if (data === null) return; // already handled above
+
         if (data.success) {
-            if (typeof window.showToast === 'function') {
-                window.showToast('success', data.message || 'Blog created successfully!');
-            }
+            window.showToast('success', data.message || 'Blog created successfully!');
             window.location.href = '{{ route("admin.blogs") }}';
         } else if (data.errors) {
-            const errorMessages = Object.values(data.errors).flat().join('\n');
-            if (typeof window.showToast === 'function') {
-                window.showToast('error', errorMessages);
-            } else {
-                alert(errorMessages);
-            }
+            showValidationErrors(data.errors);
             resetButtons();
         } else {
-            if (typeof window.showToast === 'function') {
-                window.showToast('error', data.message || 'Failed to create blog');
-            } else {
-                alert(data.message || 'Failed to create blog');
-            }
+            window.showToast('error', data.message || 'Failed to create blog');
             resetButtons();
         }
     })
     .catch(err => {
         console.error('Error:', err);
-        if (typeof window.showToast === 'function') {
-            window.showToast('error', 'Failed to create blog: ' + err.message);
-        } else {
-            alert('Failed to create blog: ' + err.message);
-        }
+        window.showToast('error', 'Failed to create blog: ' + err.message);
         resetButtons();
     });
 
     function resetButtons() {
-        if (btn && typeof window.hideButtonSpinner === 'function') {
-            window.hideButtonSpinner(btn);
-        }
+        if (btn && typeof window.hideButtonSpinner === 'function') window.hideButtonSpinner(btn);
         if (btn) btn.disabled = false;
-        if (publishBtn && typeof window.hideButtonSpinner === 'function') {
-            window.hideButtonSpinner(publishBtn);
-        }
+        if (publishBtn && typeof window.hideButtonSpinner === 'function') window.hideButtonSpinner(publishBtn);
         if (publishBtn) publishBtn.disabled = false;
     }
+
+    /**
+     * Display field-specific validation errors as individual toasts
+     * and highlight the offending fields.
+     *
+     * @param {Object} errors  { fieldName: [msg1, msg2, ...], ... }
+     */
+    function showValidationErrors(errors) {
+        // Friendly labels for your form fields
+        const fieldLabels = {
+            title: 'Blog Title',
+            content: 'Blog Content',
+            excerpt: 'Excerpt',
+            category: 'Category',
+            tags: 'Tags',
+            cover_image: 'Cover Image',
+            cover_image_alt: 'Cover Image Alt Text',
+            cover_image_caption: 'Cover Image Caption',
+            author_id: 'Author',
+            author_name: 'Author Name',
+            author_title: 'Author Title',
+            author_avatar: 'Author Avatar URL',
+            country_code: 'Country',
+            is_active: 'Active',
+            is_featured: 'Featured',
+            is_published: 'Published',
+            published_at: 'Publish Date',
+            sort_order: 'Sort Order',
+            meta_title: 'Meta Title',
+            meta_description: 'Meta Description',
+            keywords: 'Keywords',
+            canonical_url: 'Canonical URL',
+            og_image: 'OG Image URL',
+            og_title: 'OG Title',
+            og_description: 'OG Description',
+        };
+
+        // Collect all messages (flattened)
+        const allMessages = [];
+
+        Object.entries(errors).forEach(([field, messages]) => {
+            const label = fieldLabels[field] || field;
+
+            // Highlight the field
+            const input = document.querySelector(`#addBlogForm [name="${field}"]`)
+                    || document.querySelector(`#add_${field}`);
+            if (input) {
+                input.classList.add('is-invalid');
+                input.addEventListener('input', function once() {
+                    this.classList.remove('is-invalid');
+                    this.removeEventListener('input', once);
+                });
+            }
+
+            // Queue individual toast per message
+            messages.forEach(msg => {
+                allMessages.push(`• ${label}: ${msg}`);
+            });
+        });
+
+        // Fire one toast per field error (or one combined toast)
+        if (typeof window.showToast === 'function') {
+            // Combined toast (recommended so you don't spam dozens of toasts)
+            window.showToast('error', allMessages.join('\n'), { allowHtml: false, timeout: 8000 });
+
+            // Optional: also fire individual toasts (comment out if too noisy)
+            // Object.entries(errors).forEach(([field, messages]) => {
+            //     const label = fieldLabels[field] || field;
+            //     messages.forEach(msg => window.showToast('error', `${label}: ${msg}`));
+            // });
+        } else {
+            alert(allMessages.join('\n'));
+        }
+    }
+
+
 });
 
 // Toggle SEO section

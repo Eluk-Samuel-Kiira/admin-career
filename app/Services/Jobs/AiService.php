@@ -14,16 +14,16 @@ class AiService
      * At or above it, the employer's text is copied exactly and nothing is added to it.
      * Tune this one number against Search Console (indexing/impressions of short vs long jobs).
      */
-    protected const THIN_POST_WORDS = 300;
+    protected const THIN_POST_WORDS            = 400;   // under this: AI enriches. At or above: AI preserves
+    protected const ENRICH_TARGET_MIN_WORDS    = 450;   // enriched description target
+    protected const ENRICH_TARGET_MAX_WORDS    = 650;
+    protected const ENRICH_MIN_WORDS           = 400;   // reply below this is rejected and retried
+    protected const EXTRACTION_TIMEOUT_SECONDS = 180;
 
-    /**
-     * Any job description WE write (the post had none, or only a line or two) must read like a real,
-     * believable advert, not an essay. About 500 characters of plain text is roughly 70 words.
-     * The prompts ask for this length and capGeneratedDescription() enforces it in PHP, because
-     * models cannot be trusted to count characters.
-     */
     protected const GENERATED_DESC_MAX_CHARS = 500;
     protected const GENERATED_DESC_MIN_CHARS = 150;
+
+
 
     protected array $config;
     protected array $fallbackModels;
@@ -200,29 +200,41 @@ class AiService
      */
     public function extractJobData(string $content, string $sourceType = 'text', ?string $model = null, ?string $country = null, ?string $position = null): array
     {
-        $model = $model ?? $this->defaultModel;
+        $model     = $model ?? $this->defaultModel;
         $sourceUrl = null;
 
-        @set_time_limit(300);
+        @set_time_limit(900);                              // room for several model attempts
+        $this->timeout = self::EXTRACTION_TIMEOUT_SECONDS;
 
         if ($sourceType === 'url') {
             $sourceUrl = $content;
-            $content = $this->fetchUrlContent($content);
+            $content   = $this->fetchUrlContent($content);
         }
 
         $referenceData = $this->getReferenceData($country);
+        $sourceWords   = $this->countWords($content);
+        $mode          = $sourceWords < self::THIN_POST_WORDS ? 'enrich' : 'preserve';
 
-        // Long employer posting: the body is cut from the original text by PHP, not rewritten by a model.
-        $sourceWords = str_word_count(strip_tags($content));
-        // One advert listing several positions ("Position 1: ... Position 2: ...") can't be copied
-        // as a single body; the model picks out one position at a time.
-        $multi = preg_match_all('/^\s*position\s*\d+\b/im', $content) >= 2;
-        $body = ($sourceWords >= self::THIN_POST_WORDS && !$multi) ? $this->buildVerbatimBody($content) : null;
+        $prompt = $this->buildExtractionPrompt($content, $sourceType, $referenceData, $mode, $position);
 
-        $prompt = $this->buildExtractionPrompt($content, $sourceType, $referenceData, $body !== null, $position);
+        $result = $this->callWithFallback($model, $prompt, function ($m, $key) use ($prompt, $sourceWords, $mode) {
+            $raw = $this->callAiApi($m, $key, $prompt, null, true);
 
-        $result = $this->callWithFallback($model, $prompt, function ($m, $key) use ($prompt) {
-            return $this->callAiApi($m, $key, $prompt, null, true);
+            $text = is_string($raw)
+                ? trim(preg_replace('/^```(?:json)?\s*|\s*```$/i', '', trim($raw)))
+                : json_encode($raw);
+
+            $data = $this->decodeJsonLenient($text);
+
+            if (!is_array($data) || empty($data)) {
+                throw new \Exception('Reply was not valid JSON (it may have been cut off).');
+            }
+
+            if (empty($data['error'])) {
+                $this->checkExtractionCompleteness($data, $sourceWords, $mode);
+            }
+
+            return $data;   // a bad reply throws here, so callWithFallback moves on to the next model
         }, expectJson: true);
 
         if (!empty($result['error'])) {
@@ -230,187 +242,46 @@ class AiService
         }
 
         $result = $this->coerceModelOutput($result);
-
-        if ($body !== null) {
-            foreach ($body as $field => $html) {
-                $result[$field] = trim(strip_tags($html)) !== '' ? $html : null;
-            }
-            $result['_verbatim'] = true; // applySmartDefaults must not invent text for a copied posting
-        } else {
-            if ($sourceWords < self::THIN_POST_WORDS) {
-                $result = $this->dropInventedDescription($result, $content);
-            }
-            $result = $this->enrichThinPosting($result, $model, $sourceWords);
-        }
         $result = $this->applySmartDefaults($result, $country);
         $result = $this->applyApplicationLinkHandling($result, $sourceUrl);
+
         return $this->applyGeorgiaFontToContentFields($result);
     }
 
-    /**
-     * COPY-AND-PASTE MODE for long employer postings.
-     *
-     * Employers notice when a model rewords their advert, and no prompt can promise a model
-     * will copy 1,500 words without dropping a line. So for a long posting the body is cut out
-     * of the original text by PHP (by its own headings) and never passes through the model at
-     * all. The model is then only asked for the metadata (title, company, dates, categories).
-     *
-     * Returns null when the text has no recognisable duties/qualifications headings, in which
-     * case the normal model-based extraction (with its word-for-word rule) is used instead.
+        /**
+     * Rejects a reply that is too short or incomplete. Used inside the fallback loop,
+     * so the next model is tried instead of saving a truncated advert.
      */
-    protected function buildVerbatimBody(string $text): ?array
+    protected function checkExtractionCompleteness(array $d, int $sourceWords, string $mode): void
     {
-        $text  = str_replace(["\r\n", "\r"], "\n", $text);
-        $lines = [];
-        foreach (explode("\n", $text) as $l) {
-            $l = trim(preg_replace('/[ \t\x{00A0}]+/u', ' ', $l));
-            if ($l !== '') {
-                $lines[] = $l;
+        foreach (['job_title', 'job_description'] as $key) {
+            if (empty($d[$key])) {
+                throw new \Exception("AI reply is missing {$key}.");
             }
         }
 
-        // Where the advert itself starts (everything above is site header/menu text).
-        $start = 0;
-        foreach ($lines as $i => $l) {
-            if (preg_match('/^job title\s*:/i', $l)) { $start = $i; break; }
-        }
-        if ($start === 0) {
-            foreach ($lines as $i => $l) {
-                if (preg_match('/^(about\b.{0,60}|job purpose:?|job summary:?|position summary:?|role summary:?|summary:?|overview:?|background:?)$/i', $l)) { $start = $i; break; }
-            }
+        $written = $this->countWords(implode(' ', array_map(
+            fn($v) => is_array($v) ? implode(' ', $v) : (string) $v,
+            [$d['job_description'] ?? '', $d['responsibilities'] ?? '', $d['qualifications'] ?? '']
+        )));
+
+        if ($mode === 'enrich' && $written < self::ENRICH_MIN_WORDS) {
+            throw new \Exception("Enrichment too short: {$written} words, need at least " . self::ENRICH_MIN_WORDS . '.');
         }
 
-        $respRe    = '/^(key |main )?(duties|responsibilities|duties and responsibilities|roles? and responsibilities)\s*:?$/i';
-        $kpiRe     = '/^key performance indicators\s*:?$/i';
-        $qualRe    = '/^(required |minimum |academic |preferred |desired |essential |key )?(qualifications?|requirements|qualifications and experience|education and experience|person specification)( and (experience|requirements))?\s*:?$/i';
-        $skillRe   = '/^(required |key |core )?(skills|competencies|skills and competencies|skills and abilities)\s*:?$/i';
-        $applyRe   = '/^(how to apply|application procedure|application process)\s*:?$/i';
-        $closingRe = '/^(disclaimer\b|we encourage\b|.*\bequal opportunit|.*\bdoes not charge\b)/i';
-        $noiseRe   = '/^(apply to position|use my indeed resume|apply using linkedin|apply now|job openings.*|company website.*|job description)$/i';
-        $endRe     = '/^(powered by.*|.*sharing button.*|job details)$/i';
-
-        $b = ['desc' => [], 'resp' => [], 'qual' => [], 'skill' => [], 'apply' => [], 'closing' => []];
-        $state = 'desc';
-
-        foreach (array_slice($lines, $start) as $l) {
-            if (preg_match($endRe, $l)) {
-                break;
-            }
-            if (preg_match($noiseRe, $l)) {
-                continue;
-            }
-            if ($state !== 'closing' && preg_match($closingRe, $l)) {
-                $state = 'closing';
-            } elseif (mb_strlen($l) <= 80) {
-                if (preg_match($kpiRe, $l)) {
-                    $state = 'resp';           // keep the heading line itself
-                } elseif (preg_match($respRe, $l)) {
-                    $state = 'resp'; continue;
-                } elseif (preg_match($qualRe, $l)) {
-                    $state = 'qual'; continue;
-                } elseif (preg_match($skillRe, $l)) {
-                    $state = 'skill'; continue;
-                } elseif (preg_match($applyRe, $l)) {
-                    $state = 'apply'; continue;
-                }
-            }
-            $b[$state][] = $l;
+        // Contact details and page menus are removed, so allow some loss, but not a cut-off reply
+        if ($mode === 'preserve' && $written < $sourceWords * 0.7) {
+            throw new \Exception("Reply cut short: kept {$written} of {$sourceWords} words.");
         }
-
-        if (empty($b['resp']) && empty($b['qual'])) {
-            return null;
-        }
-
-        $closing = $this->renderVerbatimBlocks($b['closing'], false);
-
-        return [
-            'job_description'       => $this->renderVerbatimBlocks($b['desc'], false) . $closing,
-            'responsibilities'      => $this->renderVerbatimBlocks($b['resp'], true),
-            'qualifications'        => $this->renderVerbatimBlocks($b['qual'], true),
-            'skills'                => $this->renderVerbatimSkills($b['skill']),
-            'application_procedure' => $this->renderVerbatimBlocks($b['apply'], false),
-        ];
     }
 
-    private function isVerbatimHeading(string $l): bool
+    protected function countWords(string $text): int
     {
-        $words = preg_split('/\s+/', $l);
-        $n = count($words);
+        $plain = trim(preg_replace('/\s+/u', ' ', strip_tags($text)));
 
-        if (preg_match('/^\d{1,2}[.)]\s+\S/', $l)) {
-            return $n <= 10 && !preg_match('/[.;,]$/', $l);
-        }
-        if (preg_match('/:$/', $l)) {
-            return $n <= 6;
-        }
-        // "Job Title: Deputy Manager, Planning" is a data line, not a heading
-        if (preg_match('/[.;,!?]$/', $l) || preg_match('/[:,]/', $l) || $n > 5) {
-            return false;
-        }
-        $small = ['and', 'of', 'the', 'for', 'to', 'in', 'on', '&', 'a'];
-        foreach ($words as $w) {
-            if (!in_array(mb_strtolower($w), $small, true) && !preg_match('/^[\p{Lu}\d]/u', $w)) {
-                return false;
-            }
-        }
-        return true;
+        return $plain === '' ? 0 : count(explode(' ', $plain));
     }
 
-    /** Lines -> HTML. Text is escaped but never changed. Headings stay headings. */
-    private function renderVerbatimBlocks(array $lines, bool $asList): string
-    {
-        $esc  = fn(string $s) => htmlspecialchars($s, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8');
-        $html = '';
-        $open = false;
-        $close = function () use (&$html, &$open) {
-            if ($open) { $html .= '</ul>'; $open = false; }
-        };
-
-        foreach ($lines as $l) {
-            if ($this->isVerbatimHeading($l)) {
-                $close();
-                $html .= '<p><strong>' . $esc($l) . '</strong></p>';
-                continue;
-            }
-            if (preg_match('/:$/', $l)) { // a lead-in sentence such as "Performance will be assessed against:"
-                $close();
-                $html .= '<p>' . $esc($l) . '</p>';
-                continue;
-            }
-            $item = preg_replace('/^[\x{2022}\x{25AA}\x{25CF}\x{00B7}*\-]\s*/u', '', $l);
-            if ($asList) {
-                if (!$open) { $html .= '<ul>'; $open = true; }
-                $html .= '<li>' . $esc($item) . '</li>';
-            } else {
-                $html .= '<p>' . $esc($item) . '</p>';
-            }
-        }
-        $close();
-
-        return $html;
-    }
-
-    /** Short skill names -> "A, B, C". Long sentences under headings stay as headed lists. */
-    private function renderVerbatimSkills(array $lines): string
-    {
-        if (empty($lines)) {
-            return '';
-        }
-
-        $short = true;
-        foreach ($lines as $l) {
-            if (count(preg_split('/\s+/', $l)) > 4 || $this->isVerbatimHeading($l)) {
-                $short = false;
-                break;
-            }
-        }
-        if ($short) {
-            $items = array_map(fn($l) => rtrim(preg_replace('/^[\x{2022}\x{25AA}\x{25CF}\x{00B7}*\-]\s*/u', '', $l), '.;, '), $lines);
-            return htmlspecialchars(implode(', ', $items), ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8');
-        }
-
-        return $this->renderVerbatimBlocks($lines, true);
-    }
 
     /**
      * Trim a description we generated to at most $max characters of plain text, ending on a
@@ -463,24 +334,6 @@ class AiService
         return implode('', array_map(fn($t) => '<p>' . htmlspecialchars($t, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</p>', $out));
     }
 
-    /**
-     * Short posts only: if the model returned a description longer than the entire source post it
-     * was given, the extra is invented. Discard it so enrichThinPosting() writes a short one instead.
-     */
-    protected function dropInventedDescription(array $data, string $source): array
-    {
-        $jd = trim(strip_tags((string) ($data['job_description'] ?? '')));
-        if ($jd === '') {
-            return $data;
-        }
-
-        $srcChars = mb_strlen(trim(preg_replace('/\s+/u', ' ', strip_tags($source))));
-        if (mb_strlen(preg_replace('/\s+/u', ' ', $jd)) > $srcChars) {
-            $data['job_description'] = null;
-        }
-
-        return $data;
-    }
 
     /**
      * A one-line post ("We need an enrolled nurse or midwife in Kanaaba, 0701...")
@@ -1144,7 +997,7 @@ class AiService
         if ($model !== 'cohere') {
             $maxTokens = max($maxTokens, 8192);
         } else {
-            $maxTokens = min(max($maxTokens, 4000), 4096);
+            $maxTokens = min(max($maxTokens, 4000), 8192);
         }
 
         $headers = ['Content-Type' => 'application/json'];
@@ -1192,8 +1045,9 @@ class AiService
         }
 
         $response = Http::timeout($this->timeout)
-            ->retry($this->retryAttempts, $this->retryDelay, function ($exception, $request) {
-                return $exception instanceof \Illuminate\Http\Client\ConnectionException;
+            ->retry($this->retryAttempts, $this->retryDelay, function ($exception) {
+                return $exception instanceof \Illuminate\Http\Client\ConnectionException
+                    && !str_contains(strtolower($exception->getMessage()), 'timed out');
             })
             ->withHeaders($headers)
             ->post($endpoint, $body);
@@ -1483,207 +1337,142 @@ class AiService
         );
     }
 
-    protected function buildExtractionPrompt(string $content, string $sourceType, array $referenceData = [], bool $bodyCaptured = false, ?string $position = null): string
+    protected function buildExtractionPrompt(string $content, string $sourceType, array $referenceData, string $mode, ?string $position = null): string
     {
-        $twoWeeksAhead = Carbon::now()->addWeeks(2)->format('Y-m-d');
+        $twoWeeksAhead  = Carbon::now()->addWeeks(2)->format('Y-m-d');
         $referenceBlock = $this->formatReferenceListsForPrompt($referenceData);
-        $humanRules = $this->humanWritingRules();
+        $humanRules     = $this->humanWritingRules();
+        $min            = self::ENRICH_TARGET_MIN_WORDS;
+        $max            = self::ENRICH_TARGET_MAX_WORDS;
 
-        $bodyNote = $bodyCaptured
-            ? "BODY TEXT ALREADY CAPTURED - METADATA ONLY:\n                The description, responsibilities, qualifications, skills and application text of this posting have\n                already been copied exactly by the system. Return null for job_description, responsibilities,\n                qualifications, skills and application_procedure (do NOT output them), and fill in every other field\n                by reading the content below."
-            : '';
+        if ($mode === 'enrich') {
+            $modeRules = <<<RULES
+            MODE: ENRICH. The advert is short (under 400 words).
+            - Keep every original sentence of job_description, responsibilities and qualifications exactly as written, in the same order.
+            - Then ADD new text after the original so that job_description totals {$min} to {$max} words.
+            - The added text must be SEO and answer-engine friendly. In the first added sentence, state the job title, the employer and the location (if known). Explain in practical terms what the duties involve day to day. Describe the kind of candidate who suits the role. State how to apply and the deadline if the advert gives them. Use the job title no more than three times.
+            - If responsibilities or qualifications are missing or very short, write a specific list for this job title with 5 to 8 items each, as HTML <ul><li>.
+            - Never invent a salary, benefit, number, date, company history or requirement that the advert does not imply.
+            RULES;
+        } else {
+            $modeRules = <<<RULES
+            MODE: PRESERVE. The advert is long (400 words or more).
+            - Copy job_description, responsibilities, qualifications, skills and application_procedure word for word, in the same order and the same structure.
+            - Keep headings as <p><strong>heading</strong></p>, lists as <ul><li>, and any table as HTML table markup.
+            - Do not summarise, shorten, reword or add anything to the advert text.
+            - Remove only page furniture (menu text, buttons such as "Apply To Position", share links, cookie notices) and contact details, which go into the email and telephone fields.
+            RULES;
+        }
 
         $positionRule = $position !== null && trim($position) !== ''
             ? 'Extract ONLY the position titled "' . str_replace('"', '', trim($position)) . '" (match it loosely).'
-            : 'If it lists several positions, extract ONLY the first one listed.';
+            : 'If the advert lists several positions, extract ONLY the first one.';
 
         $sourceInstruction = $sourceType === 'url'
-            ? 'The CONTENT below was fetched directly from the job posting page. Extract the job details from it.'
-            : 'The CONTENT below is pasted job description text.';
+            ? 'The CONTENT below was fetched from a job posting page.'
+            : 'The CONTENT below is pasted job advert text.';
 
         return <<<PROMPT
-                You are an expert job-board data extraction agent.
+        You are an expert job-board editor for Uganda and East Africa. Your job pages must rank in Google and be quoted by AI answer engines.
 
-                SOURCE TYPE: {$sourceType}
-                {$sourceInstruction}
+        SOURCE TYPE: {$sourceType}
+        {$sourceInstruction}
 
-                {$referenceBlock}
+        {$modeRules}
 
-                {$bodyNote}
+        SEVERAL POSITIONS:
+        {$positionRule}
+        - Use only that position's own title, duties, requirements and location.
+        - Anything stated for all positions (How to Apply, email, address, documents required, deadline, employer) applies to the one you extract.
+        - List the other positions in "other_positions" (for example ["Procurement Assistant (2 positions, Lango and Ankole)"]). Use [] if there is only one position.
 
-                SEVERAL POSITIONS IN ONE ADVERT:
-                Some adverts list more than one position ("Position 1: Stores Officer ... Position 2: Procurement
-                Assistant ..."). {$positionRule}
-                - Use that position's own title, brief description, requirements and location. For duty_station use only
-                the places named for that position.
-                - Anything stated "for both positions" or once at the end (How to Apply, email, address, documents
-                required, deadline, the employer) applies to the position you extract. Include it.
-                - Never mix the other positions' duties or requirements into this one.
-                - List the titles of the positions you did NOT extract in "other_positions" (for example
-                ["Procurement Assistant (2 positions, Lango & Ankole)"]). If the advert has just one position, use [].
+        CONTACT DETAILS:
+        - Emails go in "email". Phone numbers go in "telephone" as one comma-separated string. Never use "/", "and" or "or" to join numbers.
+        - Set is_whatsapp_contact to true only if a number is described as WhatsApp. Set is_telephone_call to true if a number is described as callable, or if no qualifier is given.
+        - Never write an email address, phone number or raw URL inside job_description, responsibilities, qualifications, skills or application_procedure. In application_procedure, say "by email, using the address on this page" instead.
+        - If a link to apply is present, put the raw URL in "application_link".
 
-                HOW TO APPLY TEXT:
-                In application_procedure, never write an email address or phone number. Say "by email, using the
-                email address on this page" or "on the phone number on this page" instead; they are returned in the
-                email and telephone fields. Keep every other instruction word for word (postal address, documents
-                required, page limits, file format, deadline).
+        GROUPING (keep the source's own structure):
+        - job_description: overview, the role, the organisation, and the job details block (Department, Location, Reporting To and so on) as plain <p> lines.
+        - responsibilities: an HTML list, <ul><li>, one item per duty. If the advert has numbered or named sub-sections, use <p><strong>heading</strong></p> followed by its own <ul>.
+        - qualifications: an HTML list, <ul><li>, one item per requirement.
+        - skills: a comma-separated string if the advert gives short skill names. Otherwise use the same headed-list format as responsibilities.
+        - application_procedure: how to apply, with the deadline and any documents required.
+        - Never put responsibilities or qualifications in plain text separated by dashes, commas or line breaks. Always use <ul><li>.
 
-                ABSOLUTE RULE - PRESERVE VERBATIM:
-                If job_description, responsibilities, qualifications, skills, or application_procedure are present in
-                the content, copy them into the JSON EXACTLY as given - same wording, same order, same structure,
-                including any tables (as HTML <table> markup). Do NOT summarize, shorten, paraphrase, or "clean up"
-                anything that is actually present. Only WRITE new content for a field when that field is completely
-                absent from the source.
+        SEO AND ANSWER-ENGINE FIELDS:
+        - meta_title: 50 to 60 characters, in the form "{Job Title} at {Employer} in {Location}".
+        - meta_description: 120 to 158 characters. State the role, the location and the deadline.
+        - faqs: 5 to 6 questions a job seeker would type (what the job is, where it is, who can apply, the salary or that it is not stated, the deadline, how to apply). Each answer is one or two sentences using only facts from the advert.
+        - Use natural language. No keyword stuffing and no repeated phrases.
 
-                FULL POSTINGS FROM EMPLOYER SITES (copy exactly, add nothing):
-                - Ignore page furniture that is not part of the advert: buttons and menu text such as "Apply To
-                Position", "Use My Indeed Resume", "Apply Using LinkedIn", "Job Openings", share links, cookie notices.
-                - The job details block at the top (Department, Reporting To, Years of Experience, Location, Travel
-                Required, etc.) stays at the start of job_description as plain <p> lines, in the original order.
-                - "About the organisation" and "Job Purpose" text goes into job_description, word for word.
-                - Responsibilities: keep every numbered or named sub-heading as <p><strong>heading</strong></p>
-                followed by its own <ul>. Keep the original order and wording. If the advert has a "Key Performance
-                Indicators" section, add it at the end of responsibilities the same way.
-                - Qualifications: the "Required Qualifications and Experience" items, one <li> each, word for word.
-                - Skills: if the advert gives short skill names, return them comma-separated. If it gives long
-                sentences grouped under headings (Technical, Leadership, Interpersonal...), keep the headings as
-                <p><strong>..</strong></p> and the items as <ul><li>, word for word.
-                - Closing statements (equal opportunity, "we do not charge any fee" disclaimers) stay at the end of
-                job_description, word for word.
-                - duty_station comes from the "Location:" line of the advert if it has one.
-                - Do not add, rephrase, merge or drop any sentence. Do not add your own tips or notices; the
-                "do not pay" notice is added separately.
+        RULES FOR EVERY JOB:
+        - Every number, date, title, employer and place must come from the advert. If a fact is missing, use null.
+        - Never invent a salary. If none is stated, leave salary_amount null.
+        - deadline must be YYYY-MM-DD or null. Convert written dates such as "20 November 2026" correctly.
+        - employment_type must be one of: full-time, part-time, contract, internship, volunteer, temporary, or null.
+        - Use plain HTML tags only: <p>, <h2>, <h3>, <ul>, <li>, <strong>, <table>, <tr>, <td>, <th>, <a href="...">. No style or class attributes, so the JSON cannot break.
+        - Return ONLY the JSON object below, with no text or code fences around it.
+        - If the content is not a real job advert (an error page, a login wall, unrelated text), return exactly {"error": true, "message": "No valid job posting was found in the provided content."}
 
-                VERY SHORT POSTS (under about 300 words, e.g. a one-line WhatsApp-style vacancy):
-                - Put exactly what the post says into job_title, duty_station, telephone and email. Use a clean,
-                properly capitalised title (e.g. "Enrolled Nurse / Midwife") and never put "we need" in the title.
-                - Do not invent an employer, salary or deadline. A short job_description is fine here, because a
-                fuller one is written in a separate step. Never put the phone number or email in the description.
+        {$humanRules}
 
-                CRITICAL - RESPONSIBILITIES & QUALIFICATIONS MUST BE HTML LISTS:
-                When you generate or return responsibilities and qualifications, they MUST be formatted as HTML
-                unordered lists using <ul> and <li> tags. NEVER return them as plain text with dashes, asterisks,
-                numbers, commas, or periods as separators. ALWAYS use proper HTML list format.
+        REFERENCE LISTS (copy the exact text for every *_name field, or return null):
+        {$referenceBlock}
 
-                CORRECT EXAMPLE:
-                "responsibilities": "<ul><li>Lead and manage key initiatives</li><li>Collaborate with cross-functional teams</li><li>Ensure timely delivery of projects</li></ul>"
-                
-                INCORRECT EXAMPLE (DO NOT DO THIS):
-                "responsibilities": "Lead and manage key initiatives, Collaborate with cross-functional teams, Ensure timely delivery of projects"
-                
-                INCORRECT EXAMPLE (DO NOT DO THIS):
-                "responsibilities": "- Lead and manage key initiatives\n- Collaborate with cross-functional teams\n- Ensure timely delivery of projects"
+        SMART DEFAULTS (only when the field is missing from the advert):
+        - deadline: "{$twoWeeksAhead}"
+        - employment_type: "full-time"
+        - location_type: "on-site"
 
-                CONTACT INFO MUST NOT APPEAR IN BODY CONTENT:
-                Emails, phone numbers, WhatsApp numbers, and application links/URLs must NEVER appear inside
-                job_description, responsibilities, qualifications, or skills - even if they appear that way in the
-                source. Strip them out of those fields entirely and instead put them ONLY in the dedicated fields
-                below (email, telephone, application_link).
+        OUTPUT SHAPE:
+        {
+          "job_title": "",
+          "company_name": "exact employer name, or null (not chosen from a list)",
+          "job_description": "<p>...</p>",
+          "responsibilities": "<ul><li>...</li></ul>",
+          "qualifications": "<ul><li>...</li></ul>",
+          "skills": "",
+          "application_procedure": "<p>...</p>",
+          "application_link": null,
+          "email": null,
+          "telephone": null,
+          "is_whatsapp_contact": false,
+          "is_telephone_call": false,
+          "deadline": "YYYY-MM-DD",
+          "duty_station": null,
+          "location_type": "on-site|remote|hybrid",
+          "employment_type": "full-time|part-time|contract|internship|volunteer|temporary",
+          "salary_amount": null,
+          "payment_period": null,
+          "currency": null,
+          "work_hours": null,
+          "meta_title": "",
+          "meta_description": "",
+          "keywords": "8 to 12 comma-separated search phrases",
+          "faqs": [{"q": "", "a": ""}],
+          "experience_level_name": null,
+          "education_level_name": null,
+          "industry_name": null,
+          "category_name": null,
+          "job_type_name": null,
+          "job_location_name": null,
+          "salary_range_name": null,
+          "country_code": null,
+          "is_urgent": false,
+          "is_featured": false,
+          "is_resume_required": true,
+          "is_cover_letter_required": false,
+          "is_academic_documents_required": false,
+          "is_application_required": false,
+          "other_positions": []
+        }
 
-                APPLICATION LINK HANDLING:
-                - If an application URL/link is present anywhere in the content, put the raw URL in "application_link"
-                and leave application_procedure to describe the general process in plain text (no raw link inside it -
-                the raw link will be turned into a "click here" hyperlink automatically afterward).
-                - If no link is present but there is a described procedure (email a CV, visit an office, etc.), put that
-                in application_procedure as normal and leave application_link null.
-
-                PHONE / CONTACT HANDLING:
-                - If a phone number is present, put it in "telephone".
-                - If more than one contact number is present (WhatsApp, callable, or both), list ALL of them in
-                "telephone" separated by commas, e.g. "+256700000000, +256770000000" - never join them with "/",
-                "and", "or", or on separate lines.
-                - Set is_whatsapp_contact = true if any of the numbers is explicitly described as WhatsApp.
-                - Set is_telephone_call = true if any of the numbers is described as callable, or if no qualifier is
-                given at all for a number (default to true for that number in that case).
-                - Both flags can be true at once if the content indicates numbers work for both purposes.
-
-                APPLICATION PROCEDURE NOTE:
-                Do NOT write any warning about paying money or fees in application_procedure. A "do not pay"
-                notice is added automatically afterwards.
-
-                {$humanRules}
-
-                CONTENT QUALITY & SEO RULE (applies to anything you WRITE rather than copy verbatim):
-                - Write natural, professional, human-sounding copy that reads like it was typed by an
-                experienced HR officer, not a template.
-                - Naturally weave in the job title and relevant industry, skill, and location keywords so the
-                content is well-optimized for search engines, without keyword-stuffing or awkward repetition.
-                - NEVER lengthen or pad a description. job_description is copied from the source when the source has
-                    one. When the source has no description of the job (only a title, a place or contact details),
-                    return null for job_description: a short one is written separately by the system. Do not write
-                    one yourself.
-
-                SKILLS FORMAT:
-                - Skills should be a comma-separated list, e.g. "Communication, Teamwork, Problem Solving, Time Management"
-
-                JSON FORMATTING RULE (important - broken JSON here means the whole extraction fails):
-                - Return ONLY a single valid JSON object. No markdown fences, no commentary before or after.
-                - Do NOT add any HTML style="..." attributes or any other attributes containing double quotes.
-                Use plain HTML tags only (<p>, <ul>, <li>, <strong>, <table>, <tr>, <td>, etc.) with no attributes,
-                so there is no risk of an unescaped quote breaking the JSON.
-                - If you must quote something inside a string value, escape it as \\" - never leave a bare " inside
-                a JSON string.
-
-                IF THE CONTENT DOES NOT DESCRIBE A REAL JOB POSTING (e.g. an error page, login wall, empty page, or
-                unrelated content), respond with ONLY this JSON and nothing else:
-                {"error": true, "message": "No valid job posting was found in the provided content."}
-
-                SMART DEFAULTS (apply ONLY when a field is completely missing from the source):
-                - employment_type: "full-time"
-                - deadline: "{$twoWeeksAhead}"
-                - experience_level_name: "entry level" (only if that exact string exists in the Experience Levels list above, else null)
-                - education_level_name: "Certificate" (only if that exact string exists in the Education Levels list above, else null)
-                - location_type: "on-site"
-                - For responsibilities/qualifications/skills that are completely absent: write
-                professional, role-appropriate content based on the job_title (and company_name if known).
-                - For job_description when it is completely absent: return null (never write it yourself).
-
-                FIELDS TO RETURN:
-                {
-                "job_title": "exact job title",
-                "company_name": "exact company name as written in the content, else null - do NOT pick from a list",
-                "job_description": "verbatim if present - plain HTML, no attributes, no contact info - else null",
-                "responsibilities": "MUST be HTML <ul><li> list format - NEVER plain text with dashes or commas",
-                "qualifications": "MUST be HTML <ul><li> list format - NEVER plain text with dashes or commas",
-                "skills": "comma-separated list",
-                "application_procedure": "verbatim if present, else generated - plain HTML, no attributes, no raw link",
-                "application_link": "raw application URL if one is present anywhere in the content, else null",
-                "email": "contact email if mentioned, else null",
-                "telephone": "phone number(s) if mentioned, comma-separated if more than one, else null",
-                "deadline": "YYYY-MM-DD, from content if present else the default above",
-                "duty_station": "office/work location address if mentioned, else null",
-                "location_type": "remote|hybrid|on-site",
-                "employment_type": "full-time|part-time|contract|internship|volunteer|temporary",
-                "salary_amount": "numeric amount if mentioned, else null",
-                "payment_period": "monthly|yearly|weekly|daily|hourly, else null",
-                "currency": "currency code if mentioned, else null",
-                "meta_description": "155-character SEO description generated from the job title/content",
-                "keywords": "8-12 comma-separated search phrases people really type: the job title, title + 'jobs in' + town/district/country, 'vacancy', and close synonyms of the role. No repeats of the same phrase.",
-                "experience_level_name": "must be an EXACT value from the Experience Levels list above, else null",
-                "education_level_name": "must be an EXACT value from the Education Levels list above, else null",
-                "industry_name": "must be an EXACT value from the Industries list above, else null",
-                "category_name": "must be an EXACT value from the Job Categories list above, else null",
-                "job_type_name": "must be an EXACT value from the Job Types list above, else null",
-                "job_location_name": "must be an EXACT value from the Locations list above (match by district), else null",
-                "salary_range_name": "must be an EXACT value from the Salary Ranges list above, else null",
-                "country_code": "one of AU, UG, KE, TZ, RW, MW, ZM, SG if the job's country matches one of these, else null",
-                "is_urgent": false,
-                "is_featured": false,
-                "is_resume_required": true,
-                "is_cover_letter_required": false,
-                "is_academic_documents_required": false,
-                "is_application_required": false,
-                "is_whatsapp_contact": false,
-                "is_telephone_call": false,
-                "work_hours": "work schedule if mentioned, else null",
-                "other_positions": ["titles of other positions in the same advert that you did not extract, else []"]
-                }
-
-                CONTENT:
-                ---
-                {$content}
-                ---
-                PROMPT;
+        CONTENT:
+        ---
+        {$content}
+        ---
+        PROMPT;
     }
 
     protected function buildImageExtractionPrompt(array $referenceData = []): string
