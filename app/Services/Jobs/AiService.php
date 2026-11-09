@@ -212,7 +212,7 @@ class AiService
         $model     = $model ?? $this->defaultModel;
         $sourceUrl = null;
 
-        @set_time_limit(900);
+        $this->allowLongRun(900);
 
         if ($sourceType === 'url') {
             $sourceUrl = $content;
@@ -225,26 +225,47 @@ class AiService
         $sourceWords   = $this->countWords($content);
         $mode          = $sourceWords < self::THIN_POST_WORDS ? 'enrich' : 'preserve';
 
-        $prompt = $this->buildExtractionPrompt($content, $sourceType, $referenceData, $mode, $position);
+        $prompt = $this->buildExtractionPrompt($content, $sourceType, $referenceData, $mode, $position, $sourceWords);
 
         $result = $this->callWithFallback($model, $prompt, function ($m, $key) use ($prompt, $sourceWords, $mode) {
-            $raw = $this->callAiApi($m, $key, $prompt, null, true);
+            $attemptPrompt = $prompt;
 
-            $text = is_string($raw)
-                ? trim(preg_replace('/^```(?:json)?\s*|\s*```$/i', '', trim($raw)))
-                : json_encode($raw);
+            for ($try = 1; $try <= 2; $try++) {
+                $raw = $this->callAiApi($m, $key, $attemptPrompt, null, true);
 
-            $data = $this->decodeJsonLenient($text);
+                $text = is_string($raw)
+                    ? trim(preg_replace('/^```(?:json)?\s*|\s*```$/i', '', trim($raw)))
+                    : json_encode($raw);
 
-            if (!is_array($data) || empty($data)) {
-                throw new \Exception('Reply was not valid JSON (it may have been cut off).');
+                $data = $this->decodeJsonLenient($text);
+
+                if (!is_array($data) || empty($data)) {
+                    throw new \Exception('Reply was not valid JSON (it may have been cut off).');
+                }
+
+                if (!empty($data['error'])) {
+                    return $data;
+                }
+
+                try {
+                    $this->checkExtractionCompleteness($data, $sourceWords, $mode);
+                    return $data;
+                } catch (\Exception $e) {
+                    // Only a "summarised it" reply is worth one more try with the same model
+                    if ($try === 2 || !str_contains($e->getMessage(), 'cut short')) {
+                        throw $e;
+                    }
+
+                    Log::info("AI model '{$m}' shortened the advert, retrying once", ['detail' => $e->getMessage()]);
+
+                    $attemptPrompt = $prompt
+                        . "\n\nCORRECTION: your previous reply was rejected. " . $e->getMessage()
+                        . " Do it again. Copy EVERY paragraph, heading and bullet of the position word for word."
+                        . " Do not summarise, merge, shorten or skip any bullet.";
+                }
             }
 
-            if (empty($data['error'])) {
-                $this->checkExtractionCompleteness($data, $sourceWords, $mode);
-            }
-
-            return $data;
+            throw new \Exception('Reply cut short after a retry.');
         }, expectJson: true);
 
         if (!empty($result['error'])) {
@@ -318,7 +339,7 @@ class AiService
             throw new \Exception('AI reply is missing job_title.');
         }
 
-        // Short adverts are topped up in topUpThinListing(), never rejected here
+        // Short adverts are topped up elsewhere, never rejected here
         if ($mode === 'enrich') {
             return;
         }
@@ -327,8 +348,13 @@ class AiService
             throw new \Exception('AI reply is missing job_description.');
         }
 
+        // When the advert lists several positions, only one is extracted on purpose,
+        // so a much smaller share of the source words is normal.
+        $multiPosition = !empty($d['other_positions']) && is_array($d['other_positions']);
+        $ratio         = $multiPosition ? 0.25 : 0.6;
+
         $written = $this->countWordsInFields($d, self::CONTENT_FIELDS);
-        if ($written < $sourceWords * 0.7) {
+        if ($written < $sourceWords * $ratio) {
             throw new \Exception("Reply cut short: kept {$written} of {$sourceWords} words.");
         }
     }
@@ -1066,11 +1092,7 @@ class AiService
         $modelName = $config['model'];
         $maxTokens = $config['max_tokens'] ?? 4096;
 
-        if ($model !== 'cohere') {
-            $maxTokens = max($maxTokens, 8192);
-        } else {
-            $maxTokens = min(max($maxTokens, 4000), 8192);
-        }
+        $maxTokens = 8192;
 
         $headers = ['Content-Type' => 'application/json'];
 
@@ -1117,9 +1139,14 @@ class AiService
         }
 
         $response = Http::timeout($this->timeout)
-            ->retry($this->retryAttempts, $this->retryDelay, function ($exception) {
-                return $exception instanceof \Illuminate\Http\Client\ConnectionException
-                    && !str_contains(strtolower($exception->getMessage()), 'timed out');
+            ->retry(3, 2000, function ($exception) {
+                if ($exception instanceof \Illuminate\Http\Client\ConnectionException) {
+                    return !str_contains(strtolower($exception->getMessage()), 'timed out');
+                }
+                if ($exception instanceof \Illuminate\Http\Client\RequestException) {
+                    return in_array($exception->response->status(), [500, 502, 503, 504], true);
+                }
+                return false;
             })
             ->withHeaders($headers)
             ->post($endpoint, $body);
@@ -1156,6 +1183,16 @@ class AiService
         $this->assertNotTruncated($model, is_array($json) ? $json : []);
 
         return $this->extractResponseText($model, $json);
+    }
+
+    /**
+     * A queue worker is one long-lived process. set_time_limit(300) would keep counting after
+     * the job ends and kill the idle worker, so in the console the limit is removed instead
+     * (the job's own $timeout still applies). In a web request the limit is raised as before.
+     */
+    protected function allowLongRun(int $seconds): void
+    {
+        @set_time_limit(app()->runningInConsole() ? 0 : $seconds);
     }
 
     /**
@@ -1805,13 +1842,17 @@ class AiService
         return array_values(array_filter(array_map('trim', $m[1] ?? []), fn ($s) => $s !== ''));
     }
 
-    protected function buildExtractionPrompt(string $content, string $sourceType, array $referenceData, string $mode, ?string $position = null): string
+    protected function buildExtractionPrompt(string $content, string $sourceType, array $referenceData, string $mode, ?string $position = null, int $sourceWords = 0): string
     {
         $twoWeeksAhead  = Carbon::now()->addWeeks(2)->format('Y-m-d');
         $referenceBlock = $this->formatReferenceListsForPrompt($referenceData);
         $humanRules     = $this->humanWritingRules();
         $min            = self::ENRICH_TARGET_MIN_WORDS;
         $max            = self::ENRICH_TARGET_MAX_WORDS;
+
+        $lengthRule = $sourceWords > 0
+            ? "- The advert is about {$sourceWords} words. A correct copy of the chosen position is nearly as long, so do not drop, merge or shorten any bullet or paragraph."
+            : '';
 
         if ($mode === 'enrich') {
             $modeRules = <<<RULES
@@ -2617,16 +2658,20 @@ class AiService
         switch ($model) {
             case 'openai':
             case 'grok':
+            case 'cohere':
             case 'mistral':
-                return [
-                    'model' => $modelName,
+                $body = [
+                    'model'      => $modelName,
                     'max_tokens' => $maxTokens,
-                    'messages' => [
-                        ['role' => 'user', 'content' => $prompt]
-                    ],
-                    'temperature' => 0.1,
+                    'messages'   => [['role' => 'user', 'content' => $prompt]],
                 ];
-
+                if ($json) {
+                    $body['temperature'] = 0;   // copy faithfully, do not paraphrase
+                }
+                if ($json && $model === 'cohere') {
+                    $body['response_format'] = ['type' => 'json_object']; // no code fences, no chatter
+                }
+                return $body;
             case 'claude':
                 return [
                     'model' => $modelName,
