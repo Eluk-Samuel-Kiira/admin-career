@@ -1,44 +1,136 @@
 <script>
 
     // ================================================================
-    // EXTRACT JOB DATA - USE RAW ERRORS FROM CONTROLLER
+    // CSRF + REQUEST HELPERS
+    // ================================================================
+    function csrfToken() {
+        return document.querySelector('meta[name="csrf-token"]')?.content
+            || window.CSRF_TOKEN
+            || '';
+    }
+
+    function xsrfFromCookie() {
+        const m = document.cookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
+        return m ? decodeURIComponent(m[1]) : '';
+    }
+
+    async function postJson(url, body) {
+        const res = await fetch(url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRF-TOKEN': csrfToken(),
+                'X-XSRF-TOKEN': xsrfFromCookie(),
+            },
+            body: JSON.stringify(body),
+        });
+
+        const text = await res.text();
+        let json = null;
+        try { json = JSON.parse(text); } catch (_) {}
+
+        if (res.status === 419) {
+            return {
+                ok: false,
+                status: 419,
+                json: {
+                    success: false,
+                    type: 'session_expired',
+                    message: 'Your session has expired. Reload the page and try again.',
+                    errors: {},
+                },
+                text,
+            };
+        }
+
+        return { ok: res.ok, status: res.status, json, text };
+    }
+
+    // Shows the exact message, type and per-model errors from the server.
+    // targetId / statusId let the same function serve both the text and image panels.
+    function renderExtractionError(title, { status, json, text }, targetId = 'aiPreviewPanel', statusId = 'extractStatus') {
+        const panel    = document.getElementById(targetId);
+        const statusEl = document.getElementById(statusId);
+
+        let message, type = 'unknown', errors = {}, debug = null;
+
+        if (json) {
+            message = json.message || 'Extraction failed.';
+            type    = json.type || 'unknown';
+            errors  = json.errors || {};
+            debug   = json.debug || null;
+        } else {
+            const plain = (text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+            message = `Server returned HTTP ${status} with a non-JSON response.`;
+            type    = 'server_error';
+            debug   = plain.slice(0, 500);
+        }
+
+        const rows = Object.entries(errors).map(([model, err], i) => `
+            <div class="d-flex gap-2 p-2 ${i % 2 === 0 ? 'bg-light' : ''} rounded">
+                <strong>${escapeHtml(model)}:</strong>
+                <span class="text-break">${escapeHtml(String(err))}</span>
+            </div>`).join('');
+
+        if (panel) {
+            panel.innerHTML = `
+                <div class="alert alert-danger m-2">
+                    <strong class="d-block mb-1">${escapeHtml(title)}</strong>
+                    <div class="mb-2">${escapeHtml(message)}</div>
+                    <div class="small text-muted mb-2">Type: <code>${escapeHtml(type)}</code> &middot; HTTP ${status}</div>
+                    ${rows ? `<div class="small">${rows}</div>` : ''}
+                    ${debug ? `<details class="mt-2"><summary class="small">Technical detail</summary><pre class="small text-break mt-2 mb-0" style="white-space:pre-wrap">${escapeHtml(String(debug))}</pre></details>` : ''}
+                </div>`;
+        }
+
+        if (statusEl) {
+            statusEl.textContent = 'Failed';
+            statusEl.className = 'badge badge-danger';
+        }
+
+        toast(message, 'danger');
+    }
+
+    // ================================================================
+    // EXTRACT JOB DATA (text or URL)
     // ================================================================
     async function extractJobData() {
-        const model = document.getElementById('selectedModel').value;
+        const model      = document.getElementById('selectedModel')?.value || null;
         const sourceType = document.querySelector('input[name="sourceType"]:checked')?.value || 'text';
-        let content = '';
 
+        let content = '';
         if (sourceType === 'text') {
-            content = document.getElementById('aiSourceText')?.value?.trim();
+            content = document.getElementById('aiSourceText')?.value?.trim() || '';
             if (!content) {
                 toast('Please paste some job content first.', 'warning');
                 return;
             }
         } else {
-            const url = document.getElementById('aiSourceUrl')?.value?.trim();
-            if (!url) {
+            content = document.getElementById('aiSourceUrl')?.value?.trim() || '';
+            if (!content) {
                 toast('Please enter a job URL.', 'warning');
                 return;
             }
-            content = url;
         }
 
-        const btn = document.getElementById('extractBtn');
-        const spinner = document.getElementById('extractBtnSpinner');
-        const btnText = document.getElementById('extractBtnText');
-        const preview = document.getElementById('aiPreviewPanel');
-        const status = document.getElementById('extractStatus');
+        const btn       = document.getElementById('extractBtn');
+        const spinner   = document.getElementById('extractBtnSpinner');
+        const btnText   = document.getElementById('extractBtnText');
+        const previewEl = document.getElementById('aiPreviewPanel');
+        const statusEl  = document.getElementById('extractStatus');
 
         if (btn) btn.disabled = true;
-        if (spinner) spinner.classList.remove('d-none');
+        spinner?.classList.remove('d-none');
         if (btnText) btnText.innerHTML = '<i class="ki-duotone ki-loader fs-3 me-1"></i>Extracting...';
-        if (status) {
-            status.textContent = 'Processing...';
-            status.className = 'badge badge-warning';
+        if (statusEl) {
+            statusEl.textContent = 'Processing...';
+            statusEl.className = 'badge badge-warning';
         }
-
-        if (preview) {
-            preview.innerHTML = `
+        if (previewEl) {
+            previewEl.innerHTML = `
                 <div class="text-center py-5">
                     <div class="spinner-border text-primary mb-3" role="status"></div>
                     <p class="text-muted">AI agent extracting job data...</p>
@@ -46,145 +138,62 @@
         }
 
         try {
-            const result = await apiFetch(`${AI_API_BASE}/extract-job`, {
-                method: 'POST',
-                body: JSON.stringify({
-                    model,
-                    content,
-                    source_type: sourceType,
-                    country: document.getElementById('f_country_code')?.value || null,
-                }),
+            const response = await postJson(`${AI_API_BASE}/extract-job`, {
+                model,
+                content,
+                source_type: sourceType,
+                country: document.getElementById('f_country_code')?.value || null,
             });
 
-            if (result.success === false) {
-                // Use structured errors from the controller
-                if (result.errors && typeof result.errors === 'object') {
-                    const error = new Error('Extraction failed');
-                    error.errors = result.errors; // Pass raw errors to catch block
-                    throw error;
-                } else {
-                    throw new Error(result.error || result.message || 'Extraction failed');
-                }
+            if (!response.ok || !response.json || response.json.success === false) {
+                renderExtractionError('Extraction failed', response);
+                return;
             }
 
-            extractedData = result.data;
-            renderExtractedPreview(result.data);
+            extractedData = response.json.data;
+            renderExtractedPreview(extractedData);
 
             const applyBtn = document.getElementById('applyExtractedBtn');
             if (applyBtn) applyBtn.style.display = 'inline-flex';
 
             const tokenInfo = document.getElementById('aiTokenInfo');
-            if (tokenInfo) tokenInfo.textContent = `${model.toUpperCase()} — extraction complete`;
+            if (tokenInfo) tokenInfo.textContent = `${(model || 'AI').toUpperCase()} — extraction complete`;
 
-            if (status) {
-                status.textContent = 'Complete';
-                status.className = 'badge badge-success';
+            if (statusEl) {
+                statusEl.textContent = 'Complete';
+                statusEl.className = 'badge badge-success';
             }
 
             if (document.getElementById('autoApplyToggle')?.checked) {
                 setTimeout(() => {
                     applyExtractedData();
-                    const modal = bsModal('aiExtractModal');
-                    if (modal) modal.hide();
+                    bsModal('aiExtractModal')?.hide();
                 }, 500);
             } else {
                 toast('Data extracted. Click "Apply to Form" to fill the form.', 'info');
             }
 
-        } catch (e) {
-            // Get errors from the error object
-            let modelErrors = [];
-            
-            if (e.errors && typeof e.errors === 'object') {
-                // Use the raw errors from the controller - no modification
-                Object.entries(e.errors).forEach(([model, error]) => {
-                    modelErrors.push({ model, error });
-                });
-            } else {
-                // Fallback: parse from message (should rarely happen)
-                const rawMsg = e.message || 'Extraction failed';
-                const parts = rawMsg.split('|');
-                if (parts.length > 1) {
-                    parts.forEach(part => {
-                        const trimmedPart = part.trim();
-                        const match = trimmedPart.match(/\[([^\]]+)\]\s*(.*)/);
-                        if (match) {
-                            modelErrors.push({ model: match[1], error: match[2] });
-                        }
-                    });
-                }
-                if (modelErrors.length === 0) {
-                    modelErrors.push({ model: 'AI Service', error: rawMsg });
-                }
-            }
-
-            // Build the error display HTML
-            const getModelIcon = (model) => {
-                const lower = model.toLowerCase();
-                if (lower.includes('gemini')) return '🔴';
-                if (lower.includes('openai')) return '🟢';
-                if (lower.includes('claude')) return '🟣';
-                if (lower.includes('grok')) return '🟠';
-                if (lower.includes('cohere')) return '🟡';
-                if (lower.includes('mistral')) return '🔵';
-                return '⚠️';
-            };
-            
-            let errorItemsHtml = modelErrors.map((item, index) => {
-                const icon = getModelIcon(item.model);
-                const color = index % 2 === 0 ? 'bg-light' : '';
-                return `
-                    <div class="d-flex align-items-start gap-2 p-2 ${color} rounded" style="border-bottom: 1px solid #f0f0f0;">
-                        <span style="font-size: 16px;">${icon}</span>
-                        <div class="flex-grow-1">
-                            <strong>${escapeHtml(item.model)}:</strong>
-                            <span class="text-break">${escapeHtml(item.error)}</span>
-                        </div>
-                    </div>`;
-            }).join('');
-            
-            const errorHtml = `
-                <div class="alert alert-danger m-2">
-                    <div class="d-flex align-items-start gap-2 mb-2">
-                        <i class="ki-duotone ki-danger fs-3 text-danger flex-shrink-0 mt-1"></i>
-                        <div class="flex-grow-1">
-                            <strong class="d-block mb-2">Extraction failed</strong>
-                            <div class="small">
-                                ${errorItemsHtml}
-                            </div>
-                            <div class="mt-3 pt-2 border-top border-danger border-opacity-25">
-                                <small class="text-muted">
-                                    <i class="ki-duotone ki-information-5 fs-7 me-1"></i>
-                                    Please check your AI model API keys or try a different model.
-                                </small>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            if (status) {
-                status.textContent = 'Failed';
-                status.className = 'badge badge-danger';
-            }
-            
-            if (preview) {
-                preview.innerHTML = errorHtml;
-            }
-            
-            const firstError = modelErrors[0]?.error || 'Extraction failed';
-            toast(firstError, 'danger');
-            
+        } catch (err) {
+            // Reached only when no response arrived at all (network down, server unreachable)
+            renderExtractionError('Extraction failed', {
+                status: 0,
+                json: {
+                    success: false,
+                    type: 'network',
+                    message: 'Could not reach the server. Check your connection and try again.',
+                    errors: {},
+                },
+                text: err?.message || '',
+            });
         } finally {
             if (btn) btn.disabled = false;
-            if (spinner) spinner.classList.add('d-none');
+            spinner?.classList.add('d-none');
             if (btnText) btnText.innerHTML = '<i class="ki-duotone ki-sparkle fs-3 me-1"></i>Extract Data';
         }
     }
 
-
     // ================================================================
-    // EXTRACT FROM MULTIPLE IMAGES - USE RAW ERRORS
+    // EXTRACT FROM MULTIPLE IMAGES
     // ================================================================
     async function extractFromMultipleImages() {
         if (uploadedImages.length === 0) {
@@ -192,163 +201,96 @@
             return;
         }
 
-        const model = document.getElementById('imgSelectedModel').value || document.getElementById('selectedModel').value || 'gemini';
-        const preview = document.getElementById('imgPreviewPanel');
-        const btn = document.getElementById('multiImgExtractBtn');
-        const spinner = document.getElementById('multiImgExtractBtnSpinner');
-        const btnText = document.getElementById('multiImgExtractBtnText');
-        const status = document.getElementById('imgExtractStatus');
+        const model    = document.getElementById('imgSelectedModel')?.value
+                    || document.getElementById('selectedModel')?.value
+                    || 'gemini';
+        const preview  = document.getElementById('imgPreviewPanel');
+        const btn      = document.getElementById('multiImgExtractBtn');
+        const spinner  = document.getElementById('multiImgExtractBtnSpinner');
+        const btnText  = document.getElementById('multiImgExtractBtnText');
+        const statusEl = document.getElementById('imgExtractStatus');
 
-        btn.disabled = true;
-        spinner.classList.remove('d-none');
-        btnText.innerHTML = 'Extracting...';
-        if (status) {
-            status.textContent = 'Processing...';
-            status.className = 'badge badge-warning';
+        if (btn) btn.disabled = true;
+        spinner?.classList.remove('d-none');
+        if (btnText) btnText.innerHTML = 'Extracting...';
+        if (statusEl) {
+            statusEl.textContent = 'Processing...';
+            statusEl.className = 'badge badge-warning';
         }
-        preview.innerHTML = `
-            <div class="text-center py-5">
-                <div class="spinner-border text-primary mb-3" role="status"></div>
-                <p class="text-muted">Analyzing ${uploadedImages.length} image(s)...</p>
-            </div>`;
 
         try {
             let combinedData = {};
+
             for (let i = 0; i < uploadedImages.length; i++) {
                 const img = uploadedImages[i];
-                preview.innerHTML = `
-                    <div class="text-center py-5">
-                        <div class="spinner-border text-primary mb-3" role="status"></div>
-                        <p class="text-muted">Processing image ${i + 1} of ${uploadedImages.length}...</p>
-                    </div>`;
-                const result = await apiFetch(`/ai/extract-image`, {
-                    method: 'POST',
-                    body: JSON.stringify({ model, image_base64: img.base64 }),
-                });
-                
-                if (result.success === false) {
-                    if (result.errors && typeof result.errors === 'object') {
-                        const error = new Error('Image extraction failed');
-                        error.errors = result.errors;
-                        throw error;
-                    } else {
-                        throw new Error(result.error || result.message || 'Image extraction failed');
-                    }
+
+                if (preview) {
+                    preview.innerHTML = `
+                        <div class="text-center py-5">
+                            <div class="spinner-border text-primary mb-3" role="status"></div>
+                            <p class="text-muted">Processing image ${i + 1} of ${uploadedImages.length}...</p>
+                        </div>`;
                 }
-                
-                img.extractedData = result.data;
-                combinedData = { ...combinedData, ...result.data };
+
+                const response = await postJson(`${AI_API_BASE}/extract-image`, {
+                    model,
+                    image_base64: img.base64,
+                });
+
+                if (!response.ok || !response.json || response.json.success === false) {
+                    renderExtractionError(`Image ${i + 1} extraction failed`, response, 'imgPreviewPanel', 'imgExtractStatus');
+                    return;
+                }
+
+                img.extractedData = response.json.data;
+                combinedData = { ...combinedData, ...response.json.data };
             }
-            
+
             extractedData = combinedData;
             renderExtractedPreview(combinedData);
-            
+
             const sourcePanel = document.getElementById('aiPreviewPanel');
-            const targetPanel = document.getElementById('imgPreviewPanel');
-            if (sourcePanel && targetPanel) {
-                targetPanel.innerHTML = sourcePanel.innerHTML;
+            if (sourcePanel && preview) {
+                preview.innerHTML = sourcePanel.innerHTML;
             }
-            
+
             document.getElementById('applyImgBtn')?.classList.remove('d-none');
-            document.getElementById('imgTokenInfo').textContent = `${model.toUpperCase()} — extracted from ${uploadedImages.length} image(s)`;
-            
-            if (status) {
-                status.textContent = 'Complete';
-                status.className = 'badge badge-success';
+
+            const imgTokenInfo = document.getElementById('imgTokenInfo');
+            if (imgTokenInfo) {
+                imgTokenInfo.textContent = `${model.toUpperCase()} — extracted from ${uploadedImages.length} image(s)`;
             }
-            
+
+            if (statusEl) {
+                statusEl.textContent = 'Complete';
+                statusEl.className = 'badge badge-success';
+            }
+
             renderImageGallery();
-            
+
             if (document.getElementById('imgAutoApplyToggle')?.checked) {
                 applyImageData();
-                bsModal('imageExtractModal').hide();
+                bsModal('imageExtractModal')?.hide();
                 toast('Job data extracted and applied to form!', 'success');
             } else {
                 toast(`Extracted data from ${uploadedImages.length} image(s). Review then apply.`, 'success');
             }
-            
-        } catch (e) {
-            let modelErrors = [];
-            
-            if (e.errors && typeof e.errors === 'object') {
-                Object.entries(e.errors).forEach(([model, error]) => {
-                    modelErrors.push({ model, error });
-                });
-            } else {
-                const rawMsg = e.message || 'Image extraction failed';
-                const parts = rawMsg.split('|');
-                if (parts.length > 1) {
-                    parts.forEach(part => {
-                        const trimmedPart = part.trim();
-                        const match = trimmedPart.match(/\[([^\]]+)\]\s*(.*)/);
-                        if (match) {
-                            modelErrors.push({ model: match[1], error: match[2] });
-                        }
-                    });
-                }
-                if (modelErrors.length === 0) {
-                    modelErrors.push({ model: 'AI Service', error: rawMsg });
-                }
-            }
 
-            const getModelIcon = (model) => {
-                const lower = model.toLowerCase();
-                if (lower.includes('gemini')) return '🔴';
-                if (lower.includes('openai')) return '🟢';
-                if (lower.includes('claude')) return '🟣';
-                if (lower.includes('grok')) return '🟠';
-                if (lower.includes('cohere')) return '🟡';
-                if (lower.includes('mistral')) return '🔵';
-                return '⚠️';
-            };
-            
-            let errorItemsHtml = modelErrors.map((item, index) => {
-                const icon = getModelIcon(item.model);
-                const color = index % 2 === 0 ? 'bg-light' : '';
-                return `
-                    <div class="d-flex align-items-start gap-2 p-2 ${color} rounded" style="border-bottom: 1px solid #f0f0f0;">
-                        <span style="font-size: 16px;">${icon}</span>
-                        <div class="flex-grow-1">
-                            <strong>${escapeHtml(item.model)}:</strong>
-                            <span class="text-break">${escapeHtml(item.error)}</span>
-                        </div>
-                    </div>`;
-            }).join('');
-            
-            const errorHtml = `
-                <div class="alert alert-danger m-2">
-                    <div class="d-flex align-items-start gap-2 mb-2">
-                        <i class="ki-duotone ki-danger fs-3 text-danger flex-shrink-0 mt-1"></i>
-                        <div class="flex-grow-1">
-                            <strong class="d-block mb-2">Image extraction failed</strong>
-                            <div class="small">
-                                ${errorItemsHtml}
-                            </div>
-                            <div class="mt-3 pt-2 border-top border-danger border-opacity-25">
-                                <small class="text-muted">
-                                    <i class="ki-duotone ki-information-5 fs-7 me-1"></i>
-                                    Please check your AI model API keys or try a different model.
-                                </small>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            if (status) {
-                status.textContent = 'Failed';
-                status.className = 'badge badge-danger';
-            }
-            
-            preview.innerHTML = errorHtml;
-            
-            const firstError = modelErrors[0]?.error || 'Image extraction failed';
-            toast(firstError, 'danger');
-            
+        } catch (err) {
+            renderExtractionError('Image extraction failed', {
+                status: 0,
+                json: {
+                    success: false,
+                    type: 'network',
+                    message: 'Could not reach the server. Check your connection and try again.',
+                    errors: {},
+                },
+                text: err?.message || '',
+            }, 'imgPreviewPanel', 'imgExtractStatus');
         } finally {
-            btn.disabled = false;
-            spinner.classList.add('d-none');
-            btnText.innerHTML = '<i class="ki-duotone ki-picture fs-3 me-1"></i>Extract from All Images';
+            if (btn) btn.disabled = false;
+            spinner?.classList.add('d-none');
+            if (btnText) btnText.innerHTML = '<i class="ki-duotone ki-picture fs-3 me-1"></i>Extract from All Images';
         }
     }
 
