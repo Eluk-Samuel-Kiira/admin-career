@@ -591,58 +591,145 @@ class AiService
         return $this->applyGeorgiaFontToContentFields($result);
     }
 
+
+
     /**
-     * Turns a raw application_link into a "To apply, click here" hyperlink inside
-     * application_procedure, and makes sure no raw link/email/phone leaked into
-     * the wrong fields (belt-and-braces on top of the prompt instructions).
-     *
-     * Also normalizes "telephone" so that multiple contact numbers are always
-     * comma-separated, regardless of how the source/AI formatted them.
-     */
+    * Puts EVERY apply link (http/https) into application_procedure as
+    * "To apply for this role or job click here" with "click here" hyperlinked.
+    * Links the model left inside the body text are moved too, then removed from the body.
+    * Emails and phone numbers are NOT touched here: they stay in their own fields.
+    * Several phone numbers or emails are kept comma-separated.
+    */
     protected function applyApplicationLinkHandling(array $data, ?string $sourceUrl = null): array
     {
-        $link = $data['application_link'] ?? null;
+        $bodyFields = ['job_description', 'responsibilities', 'qualifications', 'skills', 'application_procedure'];
 
-        // Pulled from a web page but the posting showed no separate apply URL
-        // (Breezy, Workable etc. hide it behind a button): apply on the source page.
-        if (empty($link) && $sourceUrl && filter_var($sourceUrl, FILTER_VALIDATE_URL)) {
-            $link = $sourceUrl;
-        }
-
-        if (!empty($link) && filter_var($link, FILTER_VALIDATE_URL)) {
-            $safeLink = htmlspecialchars($link, ENT_QUOTES, 'UTF-8');
-            $linkLine = '<p>To apply for this job, <a href="' . $safeLink . '" target="_blank" rel="noopener noreferrer">click here</a>.</p>';
-
-            // Keep any procedure the employer actually wrote; the link goes after it.
-            $existing = (string) ($data['application_procedure'] ?? '');
-            $data['application_procedure'] = trim(strip_tags($existing)) !== '' ? $existing . $linkLine : $linkLine;
-            $data['is_application_required'] = true;
-        }
-
-        // Belt-and-braces: contact details and raw URLs belong in their own fields,
-        // never in the body text.
-        foreach (['job_description', 'responsibilities', 'qualifications', 'skills'] as $field) {
-            if (!empty($data[$field]) && is_string($data[$field])) {
-                $clean = preg_replace('#https?://\S+#i', '', $data[$field]);
-                $clean = preg_replace('/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/', '', $clean);
-                // Ugandan-style phone numbers: 0701 220529, +256 701 220 529, 0701-220-529
-                $clean = preg_replace('/(?<![\d,.])(?:\+?256[\s-]?|0)7\d{2}[\s-]?\d{3}[\s-]?\d{3}(?![\d,])/', '', $clean);
-                $data[$field] = $clean;
+        // 1. Links the model returned in the dedicated field(s)
+        $links = [];
+        foreach (['application_links', 'application_link'] as $f) {
+            if (!empty($data[$f])) {
+                $links = array_merge($links, (array) $data[$f]);
             }
         }
 
-        // Belt-and-braces: make sure multiple contact numbers are consistently
-        // comma-separated, even if the source/AI used "/", ";", "and", "or", etc.
+        // 2. Links the model left inside the body text (belt and braces)
+        foreach ($bodyFields as $field) {
+            if (empty($data[$field]) || !is_string($data[$field])) {
+                continue;
+            }
+            $links = array_merge($links, $this->findLinks($data[$field]));
+        }
+
+        // 3. Pulled from a web page that showed no separate apply link: apply on the source page
+        if (!$links && $sourceUrl && filter_var($sourceUrl, FILTER_VALIDATE_URL)) {
+            $links[] = $sourceUrl;
+        }
+
+        $links = $this->cleanLinkList($links);
+
+        // 4. Remove links, emails and phone numbers from the body fields
+        foreach (['job_description', 'responsibilities', 'qualifications', 'skills', 'application_procedure'] as $field) {
+            if (empty($data[$field]) || !is_string($data[$field])) {
+                continue;
+            }
+            $clean = preg_replace('#<a\b[^>]*>(.*?)</a>#is', '$1', $data[$field]);          // keep the link text, drop the anchor
+            $clean = preg_replace('#https?://[^\s<>"\']+#i', '', $clean);
+            $clean = preg_replace('/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/', '', $clean);
+            // Ugandan-style phone numbers: 0701 220529, +256 701 220 529, 0701-220-529
+            $clean = preg_replace('/(?<![\d,.])(?:\+?256[\s-]?|0)7\d{2}[\s-]?\d{3}[\s-]?\d{3}(?![\d,])/', '', $clean);
+            $data[$field] = $clean;
+        }
+
+        // 5. Add the hyperlinked apply line(s) after whatever procedure the employer wrote
+        if ($links) {
+            $existing = (string) ($data['application_procedure'] ?? '');
+            $linkHtml = $this->buildApplyLinkHtml($links);
+
+            $data['application_procedure'] = trim(strip_tags($existing)) !== '' ? $existing . $linkHtml : $linkHtml;
+            $data['is_application_required'] = true;
+        }
+
+        // 6. Several contact numbers are always comma-separated
         if (!empty($data['telephone']) && is_string($data['telephone'])) {
             $data['telephone'] = $this->normalizeTelephone($data['telephone']);
         }
+        // Several emails too
+        if (!empty($data['email']) && is_string($data['email'])) {
+            $emails = preg_split('/\s*(?:,|;|\/|\||\band\b|\bor\b)\s*/i', $data['email']);
+            $emails = array_values(array_unique(array_filter(array_map('trim', $emails))));
+            $data['email'] = implode(', ', $emails);
+        }
 
-        // Every job gets a "never pay for this job" warning in the application procedure,
-        // worded and placed differently from job to job.
+        // Every job gets a "never pay for this job" warning in the application procedure
         $data = $this->applyPaymentWarning($data);
 
-        unset($data['application_link']); // not a real form field - already folded into application_procedure
+        unset($data['application_link'], $data['application_links']); // not form fields
+
         return $data;
+    }
+
+    /** Every http/https link in a piece of text or HTML (href values first, then bare links). */
+    protected function findLinks(string $text): array
+    {
+        $found = [];
+
+        if (preg_match_all('#href\s*=\s*["\']([^"\']+)["\']#i', $text, $m)) {
+            $found = array_merge($found, $m[1]);
+        }
+        $plain = preg_replace('#<a\b[^>]*>.*?</a>#is', ' ', $text);
+        if (preg_match_all('#https?://[^\s<>"\']+#i', $plain, $m)) {
+            $found = array_merge($found, $m[0]);
+        }
+
+        return $found;
+    }
+
+    /** Trims trailing punctuation, keeps only valid links, removes social/share links and duplicates. */
+    protected function cleanLinkList(array $links): array
+    {
+        $skipHosts = '/(^|\.)(facebook|twitter|x|instagram|youtube|tiktok|whatsapp|t)\.(com|me)$|^wa\.me$|^bit\.ly$/i';
+        $out  = [];
+        $seen = [];
+
+        foreach ($links as $link) {
+            $link = rtrim(trim((string) $link), ".,;:)]}>'\"");
+
+            if (!preg_match('#^https?://#i', $link) || !filter_var($link, FILTER_VALIDATE_URL)) {
+                continue;
+            }
+            $host = strtolower((string) parse_url($link, PHP_URL_HOST));
+            if ($host === '' || preg_match($skipHosts, $host)) {
+                continue;
+            }
+
+            $key = strtolower(rtrim(preg_replace('#^https?://(www\.)?#i', '', $link), '/'));
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $out[] = $link;
+        }
+
+        return $out;
+    }
+
+    /**
+    * "To apply for this role or job click here" with "click here" as the hyperlink.
+    * More than one link: each gets its own line, numbered "(link 2)", "(link 3)".
+    */
+    protected function buildApplyLinkHtml(array $links): string
+    {
+        $html = '';
+
+        foreach (array_values($links) as $i => $link) {
+            $safe  = htmlspecialchars($link, ENT_QUOTES, 'UTF-8');
+            $label = $i === 0 ? 'click here' : 'click here (link ' . ($i + 1) . ')';
+
+            $html .= '<p>To apply for this role or job <a href="' . $safe . '" target="_blank" rel="noopener noreferrer">'
+                . $label . '</a></p>';
+        }
+
+        return $html;
     }
 
     /**
@@ -986,6 +1073,16 @@ class AiService
                 $d[$f] = (string) $d[$f];
             }
         }
+
+        // application_links may arrive as an array, a string, or the old single "application_link"
+        $links = [];
+        foreach (['application_links', 'application_link'] as $f) {
+            if (isset($d[$f])) {
+                $links = array_merge($links, is_array($d[$f]) ? $flat($d[$f]) : [(string) $d[$f]]);
+            }
+        }
+        $d['application_links'] = $links;
+        unset($d['application_link']);
 
         return $d;
     }
@@ -1896,10 +1993,10 @@ class AiService
         - List the other positions in "other_positions" (for example ["Procurement Assistant (2 positions, Lango and Ankole)"]). Use [] if there is only one position.
 
         CONTACT DETAILS:
-        - Emails go in "email". Phone numbers go in "telephone" as one comma-separated string. Never use "/", "and" or "or" to join numbers.
-        - Set is_whatsapp_contact to true only if a number is described as WhatsApp. Set is_telephone_call to true if a number is described as callable, or if no qualifier is given.
-        - Never write an email address, phone number or raw URL inside job_description, responsibilities, qualifications, skills or application_procedure. In application_procedure, say "by email, using the address on this page" instead.
-        - If a link to apply is present, put the raw URL in "application_link".
+            - Emails go in "email". Phone numbers go in "telephone" as one comma-separated string. Never use "/", "and" or "or" to join numbers. If there is more than one email, join them with commas in "email" as well.
+            - Set is_whatsapp_contact to true only if a number is described as WhatsApp. Set is_telephone_call to true if a number is described as callable, or if no qualifier is given.
+            - LINKS: every web link (http or https) that a candidate can use to apply, register or submit documents (application portals, Google Forms, career pages, "Apply" buttons, job-specific pages) goes in "application_links" as an array of full URLs, in the order they appear. Do not put emails or phone numbers there. Do not include social media links or the employer's general website.
+            - Never write an email address, phone number or any link inside job_description, responsibilities, qualifications, skills or application_procedure. The system writes the "click here" apply line itself. In application_procedure, keep only the employer's own instructions (documents required, deadline, subject line to use), and say "by email, using the address on this page" instead of repeating the address.
 
         GROUPING (keep the source's own structure):
         - job_description: overview, the role, the organisation, and the job details block (Department, Location, Reporting To and so on) as plain <p> lines.
@@ -1943,7 +2040,7 @@ class AiService
           "qualifications": "<ul><li>...</li></ul>",
           "skills": "",
           "application_procedure": "<p>...</p>",
-          "application_link": null,
+          "application_links": [],
           "email": null,
           "telephone": null,
           "is_whatsapp_contact": false,
@@ -1999,9 +2096,10 @@ class AiService
             . "INCORRECT EXAMPLE (DO NOT DO THIS): \"responsibilities\": \"Lead and manage key initiatives, Collaborate with cross-functional teams\"\n\n"
             . "Do NOT include emails, phone numbers, WhatsApp numbers, or application links inside "
             . "job_description, responsibilities, qualifications, or skills - put them only in the "
-            . "dedicated email/telephone/application_link fields. If more than one contact number is "
+            . "dedicated email/telephone/application_links fields. If more than one contact number is "
             . "visible, list them all in telephone separated by commas (never with \"/\", \"and\", or \"or\"). "
-            . "If an application URL is visible, put it in application_link (do not embed the raw link in "
+            . "If one or more application links (http or https) are visible, put every one in application_links as an array of full URLs "
+            . "(not in application_procedure and not in any other field). Emails and phone numbers are never links. "
             . "application_procedure). Do not write any warning about paying money in application_procedure, "
             . "one is added automatically. Any content you write rather than copy from the image must read as "
             . "natural, human-written, SEO-friendly copy.\n\n" . $this->humanWritingRules() . "\n\n"
