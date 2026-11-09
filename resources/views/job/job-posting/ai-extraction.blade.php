@@ -199,21 +199,24 @@
     async function pollExtraction(token) {
         const url = `${AI_API_BASE}/extract-job/${token}`;
 
-        for (let attempt = 0; attempt < 300; attempt++) {   // about 15 minutes at 3 seconds
-            await new Promise(r => setTimeout(r, 3000));
+        for (let attempt = 0; attempt < 600; attempt++) {   // about 15 minutes at 1.5 seconds
+            await new Promise(r => setTimeout(r, attempt === 0 ? 800 : 1500));
 
-            const res  = await fetch(url, {
-                credentials: 'same-origin',
-                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-            });
-            const text = await res.text();
-            let json = null;
-            try { json = JSON.parse(text); } catch (_) {}
+            let res, text, json = null;
+            try {
+                res  = await fetch(url, {
+                    credentials: 'same-origin',
+                    headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                text = await res.text();
+                try { json = JSON.parse(text); } catch (_) {}
+            } catch (_) {
+                continue;   // a dropped request should not end the wait
+            }
 
             if (!json) continue;
-            if (json.status === 'done')      return { ok: true,  status: res.status, json, text };
-            if (json.success === false)      return { ok: false, status: res.status, json, text };
-            // still queued or processing: keep polling
+            if (json.status === 'done')  return { ok: true,  status: res.status, json, text };
+            if (json.success === false)  return { ok: false, status: res.status, json, text };
         }
 
         return {

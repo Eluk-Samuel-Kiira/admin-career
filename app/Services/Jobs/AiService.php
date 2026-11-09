@@ -26,6 +26,10 @@ class AiService
     protected const LISTING_MIN_WORDS = 300;  // AI listing shorter than this is rejected
     protected const CONTENT_FIELDS = ['job_description', 'responsibilities', 'qualifications', 'skills', 'application_procedure'];
 
+    protected const PER_MODEL_TIMEOUT_SECONDS = 90;   // one model never holds the request longer than this
+    protected const CHAIN_DEADLINE_SECONDS    = 240;  // the whole fallback chain gives up after this
+    protected const MIN_ATTEMPT_SECONDS       = 15;   // don't start a new model with less time than this left
+    protected const STRIP_ABOUT_US            = true; // drop the employer "ABOUT US" marketing block before sending
 
 
     protected array $config;
@@ -62,30 +66,32 @@ class AiService
     {
         $country = $country ? strtoupper($country) : null;
 
-        return [
-            'industries' => Industry::where('is_active', true)
-                ->orderBy('name')->pluck('name')->all(),
+        return Cache::remember('ai_ref:' . ($country ?? 'all'), 600, function () use ($country) {
+            return [
+                'industries' => Industry::where('is_active', true)
+                    ->orderBy('name')->pluck('name')->all(),
 
-            'categories' => JobCategory::where('is_active', true)
-                ->when($country, fn($q) => $q->where('country_code', $country))
-                ->orderBy('name')->pluck('name')->all(),
+                'categories' => JobCategory::where('is_active', true)
+                    ->when($country, fn($q) => $q->where('country_code', $country))
+                    ->orderBy('name')->pluck('name')->all(),
 
-            'locations' => JobLocation::when($country, fn($q) => $q->where('country_code', $country))
-                ->orderBy('district')->pluck('district')->unique()->values()->all(),
+                'locations' => JobLocation::when($country, fn($q) => $q->where('country_code', $country))
+                    ->orderBy('district')->pluck('district')->unique()->values()->all(),
 
-            'job_types' => JobType::where('is_active', true)
-                ->orderBy('name')->pluck('name')->all(),
+                'job_types' => JobType::where('is_active', true)
+                    ->orderBy('name')->pluck('name')->all(),
 
-            'experience_levels' => ExperienceLevel::where('is_active', true)
-                ->orderBy('sort_order')->pluck('name')->all(),
+                'experience_levels' => ExperienceLevel::where('is_active', true)
+                    ->orderBy('sort_order')->pluck('name')->all(),
 
-            'education_levels' => EducationLevel::where('is_active', true)
-                ->when($country, fn($q) => $q->where(fn($q2) => $q2->where('country_code', $country)->orWhereNull('country_code')))
-                ->orderBy('sort_order')->pluck('name')->all(),
+                'education_levels' => EducationLevel::where('is_active', true)
+                    ->when($country, fn($q) => $q->where(fn($q2) => $q2->where('country_code', $country)->orWhereNull('country_code')))
+                    ->orderBy('sort_order')->pluck('name')->all(),
 
-            'salary_ranges' => SalaryRange::when($country, fn($q) => $q->where('country_code', $country))
-                ->orderBy('min_salary')->pluck('name')->all(),
-        ];
+                'salary_ranges' => SalaryRange::when($country, fn($q) => $q->where('country_code', $country))
+                    ->orderBy('min_salary')->pluck('name')->all(),
+            ];
+        });
     }
 
     protected function formatReferenceListsForPrompt(array $ref): string
@@ -206,13 +212,14 @@ class AiService
         $model     = $model ?? $this->defaultModel;
         $sourceUrl = null;
 
-        @set_time_limit(900);                              // room for several model attempts
-        $this->timeout = self::EXTRACTION_TIMEOUT_SECONDS;
+        @set_time_limit(900);
 
         if ($sourceType === 'url') {
             $sourceUrl = $content;
             $content   = $this->fetchUrlContent($content);
         }
+
+        $content = $this->stripPageFurniture($content);
 
         $referenceData = $this->getReferenceData($country);
         $sourceWords   = $this->countWords($content);
@@ -237,7 +244,7 @@ class AiService
                 $this->checkExtractionCompleteness($data, $sourceWords, $mode);
             }
 
-            return $data;   // a bad reply throws here, so callWithFallback moves on to the next model
+            return $data;
         }, expectJson: true);
 
         if (!empty($result['error'])) {
@@ -249,6 +256,56 @@ class AiService
         $result = $this->applyApplicationLinkHandling($result, $sourceUrl);
 
         return $this->applyGeorgiaFontToContentFields($result);
+    }
+
+    /**
+     * Removes text that is never part of the job (menus, buttons, tracking lines, the employer's
+     * generic "ABOUT US" block). Less text in means fewer tokens to read and, in preserve mode,
+     * far fewer tokens to type back out. Job Info (posting date, "Apply Before") is kept so the
+     * deadline can still be found.
+     */
+    protected function stripPageFurniture(string $text): string
+    {
+        $lines = preg_split('/\R/u', $text);
+        $out   = [];
+        $skipAbout = false;
+
+        $furniture = '/^\s*(skip to main content\.?|view more jobs|apply now|apply to position|share|print|back to (search|results)|page .* careers loaded)\s*$/i';
+
+        foreach ($lines as $line) {
+            $t = trim($line);
+
+            if (self::STRIP_ABOUT_US) {
+                if (preg_match('/^(about us|about the company|about mtn.*)$/i', $t)) {
+                    $skipAbout = true;
+                    continue;
+                }
+                // the block ends where the advert's own closing lines start
+                if ($skipAbout && preg_match('/^(female applicants|note:|apply now|job info|how to apply)/i', $t)) {
+                    $skipAbout = false;
+                }
+                if ($skipAbout) {
+                    continue;
+                }
+            }
+
+            if ($t === '' && (end($out) === '' || $out === [])) {
+                continue;                                   // collapse blank runs
+            }
+            if (preg_match($furniture, $t)) {
+                continue;
+            }
+            if (preg_match('#^https?://\S+$#i', $t)) {
+                continue;                                   // a line that is only a URL
+            }
+
+            $out[] = $t;
+        }
+
+        $clean = trim(implode("\n", $out));
+
+        // Never let cleaning remove most of the advert. Fall back to the original.
+        return $this->countWords($clean) >= max(40, (int) ($this->countWords($text) * 0.4)) ? $clean : $text;
     }
 
         /**
@@ -787,21 +844,16 @@ class AiService
     {
         $errors = [];
 
-        // Several models x up to 90s each can outlive PHP's default limit, which kills the
-        // request and sends the browser an HTML error page ("JSON.parse: unexpected character").
         @set_time_limit(300);
 
-        // Build the chain: the requested primary model first, then the standard
-        // fallback order (gemini → claude → openai → cohere). Cohere is ALWAYS
-        // appended as the final attempt, regardless of what the config says.
-        $chain = array_merge(
+        $deadline = microtime(true) + self::CHAIN_DEADLINE_SECONDS;
+
+        $models = array_values(array_unique(array_merge(
             [$primaryModel],
             ['gemini', 'claude', 'openai'],
-            ['grok', 'mistral'],   // only tried if enabled — filtered below
+            ['grok', 'mistral'],   // only tried if enabled
             ['cohere'],            // guaranteed last resort
-        );
-
-        $models = array_values(array_unique($chain));
+        )));
 
         foreach ($models as $model) {
             if (!$this->isModelEnabled($model)) {
@@ -813,32 +865,41 @@ class AiService
                 continue;
             }
 
+            $remaining = (int) floor($deadline - microtime(true));
+            if ($remaining < self::MIN_ATTEMPT_SECONDS) {
+                $errors[$model] = 'skipped: the time limit for this request was reached';
+                continue;
+            }
+            $this->timeout = min(self::PER_MODEL_TIMEOUT_SECONDS, $remaining);
+
+            $t0 = microtime(true);
+
             try {
                 $config = $this->getModelConfig($model);
-                $raw = $callFn($model, $config['api_key']);
+                $raw    = $callFn($model, $config['api_key']);
+
+                Log::info("AI call '{$model}' succeeded in " . round(microtime(true) - $t0, 1) . 's');
 
                 if (!$expectJson) {
                     return is_array($raw) ? $this->extractTextFromResult($raw) : (string) $raw;
                 }
 
                 return $this->parseJsonOrFail($raw, $model);
-            } catch (\Throwable $e) { // Throwable: a TypeError must also fall through to the next model
-                // Store the error message with the model name as key
-                $errorMessage = $e->getMessage();
-                
-                // Clean up the error message - remove "API error (model): " prefix if present
-                $cleanError = preg_replace('/^API error \([^)]+\):\s*/', '', $errorMessage);
+            } catch (\Throwable $e) {
+                $errorMessage   = $e->getMessage();
+                $cleanError     = preg_replace('/^API error \([^)]+\):\s*/', '', $errorMessage);
                 $errors[$model] = $cleanError ?: $errorMessage;
                 $this->startCoolDown($model, $errorMessage);
 
-                Log::warning("AI call failed for model '{$model}'", ['error' => $e->getMessage()]);
+                Log::warning("AI call failed for model '{$model}' after " . round(microtime(true) - $t0, 1) . 's', [
+                    'error' => mb_substr($errorMessage, 0, 300),
+                ]);
             }
         }
 
-        // Return errors as a structured array
         throw new \Exception(json_encode([
-            'type' => 'model_errors',
-            'errors' => $errors
+            'type'   => 'model_errors',
+            'errors' => $errors,
         ]));
     }
 
@@ -1167,6 +1228,9 @@ class AiService
 
                 if (str_contains($modelName, '2.5-flash')) {
                     $generationConfig['thinkingConfig'] = ['thinkingBudget' => 0];
+                } elseif (str_contains($modelName, 'gemini-3')) {
+                    // Gemini 3 uses levels instead of a token budget. Extraction needs no deep reasoning.
+                    $generationConfig['thinkingConfig'] = ['thinkingLevel' => 'minimal'];
                 }
 
                 return [
