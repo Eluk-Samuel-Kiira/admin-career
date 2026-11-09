@@ -1579,6 +1579,29 @@ class AiService
         return $items ? implode(', ', $items) . ' and ' . $last : (string) $last;
     }
 
+        /** "Full-time", "Full Time" and "full time" all compare as the same label. */
+    protected function normaliseLabel(string $s): string
+    {
+        return preg_replace('/[^a-z0-9]/', '', mb_strtolower(trim($s)));
+    }
+
+    /** Returns the exact name from the list that matches the value, or null. */
+    protected function resolveReferenceName(?string $value, array $list): ?string
+    {
+        if ($value === null || trim($value) === '') {
+            return null;
+        }
+
+        $needle = $this->normaliseLabel($value);
+        foreach ($list as $item) {
+            if ($this->normaliseLabel((string) $item) === $needle) {
+                return $item;
+            }
+        }
+
+        return null;
+    }
+
     protected function buildListingPrompt(array $d): string
     {
         $title    = (string) ($d['job_title'] ?? '');
@@ -1706,6 +1729,7 @@ class AiService
             - Copy the existing description, responsibilities, qualifications and skills as they are, in the same order.
             - Do NOT write new paragraphs or extra list items. The system adds them in a separate step.
             - If a field is missing from the advert, return null for it.
+            - job_type_name: the Job Types list value that matches the advert. If the advert does not state a job type, use "Full-time".
             RULES;
         } else { 
             $modeRules = <<<RULES
@@ -1714,6 +1738,7 @@ class AiService
             - Keep headings as <p><strong>heading</strong></p>, lists as <ul><li>, and any table as HTML table markup.
             - Do not summarise, shorten, reword or add anything to the advert text.
             - Remove only page furniture (menu text, buttons such as "Apply To Position", share links, cookie notices) and contact details, which go into the email and telephone fields.
+            - job_type_name: the Job Types list value that matches the advert. If the advert does not state a job type, use "Full-time".
             RULES;
         }
 
@@ -1956,18 +1981,15 @@ class AiService
         unset($data['_verbatim']);
 
         foreach ([
-            'industry_name'        => 'industries',
-            'category_name'        => 'categories',
-            'job_type_name'        => 'job_types',
-            'job_location_name'    => 'locations',
-            'experience_level_name'=> 'experience_levels',
-            'education_level_name' => 'education_levels',
-            'salary_range_name'    => 'salary_ranges',
+            'industry_name'         => 'industries',
+            'category_name'         => 'categories',
+            'job_type_name'         => 'job_types',
+            'job_location_name'     => 'locations',
+            'experience_level_name' => 'experience_levels',
+            'education_level_name'  => 'education_levels',
+            'salary_range_name'     => 'salary_ranges',
         ] as $field => $refKey) {
-            if (!empty($data[$field]) && !in_array($data[$field], $referenceData[$refKey], true)) {
-                // Log::info("AI returned unmatched {$field}", ['value' => $data[$field]]);
-                $data[$field] = null; // don't let a hallucinated name reach the dropdown-matcher
-            }
+            $data[$field] = $this->resolveReferenceName($data[$field] ?? null, $referenceData[$refKey] ?? []);
         }
 
         $twoWeeksAhead = Carbon::now()->addWeeks(2)->format('Y-m-d');
@@ -1977,6 +1999,18 @@ class AiService
         $data['deadline'] = $data['deadline'] ?: $twoWeeksAhead;
         $data['location_type'] = $data['location_type'] ?: 'on-site';
         $data['employment_type'] = $data['employment_type'] ?: 'full-time';
+        // Job Type: when the advert does not give one, use its employment type,
+        // and if that is missing too, Full-time. Applies to short and long adverts alike.
+        if (empty($data['job_type_name'])) {
+            $data['job_type_name'] = $this->resolveReferenceName($data['employment_type'] ?? null, $referenceData['job_types'])
+                ?? $this->resolveReferenceName('Full-time', $referenceData['job_types'])
+                ?? $this->resolveReferenceName('Full Time', $referenceData['job_types'])
+                ?? null;
+
+            if ($data['job_type_name'] === null) {
+                Log::warning('Job type not found in the Job Types list', ['job_types' => $referenceData['job_types']]);
+            }
+        }
         $data['experience_level_name'] = $data['experience_level_name'] ?: 'entry level';
         $data['education_level_name'] = $data['education_level_name'] ?: 'Certificate';
         $data['currency'] = $data['currency'] ?: ($countrySettings['currency'] ?? 'AUD');
