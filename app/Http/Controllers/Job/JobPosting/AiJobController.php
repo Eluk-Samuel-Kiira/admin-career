@@ -188,7 +188,7 @@ class AiJobController extends Controller
         ];
 
         // Show the raw technical detail only on a development server
-        if (app()->hasDebugMode()) {
+        if (config('app.debug')) {
             $payload['debug'] = mb_substr($raw, 0, 1000);
         }
 

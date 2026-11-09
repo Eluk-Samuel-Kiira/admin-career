@@ -254,24 +254,35 @@ class AiService
      */
     protected function checkExtractionCompleteness(array $d, int $sourceWords, string $mode): void
     {
-        foreach (['job_title', 'job_description'] as $key) {
-            if (empty($d[$key])) {
-                throw new \Exception("AI reply is missing {$key}.");
-            }
+        if (empty($d['job_title'])) {
+            throw new \Exception('AI reply is missing job_title.');
+        }
+        if (empty($d['job_description'])) {
+            throw new \Exception('AI reply is missing job_description.');
         }
 
-        $written = $this->countWords(implode(' ', array_map(
-            fn($v) => is_array($v) ? implode(' ', $v) : (string) $v,
-            [$d['job_description'] ?? '', $d['responsibilities'] ?? '', $d['qualifications'] ?? '']
-        )));
+        $fields = ['job_description', 'responsibilities', 'qualifications', 'skills', 'application_procedure'];
+        $counts = [];
+        foreach ($fields as $f) {
+            $v = $d[$f] ?? '';
+            $counts[$f] = $this->countWords(is_array($v) ? implode(' ', $v) : (string) $v);
+        }
+        $written = array_sum($counts);
+
+        $breakdown = collect($counts)
+            ->map(fn ($n, $f) => "{$f} {$n}")
+            ->implode(', ');
 
         if ($mode === 'enrich' && $written < self::ENRICH_MIN_WORDS) {
-            throw new \Exception("Enrichment too short: {$written} words, need at least " . self::ENRICH_MIN_WORDS . '.');
+            throw new \Exception(
+                "Enrichment too short: {$written} words written, need at least " . self::ENRICH_MIN_WORDS . ". ({$breakdown})"
+            );
         }
 
-        // Contact details and page menus are removed, so allow some loss, but not a cut-off reply
         if ($mode === 'preserve' && $written < $sourceWords * 0.7) {
-            throw new \Exception("Reply cut short: kept {$written} of {$sourceWords} words.");
+            throw new \Exception(
+                "Reply cut short: kept {$written} of {$sourceWords} words. ({$breakdown})"
+            );
         }
     }
 
