@@ -23,6 +23,9 @@ class AiService
     protected const GENERATED_DESC_MAX_CHARS = 500;
     protected const GENERATED_DESC_MIN_CHARS = 150;
 
+    protected const LISTING_MIN_WORDS = 300;  // AI listing shorter than this is rejected
+    protected const CONTENT_FIELDS = ['job_description', 'responsibilities', 'qualifications', 'skills', 'application_procedure'];
+
 
 
     protected array $config;
@@ -257,33 +260,30 @@ class AiService
         if (empty($d['job_title'])) {
             throw new \Exception('AI reply is missing job_title.');
         }
+
+        // Short adverts are topped up in topUpThinListing(), never rejected here
+        if ($mode === 'enrich') {
+            return;
+        }
+
         if (empty($d['job_description'])) {
             throw new \Exception('AI reply is missing job_description.');
         }
 
-        $fields = ['job_description', 'responsibilities', 'qualifications', 'skills', 'application_procedure'];
-        $counts = [];
+        $written = $this->countWordsInFields($d, self::CONTENT_FIELDS);
+        if ($written < $sourceWords * 0.7) {
+            throw new \Exception("Reply cut short: kept {$written} of {$sourceWords} words.");
+        }
+    }
+
+    protected function countWordsInFields(array $d, array $fields): int
+    {
+        $total = 0;
         foreach ($fields as $f) {
             $v = $d[$f] ?? '';
-            $counts[$f] = $this->countWords(is_array($v) ? implode(' ', $v) : (string) $v);
+            $total += $this->countWords(is_array($v) ? implode(' ', $v) : (string) $v);
         }
-        $written = array_sum($counts);
-
-        $breakdown = collect($counts)
-            ->map(fn ($n, $f) => "{$f} {$n}")
-            ->implode(', ');
-
-        if ($mode === 'enrich' && $written < self::ENRICH_MIN_WORDS) {
-            throw new \Exception(
-                "Enrichment too short: {$written} words written, need at least " . self::ENRICH_MIN_WORDS . ". ({$breakdown})"
-            );
-        }
-
-        if ($mode === 'preserve' && $written < $sourceWords * 0.7) {
-            throw new \Exception(
-                "Reply cut short: kept {$written} of {$sourceWords} words. ({$breakdown})"
-            );
-        }
+        return $total;
     }
 
     protected function countWords(string $text): int
@@ -1348,6 +1348,350 @@ class AiService
         );
     }
 
+        /**
+     * Short adverts: keep the employer's text, then add a full listing. Never rejects.
+     */
+    protected function topUpThinListing(array $d, string $model, int $sourceWords): array
+    {
+        $written = $this->countWordsInFields($d, self::CONTENT_FIELDS);
+        $hasSkills = trim(strip_tags((string) ($d['skills'] ?? ''))) !== '';
+
+        if ($written >= self::ENRICH_MIN_WORDS && $hasSkills) {
+            return $d;
+        }
+
+        $prompt    = $this->buildListingPrompt($d);
+        $generated = null;
+
+        try {
+            $generated = $this->callWithFallback(
+                $model,
+                $prompt,
+                fn ($m, $key) => $this->requestListing($m, $key, $prompt),
+                expectJson: true
+            );
+        } catch (\Throwable $e) {
+            Log::warning('Listing top-up: AI failed, using local fallback', ['error' => $e->getMessage()]);
+        }
+
+        $generated ??= $this->fallbackListing($d);
+
+        return $this->mergeListing($d, $generated);
+    }
+
+        protected function fallbackListing(array $d): array
+    {
+        $p = $this->roleProfile($this->roleFamily((string) ($d['job_title'] ?? '')));
+
+        return [
+            'job_description'  => $this->fallbackDescription($d),
+            'responsibilities' => '<ul>' . implode('', array_map(fn ($i) => "<li>{$i}</li>", $p['duties'])) . '</ul>',
+            'qualifications'   => '<ul>' . implode('', array_map(fn ($i) => "<li>{$i}</li>", $p['quals'])) . '</ul>',
+            'skills'           => implode(', ', $p['skills']),
+        ];
+    }
+
+    protected function roleFamily(string $title): string
+    {
+        $t = mb_strtolower($title);
+
+        return match (true) {
+            (bool) preg_match('/clinic|nurs|midwi|doctor|medic|pharm|laborator|health|dental|hospital/', $t) => 'health',
+            (bool) preg_match('/account|financ|audit|bookkeep|cashier|budget|procure/', $t) => 'finance',
+            (bool) preg_match('/stores?|logist|warehouse|inventor|dispatch|supply/', $t) => 'stores',
+            (bool) preg_match('/engineer|technician|mechanic|weld|plant|machin|operator|electric|driver/', $t) => 'technical',
+            (bool) preg_match('/sales|market|agent|outlet|distribut|customer/', $t) => 'sales',
+            default => 'general',
+        };
+    }
+
+    protected function roleProfile(string $family): array
+    {
+        $profiles = [
+            'health' => [
+                'duties' => [
+                    'Assess, diagnose and treat patients in line with national clinical guidelines',
+                    'Keep accurate patient records and case notes',
+                    'Refer patients who need specialist care and follow up on referrals',
+                    'Give health education and advice to patients and their families',
+                    'Manage stock of drugs and medical supplies for the unit',
+                    'Report notifiable diseases and submit health data on time',
+                ],
+                'quals' => [
+                    'A recognised diploma or degree in clinical medicine or a related health course',
+                    'Valid professional registration and a current practising licence',
+                    'Experience in a clinic, health centre or hospital',
+                    'Knowledge of national treatment guidelines and infection prevention',
+                ],
+                'skills' => ['Clinical assessment', 'Diagnosis and treatment', 'Patient care', 'Record keeping',
+                    'Health education', 'Infection prevention', 'Drug and supplies management', 'Emergency response',
+                    'Communication with patients'],
+                'para' => 'This is a clinical post, so patient safety comes before everything else. The post holder works closely with nurses, laboratory staff and facility management, and keeps to the ethics and standards of the health profession at all times.',
+            ],
+            'finance' => [
+                'duties' => [
+                    'Record financial transactions accurately and on time',
+                    'Prepare reconciliations, payment vouchers and monthly reports',
+                    'Check supporting documents before payments are approved',
+                    'Support budget preparation and track spending against budget',
+                    'Keep files ready for internal and external audit',
+                    'Follow the organisation financial policies and controls',
+                ],
+                'quals' => [
+                    'A diploma or degree in accounting, finance or a related field',
+                    'Working knowledge of accounting software and Microsoft Excel',
+                    'Experience in a finance or accounts role is an advantage',
+                    'Strong attention to detail and honesty with money',
+                ],
+                'skills' => ['Bookkeeping', 'Financial reporting', 'Reconciliation', 'Microsoft Excel',
+                    'Budget tracking', 'Audit preparation', 'Accounting software', 'Attention to detail', 'Confidentiality'],
+                'para' => 'This post handles money and financial records, so accuracy, honesty and confidentiality are essential. The post holder reports to a finance supervisor and must keep the records clean enough to stand up to an audit at any time.',
+            ],
+            'stores' => [
+                'duties' => [
+                    'Receive, check and store goods and equipment safely',
+                    'Issue items against approved requests and keep records of every movement',
+                    'Carry out stock counts and report differences to the supervisor',
+                    'Keep the store clean, organised and secure',
+                    'Prepare stock and delivery reports on time',
+                    'Coordinate transport and delivery schedules',
+                ],
+                'quals' => [
+                    'A diploma in logistics, supply chain, business or a related field',
+                    'At least two years of experience in stores, warehousing or inventory',
+                    'Computer skills, including Microsoft Excel and inventory systems',
+                    'Ability to lift and handle stock safely',
+                ],
+                'skills' => ['Inventory management', 'Stock control', 'Record keeping', 'Microsoft Excel',
+                    'Logistics coordination', 'Procurement documentation', 'Time management', 'Attention to detail'],
+                'para' => 'The stores function keeps the organisation running, so every item received, issued or moved must be recorded correctly. The post holder works with procurement, transport and the teams that request goods.',
+            ],
+            'technical' => [
+                'duties' => [
+                    'Carry out the day-to-day technical work of the role safely and to standard',
+                    'Read and follow technical drawings, instructions and procedures',
+                    'Check equipment before and after use and report faults promptly',
+                    'Carry out routine maintenance and simple repairs',
+                    'Keep work logs and records of tasks completed',
+                    'Follow health, safety and environmental rules at all times',
+                ],
+                'quals' => [
+                    'A certificate or diploma in a relevant technical trade',
+                    'Practical experience in the trade, preferably in a similar workplace',
+                    'Knowledge of workplace safety rules and the use of protective equipment',
+                    'Ability to work well with a team and under supervision',
+                ],
+                'skills' => ['Technical troubleshooting', 'Equipment maintenance', 'Reading drawings', 'Workplace safety',
+                    'Record keeping', 'Hand and power tools', 'Quality checks', 'Teamwork'],
+                'para' => 'Technical work leaves little room for error, so safety and quality checks are part of every task. The post holder works with supervisors and engineers and is expected to speak up early when equipment or processes do not look right.',
+            ],
+            'sales' => [
+                'duties' => [
+                    'Meet customers and agents, answer their questions and close sales',
+                    'Keep sales records and report results to the supervisor each week',
+                    'Track stock levels at the outlet and request replenishment in good time',
+                    'Build and maintain good relationships with customers and partners',
+                    'Identify new business opportunities in the area',
+                    'Represent the brand professionally at all times',
+                ],
+                'quals' => [
+                    'Secondary education, with a certificate or diploma in sales or business an advantage',
+                    'Experience in sales, marketing or customer service',
+                    'Good spoken English and at least one local language',
+                    'Willingness to travel within the assigned area',
+                ],
+                'skills' => ['Sales and negotiation', 'Customer service', 'Relationship building', 'Record keeping',
+                    'Microsoft Excel', 'Stock tracking', 'Communication', 'Target achievement'],
+                'para' => 'Sales results depend on trust, so the post holder must be honest, punctual and well presented. The work involves regular contact with customers and partners, and targets are reviewed monthly.',
+            ],
+            'general' => [
+                'duties' => [
+                    'Carry out the core duties of the post to the required standard',
+                    'Keep accurate records and update them on time',
+                    'Work with colleagues in other departments when a task needs more than one team',
+                    'Report progress and problems to the supervisor promptly',
+                    'Respond to queries from staff, clients or the public courteously',
+                    'Prepare short weekly and monthly reports',
+                ],
+                'quals' => [
+                    'A certificate, diploma or degree relevant to the post',
+                    'Previous experience in a similar role is an advantage',
+                    'Good spoken and written English',
+                    'Basic computer skills, including Microsoft Word and Excel',
+                ],
+                'skills' => ['Communication', 'Teamwork', 'Problem solving', 'Time management', 'Report writing',
+                    'Attention to detail', 'Record keeping', 'Computer literacy', 'Customer care'],
+                'para' => 'The post involves regular contact with colleagues and the public, careful record keeping and meeting deadlines set by management. Training on internal systems is given where needed.',
+            ],
+        ];
+
+        return $profiles[$family] ?? $profiles['general'];
+    }
+
+    /**
+     * Writes roughly 420 words from the role profile, for short adverts when the AI
+     * is unavailable. Paragraphs are added until the length target is reached.
+     */
+    protected function fallbackDescription(array $d): string
+    {
+        $title    = trim((string) ($d['job_title'] ?? 'this post'));
+        $company  = trim((string) ($d['company_name'] ?? ''));
+        $location = trim((string) ($d['duty_station'] ?? ($d['job_location_name'] ?? ''))) ?: 'Uganda';
+        $type     = trim((string) ($d['employment_type'] ?? 'full-time'));
+        $p        = $this->roleProfile($this->roleFamily($title));
+        $who      = $company !== '' ? $company : 'The employer';
+
+        $paras = [
+            "{$who} is recruiting a {$title} to work in {$location}. This is a {$type} post, and the successful candidate is expected to start as soon as the appointment is confirmed.",
+            $p['para'],
+            "On a normal working day, the {$title} will carry out duties such as " . $this->joinList(array_slice($p['duties'], 0, 3)) . '.',
+            'The ideal candidate is organised, reliable and comfortable working with limited supervision. Experience in a similar setting is an advantage, and the person must be willing to learn the systems and procedures the organisation uses.',
+            "Working in this role gives a candidate practical experience and a clear step in a career in {$location} and beyond. Punctuality, honesty and good conduct are expected from everyone on the team.",
+            'Applicants should read the requirements carefully before applying and check that they meet the qualifications listed on this page. Only applicants who meet the requirements will be considered for interview.',
+        ];
+
+        $extra = [
+            'Performance is reviewed regularly against clear targets, and feedback is given so that the person can grow in the role. Staff who take initiative, keep good records and raise problems early tend to progress quickly.',
+            'The post requires careful attention to detail and the ability to meet deadlines without losing quality. Records must be kept up to date, and any concern about safety, quality or cost should be raised with a supervisor at once.',
+            'Teamwork is central to the work. The {title} shares information with colleagues, supports others when workloads are high, and takes part in team meetings and planning sessions.',
+            'The organisation values fair treatment, respect for the public and compliance with its policies. Anyone selected receives an orientation on these standards before taking up the post.',
+        ];
+
+        $html = '';
+        foreach ($paras as $para) {
+            $html .= '<p>' . $para . '</p>';
+        }
+        foreach ($extra as $para) {
+            if ($this->countWords($html) >= 420) {
+                break;
+            }
+            $html .= '<p>' . str_replace('{title}', $title, $para) . '</p>';
+        }
+
+        return $html;
+    }
+
+    protected function joinList(array $items): string
+    {
+        $items = array_map(fn ($i) => mb_strtolower(rtrim($i, '.')), $items);
+        $last  = array_pop($items);
+
+        return $items ? implode(', ', $items) . ' and ' . $last : (string) $last;
+    }
+
+    protected function buildListingPrompt(array $d): string
+    {
+        $title    = (string) ($d['job_title'] ?? '');
+        $company  = trim((string) ($d['company_name'] ?? '')) ?: 'not named in the advert';
+        $location = trim((string) ($d['duty_station'] ?? ($d['job_location_name'] ?? ''))) ?: 'Uganda';
+        $type     = (string) ($d['employment_type'] ?? 'full-time');
+        $source   = trim(strip_tags((string) ($d['job_description'] ?? ''))) ?: '(the advert gives no description)';
+        $human    = $this->humanWritingRules();
+
+        return <<<PROMPT
+        You write complete job listings for a Ugandan and East African job board. The advert below is very short,
+        so write the full listing a hiring officer would publish for this post.
+
+        KNOWN FACTS (use only these; do not invent others):
+        Job title: {$title}
+        Employer: {$company}
+        Location: {$location}
+        Employment type: {$type}
+        Original advert text: {$source}
+
+        WRITE:
+        - job_description: 350 to 450 words in 5 to 6 <p> paragraphs. Do NOT repeat the original advert text.
+          Paragraph 1 states the job title, the employer and the location once each, in natural wording.
+          Then cover what the role involves day to day, who the post serves, how it fits the work of the employer,
+          what a good candidate does in the first months, and the conduct and teamwork the employer expects.
+          Do not invent salary, benefits, dates, numbers or company history.
+        - responsibilities: 6 to 8 items as <ul><li>...</li></ul>, specific to the job title.
+        - qualifications: 4 to 6 items as <ul><li>...</li></ul>, typical for the job title. Do not add a gender
+          or age requirement.
+        - skills: 8 to 10 specific skills for this job title, comma-separated. Not generic soft skills only.
+
+        {$human}
+
+        Return ONLY a JSON object:
+        {"job_description": "<p>...</p>", "responsibilities": "<ul>...</ul>", "qualifications": "<ul>...</ul>", "skills": "..."}
+        No markdown, no code fences, no text before or after the JSON. No phone numbers, emails or links.
+        PROMPT;
+    }
+
+    protected function requestListing(string $model, string $apiKey, string $prompt): array
+    {
+        $raw  = $this->callAiApi($model, $apiKey, $prompt, null, true);
+        $text = is_string($raw)
+            ? trim(preg_replace('/^```(?:json)?\s*|\s*```$/i', '', trim($raw)))
+            : json_encode($raw);
+
+        $data = $this->decodeJsonLenient($text);
+        if (!is_array($data)) {
+            throw new \Exception('Listing reply was not valid JSON.');
+        }
+
+        $data = $this->coerceModelOutput($data);
+
+        $words = $this->countWords((string) ($data['job_description'] ?? ''));
+        if ($words < self::LISTING_MIN_WORDS) {
+            throw new \Exception("Listing too short: {$words} words.");
+        }
+
+        $data['job_description'] = $this->scrubAiTells((string) $data['job_description']);
+
+        return $data;
+    }
+
+    /**
+     * Keeps the employer's own text and list items, then adds generated ones
+     * until each list has a sensible length.
+     */
+    protected function mergeListing(array $d, array $g): array
+    {
+        $orig = trim(strip_tags((string) ($d['job_description'] ?? '')));
+        $gen  = (string) ($g['job_description'] ?? '');
+        if ($gen !== '') {
+            $d['job_description'] = $orig !== '' ? trim((string) $d['job_description']) . $gen : $gen;
+        }
+
+        $d['responsibilities'] = $this->mergeListItems($d['responsibilities'] ?? null, $g['responsibilities'] ?? null, 5, 7);
+        $d['qualifications']   = $this->mergeListItems($d['qualifications'] ?? null, $g['qualifications'] ?? null, 4, 6);
+
+        if (trim(strip_tags((string) ($d['skills'] ?? ''))) === '') {
+            $d['skills'] = $g['skills'] ?? '';
+        }
+
+        return $d;
+    }
+
+    protected function mergeListItems(?string $existing, ?string $generated, int $min, int $max): ?string
+    {
+        $items = $this->listItems((string) $existing);
+        if (count($items) >= $min) {
+            return $existing;
+        }
+
+        $seen = array_map(fn ($i) => mb_strtolower(strip_tags($i)), $items);
+        foreach ($this->listItems((string) $generated) as $g) {
+            if (count($items) >= $max) {
+                break;
+            }
+            if (!in_array(mb_strtolower(strip_tags($g)), $seen, true)) {
+                $items[] = $g;
+                $seen[]  = mb_strtolower(strip_tags($g));
+            }
+        }
+
+        return $items ? '<ul>' . implode('', array_map(fn ($i) => "<li>{$i}</li>", $items)) . '</ul>' : $existing;
+    }
+
+    protected function listItems(string $html): array
+    {
+        preg_match_all('#<li\b[^>]*>(.*?)</li>#is', $html, $m);
+
+        return array_values(array_filter(array_map('trim', $m[1] ?? []), fn ($s) => $s !== ''));
+    }
+
     protected function buildExtractionPrompt(string $content, string $sourceType, array $referenceData, string $mode, ?string $position = null): string
     {
         $twoWeeksAhead  = Carbon::now()->addWeeks(2)->format('Y-m-d');
@@ -1358,14 +1702,12 @@ class AiService
 
         if ($mode === 'enrich') {
             $modeRules = <<<RULES
-            MODE: ENRICH. The advert is short (under 400 words).
-            - Keep every original sentence of job_description, responsibilities and qualifications exactly as written, in the same order.
-            - Then ADD new text after the original so that job_description totals {$min} to {$max} words.
-            - The added text must be SEO and answer-engine friendly. In the first added sentence, state the job title, the employer and the location (if known). Explain in practical terms what the duties involve day to day. Describe the kind of candidate who suits the role. State how to apply and the deadline if the advert gives them. Use the job title no more than three times.
-            - If responsibilities or qualifications are missing or very short, write a specific list for this job title with 5 to 8 items each, as HTML <ul><li>.
-            - Never invent a salary, benefit, number, date, company history or requirement that the advert does not imply.
+            MODE: EXTRACT ONLY. The advert is short (under 400 words).
+            - Copy the existing description, responsibilities, qualifications and skills as they are, in the same order.
+            - Do NOT write new paragraphs or extra list items. The system adds them in a separate step.
+            - If a field is missing from the advert, return null for it.
             RULES;
-        } else {
+        } else { 
             $modeRules = <<<RULES
             MODE: PRESERVE. The advert is long (400 words or more).
             - Copy job_description, responsibilities, qualifications, skills and application_procedure word for word, in the same order and the same structure.
