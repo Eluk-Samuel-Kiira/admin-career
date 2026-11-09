@@ -355,6 +355,9 @@ Route::prefix('ai')->middleware(['auth'])->group(function () {
     Route::post('/extract-image', [AiJobController::class, 'extractFromImage'])->name('ai.extract-image');
     Route::post('/enhance-field', [AiJobController::class, 'enhanceField'])->name('ai.enhance-field');
     Route::post('/generate-from-title', [AiJobController::class, 'generateFromTitle'])->name('ai.generate-from-title');
+    Route::get('/extract-job/{token}', [AiJobController::class, 'extractStatus'])
+        ->where('token', '[0-9a-f\-]{36}')
+        ->name('ai.extract-status');
 });
 
 

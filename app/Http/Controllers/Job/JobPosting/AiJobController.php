@@ -34,20 +34,38 @@ class AiJobController extends Controller
         }
 
         $model = $request->input('model') ?: config('ai.default');
+        $token = (string) \Illuminate\Support\Str::uuid();
 
-        try {
-            $result = $this->aiService->extractJobData(
-                $request->input('content'),
-                $request->input('source_type'),
-                $model,
-                $request->input('country'),
-                $request->input('position')
-            );
+        \Illuminate\Support\Facades\Cache::put("job_extract:{$token}", ['status' => 'queued'], 1800);
 
-            return $this->success(['data' => $result]);
-        } catch (\Throwable $e) {
-            return $this->failure($e, 'extract_job', $model);
+        \App\Jobs\ExtractJobPosting::dispatch(
+            $token,
+            $request->input('content'),
+            $request->input('source_type'),
+            $model,
+            $request->input('country'),
+            $request->input('position'),
+        );
+
+        return response()->json(['success' => true, 'status' => 'queued', 'token' => $token], 202);
+    }
+
+    public function extractStatus(string $token): JsonResponse
+    {
+        $state = \Illuminate\Support\Facades\Cache::get("job_extract:{$token}");
+
+        if (!$state) {
+            return response()->json([
+                'success' => false, 'type' => 'expired', 'errors' => [],
+                'message' => 'This extraction has expired. Please run it again.',
+            ], 404);
         }
+
+        return match ($state['status']) {
+            'done'   => $this->success(['status' => 'done', 'data' => $state['data']]),
+            'failed' => $this->failure(new \Exception($state['error']), 'extract_job', $state['model'] ?? null),
+            default  => response()->json(['success' => true, 'status' => $state['status']]),
+        };
     }
 
     public function extractFromImage(Request $request): JsonResponse

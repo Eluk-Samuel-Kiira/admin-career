@@ -1091,7 +1091,28 @@ class AiService
             ]);
         }
 
-        return $this->extractResponseText($model, $response->json());
+        $json = $response->json();
+        $this->assertNotTruncated($model, is_array($json) ? $json : []);
+
+        return $this->extractResponseText($model, $json);
+    }
+
+    /**
+     * A reply that stopped at the output limit is incomplete, even if it parses.
+     */
+    protected function assertNotTruncated(string $model, array $data): void
+    {
+        $reason = match ($model) {
+            'gemini'                    => $data['candidates'][0]['finishReason'] ?? null,
+            'cohere'                    => $data['finish_reason'] ?? null,
+            'openai', 'grok', 'mistral' => $data['choices'][0]['finish_reason'] ?? null,
+            'claude'                    => $data['stop_reason'] ?? null,
+            default                     => null,
+        };
+
+        if (in_array(strtoupper((string) $reason), ['MAX_TOKENS', 'LENGTH'], true)) {
+            throw new \Exception("Reply cut short by the output limit ({$model} stopped at {$reason}).");
+        }
     }
 
     /**
@@ -1139,13 +1160,18 @@ class AiService
                     ]
                     : [['text' => $prompt]];
 
+                $generationConfig = array_filter([
+                    'maxOutputTokens'  => $maxTokens,
+                    'responseMimeType' => $json ? 'application/json' : null,
+                ]);
+
+                if (str_contains($modelName, '2.5-flash')) {
+                    $generationConfig['thinkingConfig'] = ['thinkingBudget' => 0];
+                }
+
                 return [
-                    'contents' => [['parts' => $parts]],
-                    'generationConfig' => array_filter([
-                        'maxOutputTokens'  => $maxTokens,
-                        // JSON mode: the model can't wrap the reply in prose or leave a bare newline in a string
-                        'responseMimeType' => $json ? 'application/json' : null,
-                    ]),
+                    'contents'         => [['parts' => $parts]],
+                    'generationConfig' => $generationConfig,
                 ];
 
             case 'grok':

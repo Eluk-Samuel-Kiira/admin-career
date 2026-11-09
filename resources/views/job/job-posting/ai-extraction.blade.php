@@ -138,12 +138,16 @@
         }
 
         try {
-            const response = await postJson(`${AI_API_BASE}/extract-job`, {
+            let response = await postJson(`${AI_API_BASE}/extract-job`, {
                 model,
                 content,
                 source_type: sourceType,
                 country: document.getElementById('f_country_code')?.value || null,
             });
+
+            if (response.status === 202 && response.json?.token) {
+                response = await pollExtraction(response.json.token);
+            }
 
             if (!response.ok || !response.json || response.json.success === false) {
                 renderExtractionError('Extraction failed', response);
@@ -190,6 +194,34 @@
             spinner?.classList.add('d-none');
             if (btnText) btnText.innerHTML = '<i class="ki-duotone ki-sparkle fs-3 me-1"></i>Extract Data';
         }
+    }
+
+    async function pollExtraction(token) {
+        const url = `${AI_API_BASE}/extract-job/${token}`;
+
+        for (let attempt = 0; attempt < 300; attempt++) {   // about 15 minutes at 3 seconds
+            await new Promise(r => setTimeout(r, 3000));
+
+            const res  = await fetch(url, {
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            });
+            const text = await res.text();
+            let json = null;
+            try { json = JSON.parse(text); } catch (_) {}
+
+            if (!json) continue;
+            if (json.status === 'done')      return { ok: true,  status: res.status, json, text };
+            if (json.success === false)      return { ok: false, status: res.status, json, text };
+            // still queued or processing: keep polling
+        }
+
+        return {
+            ok: false, status: 0,
+            json: { success: false, type: 'timeout', errors: {},
+                    message: 'The extraction is still running. Please check again in a few minutes.' },
+            text: '',
+        };
     }
 
     // ================================================================
