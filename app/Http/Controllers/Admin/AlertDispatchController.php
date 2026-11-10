@@ -56,8 +56,6 @@ class AlertDispatchController extends Controller
             'total'              => $seekers->count(),
             'jobs'               => 0,
             'preferences_prompt' => 0,
-            'profile_prompt'     => 0,
-            'cv_prompt'          => 0,
             'skip'               => 0,
             'by_channel' => [
                 'email'    => 0,
@@ -83,6 +81,139 @@ class AlertDispatchController extends Controller
         }
 
         return response()->json(['success' => true, 'summary' => $summary]);
+    }
+
+
+    /**
+     * GET /admin/alerts/seekers
+     * List seekers with a preview of how many jobs they'd receive.
+     * Filters: country, min_jobs, max_jobs, search
+     */
+    public function seekers(Request $request): JsonResponse
+    {
+        if (!auth()->user()->can('manage job alerts')) {
+            return response()->json(['success' => false], 403);
+        }
+
+        $country  = $request->get('country');
+        $country  = $country ? strtoupper($country) : null;
+        $minJobs  = (int) $request->get('min_jobs', 0);
+        $maxJobs  = (int) $request->get('max_jobs', 999);
+        $search   = trim((string) $request->get('search', ''));
+        $perPage  = min((int) $request->get('per_page', 25), 100);
+        $page     = max((int) $request->get('page', 1), 1);
+
+        $query = SeekerProfile::with('user')->where('is_active', true);
+
+        if ($country) {
+            $query->where(function ($q) use ($country) {
+                $q->where('preferred_country_code', $country)
+                ->orWhere('country', $country)
+                ->orWhereHas('user', fn($uq) => $uq->where('country_code', $country));
+            });
+        }
+
+        if ($search !== '') {
+            $query->where(function ($q) use ($search) {
+                $q->where('first_name', 'like', "%{$search}%")
+                ->orWhere('last_name', 'like', "%{$search}%")
+                ->orWhere('email', 'like', "%{$search}%")
+                ->orWhereHas('user', fn($uq) => $uq->where('email', 'like', "%{$search}%"));
+            });
+        }
+
+        // We can't filter min/max jobs at DB level (requires matcher), so pull and filter in PHP
+        $all = $query->get();
+
+        $matcher   = app(\App\Services\Alerts\JobMatcher::class);
+        $resolver  = app(\App\Services\Alerts\AlertResolver::class);
+
+        $rows = $all->map(function (SeekerProfile $s) use ($matcher, $resolver) {
+            $prefs    = $s->job_preferences_array;
+            $decision = $resolver->decide($s, $prefs);
+
+            $jobs = $decision['kind'] === 'jobs'
+                ? $matcher->match($s, $prefs, 100)
+                : collect();
+
+            return [
+                'id'         => $s->id,
+                'user_id'    => $s->user_id,
+                'name'       => trim(($s->first_name ?? '') . ' ' . ($s->last_name ?? '')) ?: $s->user?->name,
+                'email'      => $s->user?->email,
+                'country'    => $s->user?->country_code ?? $s->country,
+                'decision'   => $decision['kind'],
+                'jobs_count' => $jobs->count(),
+                'job_ids'    => $jobs->pluck('id')->all(),
+                'job_titles' => $jobs->take(3)->pluck('job_title')->all(), // preview
+                'prefs'      => [
+                    'email'    => $prefs['send_alert_by_email'] ?? true,
+                    'whatsapp' => !empty($prefs['send_alert_by_whatsapp']),
+                    'telegram' => !empty($prefs['send_alert_by_telegram']),
+                ],
+            ];
+        });
+
+        $filtered = $rows->filter(fn($r) => $r['jobs_count'] >= $minJobs && $r['jobs_count'] <= $maxJobs)->values();
+
+        $total    = $filtered->count();
+        $lastPage = max(1, (int) ceil($total / $perPage));
+        $sliced   = $filtered->slice(($page - 1) * $perPage, $perPage)->values();
+
+        return response()->json([
+            'success' => true,
+            'data'    => $sliced,
+            'pagination' => [
+                'current_page' => $page,
+                'per_page'     => $perPage,
+                'total'        => $total,
+                'last_page'    => $lastPage,
+                'from'         => $total ? (($page - 1) * $perPage) + 1 : 0,
+                'to'           => min($page * $perPage, $total),
+            ],
+        ]);
+    }
+
+    /**
+     * POST /admin/alerts/send-to-selected
+     * Queue a real alert for specific seeker IDs.
+     */
+    public function sendToSelected(Request $request): JsonResponse
+    {
+        if (!auth()->user()->can('manage job alerts')) {
+            return response()->json(['success' => false], 403);
+        }
+
+        $validated = $request->validate([
+            'seeker_ids'   => 'required|array|min:1',
+            'seeker_ids.*' => 'integer|exists:seeker_profiles,id',
+            'channels'     => 'required|array|min:1',
+            'channels.*'   => 'in:email,whatsapp,telegram',
+            'mode'         => 'nullable|in:dry_run,real',
+        ]);
+
+        $mode = $validated['mode'] ?? 'real';
+
+        $queued = 0;
+        $skipped = 0;
+
+        foreach ($validated['seeker_ids'] as $id) {
+            $seeker = SeekerProfile::with('user')->find($id);
+            if (!$seeker || !$seeker->user || !$seeker->user->is_active) {
+                $skipped++;
+                continue;
+            }
+
+            SendSeekerAlertJob::dispatch($id, $validated['channels'], $mode)->onQueue('default');
+            $queued++;
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => "Queued {$queued} alert(s)" . ($skipped ? ", skipped {$skipped}" : '') . ".",
+            'queued'  => $queued,
+            'skipped' => $skipped,
+        ]);
     }
 
     public function dispatch(Request $request): JsonResponse
@@ -168,6 +299,12 @@ class AlertDispatchController extends Controller
 
         $dispatches = $query->orderByDesc('id')->paginate($perPage);
 
+        $allJobIds = $dispatches->pluck('job_ids')->flatten()->filter()->unique()->values()->toArray();
+        $jobs = \App\Models\Job\JobPost::with('company:id,name')
+            ->whereIn('id', $allJobIds)
+            ->get()
+            ->keyBy('id');
+
         // Aggregate counters
         $counts = [
             'all'    => AlertDispatch::count(),
@@ -178,19 +315,32 @@ class AlertDispatchController extends Controller
 
         return response()->json([
             'success' => true,
-            'data'    => $dispatches->through(fn($d) => [
-                'id'            => $d->id,
-                'user_id'       => $d->user_id,
-                'user'          => $d->user?->name ?? 'Unknown',
-                'email'         => $d->user?->email,
-                'channel'       => $d->channel,
-                'kind'          => $d->kind,
-                'jobs_sent'     => $d->jobs_sent,
-                'status'        => $d->status,
-                'error_message' => $d->error_message,
-                'sent_at'       => $d->sent_at?->toISOString(),
-                'created_at'    => $d->created_at?->toISOString(),
-            ]),
+            'data'    => $dispatches->through(function($d) use ($jobs) {
+                // Map the IDs to actual Job data
+                $jobDetails = collect($d->job_ids ?? [])->map(function($id) use ($jobs) {
+                    $job = $jobs->get($id);
+                    return $job ? [
+                        'id' => $job->id,
+                        'title' => $job->job_title,
+                        'company' => optional($job->company)->name ?? 'Unknown Company'
+                    ] : null;
+                })->filter()->values();
+
+                return [
+                    'id'            => $d->id,
+                    'user_id'       => $d->user_id,
+                    'user'          => $d->user?->name ?? 'Unknown',
+                    'email'         => $d->user?->email,
+                    'channel'       => $d->channel,
+                    'kind'          => $d->kind,
+                    'jobs_sent'     => $d->jobs_sent,
+                    'job_details'   => $jobDetails, // <-- Added this
+                    'status'        => $d->status,
+                    'error_message' => $d->error_message,
+                    'sent_at'       => $d->sent_at?->toISOString(),
+                    'created_at'    => $d->created_at?->toISOString(),
+                ];
+            }),
             'counts'  => $counts,
         ]);
     }

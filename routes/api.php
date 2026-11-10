@@ -271,6 +271,11 @@ Route::middleware(['verifycountry'])->group(function () {
         Route::get('/', [\App\Http\Controllers\Api\Jobs\MyJobsController::class, 'index']);
     });
 
+
+    
+    Route::get('/unsubscribe', [\App\Http\Controllers\Api\UnsubscribeController::class, 'handle'])
+        ->middleware('signed')
+        ->name('api.unsubscribe');
     
 });
 
