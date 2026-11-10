@@ -17,8 +17,8 @@ class JobSharingController extends Controller
     private const BRAND            = 'Stardena Careers';
     private const CONTACT_PHONE    = '+256 754 428612';
     private const CONTACT_EMAIL    = 'stardenacareers@gmail.com';
-    private const DIVIDER          = '━━━━━━━━━━━━━━━';
-    private const JOB_DIVIDER      = '=========================';
+    private const DIVIDER          = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
+    private const JOB_DIVIDER      = '===============================';
 
     // Rotated by day and part so repeated posts don't read the same
     private const CTA_HOOKS = [
@@ -204,9 +204,9 @@ class JobSharingController extends Controller
     // ─────────────────────────────────────────────────────────────
 
     /**
-     * Layout:
+     * Layout (no emojis):
      *   header (country + brand + date)
-     *   10 jobs (title, company/location, top skills, deadline, link)
+     *   10 jobs (headline, skills, deadline, blank line, link)
      *   CV / cover letter call at the very end
      */
     private function buildBatchShareText(array $batch): string
@@ -214,18 +214,17 @@ class JobSharingController extends Controller
         $jobs  = $batch['jobs'];
         $info  = $this->countryInfo($batch['country_code']);
         $name  = $info['name'];
-        $flag  = $info['flag'];
         $count = $jobs->count();
 
         $heading = $name !== '' ? mb_strtoupper($name) . ' JOB ALERT' : 'JOB ALERT';
         $partTxt = $batch['country_parts'] > 1
-            ? " • Part {$batch['country_part']} of {$batch['country_parts']}"
+            ? " - Part {$batch['country_part']} of {$batch['country_parts']}"
             : '';
 
         $lines = [
-            trim("{$flag} *{$heading}* {$flag}"),
-            '_' . self::BRAND . ' • ' . now()->format('D, j M Y') . '_',
-            "📌 *{$count} new " . ($count === 1 ? 'opening' : 'openings') . "{$partTxt}*",
+            "*{$heading}*",
+            '_' . self::BRAND . ' - ' . now()->format('D, j M Y') . '_',
+            "*{$count} new " . ($count === 1 ? 'opening' : 'openings') . "{$partTxt}*",
             '_Tap a link to read the full details and apply._',
             '',
             self::DIVIDER,
@@ -234,38 +233,45 @@ class JobSharingController extends Controller
 
         $firstUrl = null;
 
-        foreach ($jobs as $i => $job) {
-            $title  = $this->cleanTitle($job->job_title);
-            $where  = $this->locationText($job);
-            $skills = $this->formatSkills($job->skills);
-            $url    = $job->generateUrl();
+        foreach ($jobs as $job) {
+            $title   = $this->cleanTitle($job->job_title);
+            $company = $this->cleanTitle((string) ($job->company?->name ?? ''));
+            $where   = $this->locationText($job);
+            $skills  = $this->formatSkills($job->skills);
+            $url     = $job->generateUrl();
             $firstUrl ??= $url;
 
-            // title, location, skills, date, link
-            $lines[] = "🔎 *{$title}*";
-            if ($where)         $lines[] = "📍 {$where}";
-            if ($skills !== '') $lines[] = "💡 {$skills}";
-            $lines[] = '🗓️ ' . $this->deadlineText($job);
-            $lines[] = "🔗 {$url}";
+            // Headline: "Title at Company - Location"
+            $headline = $title
+                . ($company !== '' ? " at {$company}" : '')
+                . ($where ? " - {$where}" : '');
+
+            $lines[] = "*{$headline}*";
+            if ($skills !== '') {
+                $lines[] = "Skills: {$skills}";
+            }
+            $lines[] = $this->deadlineText($job);
+            $lines[] = '';                 // blank line before the link
+            $lines[] = $url;
             $lines[] = self::JOB_DIVIDER;
             $lines[] = '';
         }
 
         $hook = self::CTA_HOOKS[(now()->dayOfYear + $batch['part']) % count(self::CTA_HOOKS)];
 
-        $lines[] = '📄 *CV & COVER LETTER BOOST*';
-        $lines[] = "✨ _{$hook}_";
+        $lines[] = '*CV & COVER LETTER BOOST*';
+        $lines[] = "_{$hook}_";
         $lines[] = '';
-        $lines[] = '🔹 *Elevate* your CV so it works for any job you go after';
-        $lines[] = '🎯 *Tailor* your CV and cover letter to any job listed above';
+        $lines[] = '- *Elevate* your CV so it works for any job you go after';
+        $lines[] = '- *Tailor* your CV and cover letter to any job listed above';
         $lines[] = '';
-        $lines[] = '💬 Message us today and get noticed:';
-        $lines[] = '📞 Call / WhatsApp: ' . self::CONTACT_PHONE;
-        $lines[] = '✉️ ' . self::CONTACT_EMAIL;
+        $lines[] = 'Message us today and get noticed:';
+        $lines[] = 'Call / WhatsApp: ' . self::CONTACT_PHONE;
+        $lines[] = 'Email: ' . self::CONTACT_EMAIL;
 
         if ($firstUrl && ($p = parse_url($firstUrl)) && !empty($p['host'])) {
             $lines[] = '';
-            $lines[] = '🌐 More jobs daily: ' . ($p['scheme'] ?? 'https') . '://' . $p['host'] . (isset($p['port']) ? ':' . $p['port'] : '') . '/jobs';
+            $lines[] = 'More jobs daily: ' . ($p['scheme'] ?? 'https') . '://' . $p['host'] . (isset($p['port']) ? ':' . $p['port'] : '') . '/jobs';
         }
 
         return rtrim(implode("\n", $lines));
@@ -302,7 +308,7 @@ class JobSharingController extends Controller
             return 'Open until filled';
         }
 
-        return $job->deadline->format('jS M Y'); // 7th Nov 2026
+        return 'Deadline: ' . $job->deadline->format('jS M Y'); // Deadline: 7th Nov 2026
     }
 
     /**

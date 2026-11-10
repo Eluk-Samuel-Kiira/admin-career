@@ -74,7 +74,7 @@ class JobController extends Controller
                 $query->where('education_level_id', $request->education_level_id);
             }
             if ($request->has('featured') && $request->featured) {
-                $query->where('is_featured', true);
+                $query->currentlyFeatured();
             }
             if ($request->has('urgent') && $request->urgent) {
                 $query->where('is_urgent', true);
@@ -230,18 +230,10 @@ class JobController extends Controller
                 ])
                 ->where('country_code', $countryCode)
                 ->where('is_active', true)
-                ->where('is_featured', true)
+                ->currentlyFeatured()          // is_featured = true AND (featured_until is null OR still in the future)
                 ->whereNotNull('published_at')
                 ->where('published_at', '<=', now())
-                // ── Featured window still open ────────────────────────
-                ->where(function ($query) {
-                    $query->whereNull('featured_until')
-                        ->orWhere('featured_until', '>=', now());
-                })
-                // ── Application deadline still open ───────────────────
-                // NULL deadline = "never expires" (legacy posts often have
-                // a placeholder 2076 deadline; those still resolve to future
-                // dates and pass this filter, which is fine).
+                // Application deadline still open
                 ->where(function ($query) {
                     $query->whereNull('deadline')
                         ->orWhere('deadline', '>=', now()->toDateString());
@@ -395,7 +387,9 @@ class JobController extends Controller
                 'currency' => $job->currency ?? 'AUD',
                 'payment_period' => $job->payment_period ?? 'monthly',
 
-                'is_featured' => (bool) ($job->is_featured ?? false),
+                // The flag alone can be stale: the featured window decides
+                'is_featured'    => (bool) $job->is_featured_active,
+                'featured_until' => $job->featured_until ? $job->featured_until->toIso8601String() : null,
                 'is_urgent' => (bool) ($job->is_urgent ?? false),
                 'is_verified' => (bool) ($job->is_verified ?? false),
                 'is_active' => (bool) ($job->is_active ?? true),

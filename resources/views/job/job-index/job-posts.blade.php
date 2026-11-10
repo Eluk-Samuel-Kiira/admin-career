@@ -202,8 +202,9 @@
                     
                     <div class="fv-row mb-7">
                         <label class="required fw-semibold fs-6 mb-2">Number of Days</label>
-                        <input type="number" class="form-control form-control-solid" name="days" id="feature_days" min="1" max="365" value="7" required />
-                        <div class="text-muted fs-7 mt-1">The job will be featured until {{ now()->addDays(7)->format('M d, Y') }}</div>
+                        <input type="number" class="form-control form-control-solid" name="days" id="feature_days" min="0" max="365" value="7" required />
+                        <div class="text-muted fs-7 mt-1" id="featurePreview">The job will be featured until {{ now()->addDays(7)->format('M d, Y') }}</div>
+                        <div class="text-muted fs-8 mt-1">Enter 0 to remove the featured status. Days are counted from now.</div>
                     </div>
                     
                     <div class="alert alert-info d-flex align-items-center">
@@ -216,7 +217,7 @@
                     <div class="text-center pt-15">
                         <button type="button" class="btn btn-light me-3" data-bs-dismiss="modal">Cancel</button>
                         <button type="submit" class="btn btn-primary" id="featureJobBtn">
-                            <span class="indicator-label">Feature Job</span>
+                            <span class="indicator-label" id="featureJobBtnLabel">Feature Job</span>
                             <span class="indicator-progress">Please wait... <span class="spinner-border spinner-border-sm align-middle ms-2"></span></span>
                         </button>
                     </div>
@@ -451,7 +452,7 @@ function renderJobPostsTable(jobPosts) {
         `;
         row.insertCell(6).innerHTML = `
             ${job.status_badge}
-            ${job.is_featured ? '<span class="badge badge-light-primary">Featured</span>' : ''}
+            ${job.is_featured ? `<span class="badge badge-light-primary" title="${job.featured_until ? 'Until ' + formatDateOnly(job.featured_until) : 'No end date'}">Featured${job.featured_until ? ' · ' + Math.max(0, Math.ceil((new Date(job.featured_until) - new Date()) / 86400000)) + 'd left' : ''}</span>` : ''}
             ${job.is_urgent ? '<span class="badge badge-light-danger">Urgent</span>' : ''}
         `;
         row.insertCell(7).innerHTML = job.job_source ? formatJobSource(job.job_source) : 'N/A';
@@ -529,25 +530,55 @@ window.changePage = function(page) {
 // ================================================================
 // FEATURE MODAL
 // ================================================================
+function updateFeaturePreview() {
+    const input   = document.getElementById('feature_days');
+    const preview = document.getElementById('featurePreview');
+    const label   = document.getElementById('featureJobBtnLabel');
+    if (!input || !preview) return;
+
+    const raw  = input.value.trim();
+    const days = parseInt(raw, 10);
+
+    if (raw === '' || isNaN(days) || days < 0) {
+        preview.textContent = 'Enter a number of days from 0 to 365.';
+        if (label) label.textContent = 'Feature Job';
+        return;
+    }
+
+    if (days === 0) {
+        preview.textContent = 'The featured status will be removed from this job.';
+        if (label) label.textContent = 'Remove Featured';
+        return;
+    }
+
+    const date = new Date();
+    date.setDate(date.getDate() + days);
+    preview.textContent = `The job will be featured until ${date.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' })}`;
+    if (label) label.textContent = 'Feature Job';
+}
+
 window.openFeatureModal = function(id) {
     document.getElementById('feature_job_id').value = id;
     document.getElementById('feature_days').value = 7;
-    const preview = document.querySelector('#kt_modal_feature_job .text-muted.fs-7');
-    if (preview) {
-        const date = new Date();
-        date.setDate(date.getDate() + 7);
-        preview.textContent = `The job will be featured until ${date.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' })}`;
-    }
+    updateFeaturePreview();
     new bootstrap.Modal(document.getElementById('kt_modal_feature_job')).show();
 };
 
+document.getElementById('feature_days')?.addEventListener('input', updateFeaturePreview);
+
 document.getElementById('featureJobForm')?.addEventListener('submit', function(e) {
     e.preventDefault();
+
+    const days = document.getElementById('feature_days').value.trim();
+    if (days === '' || isNaN(parseInt(days, 10)) || parseInt(days, 10) < 0 || parseInt(days, 10) > 365) {
+        if (typeof window.showToast === 'function') window.showToast('error', 'Enter a number of days from 0 to 365.');
+        return;
+    }
+
     const btn = document.getElementById('featureJobBtn');
     if (typeof window.showButtonSpinner === 'function') window.showButtonSpinner(btn);
     const id = document.getElementById('feature_job_id').value;
-    const days = document.getElementById('feature_days').value;
-    
+
     fetch(`/admin/job-posts/${id}/feature`, {
         method: 'POST',
         headers: {
@@ -555,7 +586,7 @@ document.getElementById('featureJobForm')?.addEventListener('submit', function(e
             'Accept': 'application/json',
             'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ days: days })
+        body: JSON.stringify({ days: parseInt(days, 10) })
     })
     .then(res => res.json())
     .then(data => {
@@ -568,8 +599,8 @@ document.getElementById('featureJobForm')?.addEventListener('submit', function(e
             if (typeof window.showToast === 'function') window.showToast('error', data.message);
         }
     })
-    .catch(err => {
-        if (typeof window.showToast === 'function') window.showToast('error', 'Failed to feature job post');
+    .catch(() => {
+        if (typeof window.showToast === 'function') window.showToast('error', 'Failed to update featured status');
     })
     .finally(() => {
         if (typeof window.hideButtonSpinner === 'function') window.hideButtonSpinner(btn);

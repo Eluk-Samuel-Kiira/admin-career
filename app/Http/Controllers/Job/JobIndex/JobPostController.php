@@ -323,8 +323,10 @@ class JobPostController extends Controller
         ]);
     }
 
+
     /**
-     * Feature a job post for a number of days.
+     * Feature a job post for a number of days, counted fresh from now.
+     * 0 days removes the featured status.
      */
     public function feature(Request $request, $id)
     {
@@ -332,23 +334,40 @@ class JobPostController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'You do not have permission to feature jobs.',
-            ], 403);   // ← add 403 status code
+            ], 403);
         }
 
         $request->validate([
-            'days' => 'required|integer|min:1|max:365',
+            'days' => 'required|integer|min:0|max:365',
         ]);
 
         $jobPost = JobPost::findOrFail($id);
         $days    = (int) $request->input('days');
 
+        // 0 days: switch featuring off and clear the window
+        if ($days === 0) {
+            $jobPost->is_featured    = false;
+            $jobPost->featured_until = null;
+            $jobPost->save();
+
+            return response()->json([
+                'success'        => true,
+                'message'        => 'Featured status removed.',
+                'is_featured'    => false,
+                'featured_until' => null,
+            ]);
+        }
+
+        // 1+ days: the window always restarts from this moment (it replaces the old one, never adds to it)
         $jobPost->is_featured    = true;
         $jobPost->featured_until = now()->addDays($days);
-        $jobPost->save();   // saving hook keeps is_featured in sync
+        $jobPost->save();   // the saving hook keeps is_featured in sync
 
         return response()->json([
             'success'        => true,
-            'message'        => "Job post featured successfully until {$jobPost->featured_until->format('M d, Y')}!",
+            'message'        => "Job post featured for {$days} " . ($days === 1 ? 'day' : 'days')
+                            . ", until {$jobPost->featured_until->format('M d, Y')}.",
+            'is_featured'    => true,
             'featured_until' => $jobPost->featured_until->toISOString(),
         ]);
     }

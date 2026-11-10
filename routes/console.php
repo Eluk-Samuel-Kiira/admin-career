@@ -156,3 +156,12 @@ Schedule::call(function () {
         Log::info('Daily queue-lock cleanup', ['deleted' => $count, 'driver' => $driver]);
     }
 })->dailyAt('05:00')->name('queue-locks-cleanup');
+
+
+use App\Models\Job\JobPost;
+Schedule::call(function () {
+    JobPost::where('is_featured', true)
+        ->whereNotNull('featured_until')
+        ->where('featured_until', '<', now())
+        ->update(['is_featured' => false]);
+})->hourly()->name('unfeature-expired-jobs');
