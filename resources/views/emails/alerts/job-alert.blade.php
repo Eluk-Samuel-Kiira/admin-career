@@ -292,17 +292,16 @@
                     <tr>
                         <td class="em-footer" style="background:#F4F8F7;padding:22px 32px;text-align:center;">
                             <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:#0F1B2D;letter-spacing:0.02em;">
-                                {{ config('app.name') }}
+                                STARDENA TEAM
                             </p>
                             <p style="margin:0;font-size:12px;line-height:1.5;color:#64748B;">
                                 You're receiving this because you signed up for job alerts.<br>
-                                <a href="{{ $proxyUrl }}/alert/preferences"
-                                   style="color:#64748B;text-decoration:underline;">
+                                <a href="{{ $proxyUrl }}/alert/preferences" style="color:#64748B;text-decoration:underline;">
                                     Manage preferences
                                 </a>
                                 ·
-                                <a href="{{ $proxyUrl }}/unsubscribe"
-                                   style="color:#64748B;text-decoration:underline;">
+                                <!-- Use the variable here, NOT a hardcoded URL -->
+                                <a href="{{ $unsubscribeUrl ?? ($proxyUrl . '/unsubscribe') }}" style="color:#64748B;text-decoration:underline;">
                                     Unsubscribe
                                 </a>
                             </p>

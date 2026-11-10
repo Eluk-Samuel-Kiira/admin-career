@@ -226,6 +226,9 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     Route::get('/cover-letters/{uuid}',          [CoverLetterController::class, 'show'])->name('cover-letters.show');
     Route::get('/cover-letters/{uuid}/download', [CoverLetterController::class, 'download'])->name('cover-letters.download');
     
+    Route::get('/alerts/seekers',            [AlertDispatchController::class, 'seekers'])->name('alerts.seekers');
+    Route::post('/alerts/send-to-selected',  [AlertDispatchController::class, 'sendToSelected'])->name('alerts.send-to-selected');
+
 });
 
 

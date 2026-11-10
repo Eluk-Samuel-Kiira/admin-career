@@ -24,26 +24,32 @@ class JobMatcher
         $useSkill  = !empty($prefs['alert_by_skill_match']) || !empty($prefs['alert_by_cv_skill']);
         $threshold = (int) ($prefs['skill_match_threshold'] ?? 50);
 
+        // ── THE 3-DAY WINDOW ──
+        // Only fetch jobs published in the last 72 hours (3 days)
+        $threeDaysAgo = now()->subDays(3)->startOfDay();
+
         $query = JobPost::with(['company:id,name', 'jobLocation'])
             ->where('is_active', true)
-            ->whereNotNull('published_at')
             ->where('deadline', '>=', now())
+            ->whereNotNull('published_at')
+            ->where('published_at', '>=', $threeDaysAgo) // <--- ONLY LAST 3 DAYS
             ->orderByDesc('published_at');
 
-        // ── Country (resolve name → ISO code via Country model)
+        // ── Country
         $countryCode = $this->resolveCountryCode($seeker);
         if ($countryCode) {
             $query->where('country_code', $countryCode);
         }
 
-        // ── Category filter (job_category_id IN …) unless "all jobs" mode
+        // ── Categories
         if (!$wantsAll && !empty($cats)) {
             $query->whereIn('job_category_id', $cats);
         }
 
+        // ── Fetch jobs
         $jobs = $query->limit(500)->get();
 
-        // ── Skill threshold (only when enabled)
+        // ── Skill Threshold
         if ($useSkill && $jobs->isNotEmpty()) {
             $scored = $jobs->map(fn ($j) => [
                 'job'   => $j,
@@ -59,9 +65,7 @@ class JobMatcher
                     ->pluck('job')
                     ->values();
             } else {
-                // Seeker has no usable skills OR job fields are empty.
-                // Don't nuke the whole list — fall back to category/country filtered jobs.
-                \Log::info('JobMatcher: skill score was 0 for every candidate — skipping threshold', [
+                \Log::info('JobMatcher: skill score was 0 for all candidates — skipping threshold', [
                     'seeker_id'  => $seeker->id,
                     'candidates' => $jobs->count(),
                 ]);
