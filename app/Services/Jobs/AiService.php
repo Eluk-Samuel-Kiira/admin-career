@@ -2481,45 +2481,73 @@ class AiService
     {
         $prompt = $this->buildCvExtractionPrompt($resumeText);
         $lastException = null;
-        $allFailed = true;
 
-        // Get ordered models - default first, then fallbacks
         $models = $this->getOrderedCvModels();
 
         foreach ($models as $model) {
             $apiKey = $this->getApiKeyFor($model);
 
             if (!$this->isModelUsable($model, $apiKey)) {
-                // Log::info("⏭️ Skipping {$model} - API key not configured");
                 continue;
             }
 
             try {
-                // Log::info("🤖 Attempting CV extraction with {$model}");
                 $raw = $this->callAiApi($model, $apiKey, $prompt, null, true);
-                
-                if ($raw) {
-                    $data = $this->parseJsonResponse($raw);
-                    
-                    if ($data !== null && !empty($data) && $this->hasValidCvData($data)) {
-                        // Log::info("✅ CV extraction succeeded with {$model}");
-                        return $data;
-                    }
+
+                if (!$raw) {
+                    continue;
                 }
 
-                Log::warning("⚠️ {$model} returned unparseable or empty response - trying next model");
+                $data = $this->parseJsonResponse($raw);
+
+                if ($data === null || empty($data)) {
+                    Log::warning("⚠️ {$model} returned unparseable response - trying next model");
+                    continue;
+                }
+
+                // ────────────────────────────────────────────────────────
+                // NEW: honour the AI's validity verdict
+                // ────────────────────────────────────────────────────────
+                if (array_key_exists('_valid', $data)) {
+                    if ($data['_valid'] === false) {
+                        // The AI says this isn't a CV → abort the whole loop and tell the user
+                        $reason = $data['_reason']
+                            ?? 'This does not look like a CV. Please upload your CV as a PDF or Word document.';
+
+                        Log::info("CV validation rejected by {$model}", [
+                            'reason' => $reason,
+                        ]);
+
+                        // Throw a dedicated exception the controller can catch
+                        throw new \App\Exceptions\NotACvException($reason);
+                    }
+
+                    // Strip the meta fields before returning
+                    unset($data['_valid'], $data['_reason']);
+                }
+
+                if ($this->hasValidCvData($data)) {
+                    return $data;
+                }
+
+                Log::warning("⚠️ {$model} returned empty data - trying next model");
+
+            } catch (\App\Exceptions\NotACvException $e) {
+                // Non-CV verdict is authoritative — do NOT try other models.
+                // Trying another model could produce a different answer, which is
+                // confusing. One model's verdict is enough to reject the upload.
+                throw $e;
+
             } catch (\Throwable $e) {
                 $lastException = $e;
                 Log::warning("⚠️ CV extraction failed with {$model}: " . $e->getMessage());
             }
         }
 
-        // If we get here, all models failed
         Log::error('All AI models failed to extract CV data', [
             'last_error' => $lastException ? $lastException->getMessage() : 'Unknown error'
         ]);
-        
-        // Return empty data structure instead of throwing
+
         return $this->getEmptyCvData();
     }
 
@@ -2669,12 +2697,51 @@ class AiService
     protected function buildCvExtractionPrompt(string $resumeText): string
     {
         return <<<PROMPT
-        You are a strict data-extraction engine. Read the resume/CV text below and
-        return ONLY a single valid JSON object - no markdown, no commentary, no
-        code fences - matching EXACTLY this shape. Use null or an empty array for
-        any field you cannot find. Never invent data that isn't in the text.
+        You are a strict data-extraction engine for a job board. The user has uploaded a file that
+        should be their CV (resume). Your first job is to decide whether the file really IS a CV.
+
+        ═══════════════════════════════════════════════════════════════
+        STEP 1: IS THIS A CV?
+        ═══════════════════════════════════════════════════════════════
+        Answer "yes" ONLY if the text contains at least THREE of these signals:
+            - A person's name (full name, not a company name)
+            - A contact detail (phone number, email, address)
+            - Work experience with employer names and/or job titles
+            - Education (school, degree, diploma, certificate)
+            - Skills, training, or certifications
+            - A professional summary or career objective
+
+        Answer "no" if the text is:
+            - A job advert / job description (talks about "we are hiring", "the candidate will...")
+            - A cover letter (only one job, starts with "Dear Sir/Madam", no employment history)
+            - A certificate, transcript, or ID document (no experience, only one institution)
+            - A receipt, invoice, chat screenshot, or random document
+            - Empty, scanned-as-image with no text, or a password-protected file
+            - Too short to be a CV (under 100 words of real content)
+            - A company profile, brochure, or marketing material
+            - A CV that belongs to MULTIPLE people (multiple names as candidates)
+            - Totally unrelated content
+
+        If it is NOT a CV, return ONLY this JSON and stop:
+            {"_valid": false, "_reason": "<friendly 1-sentence explanation for the user>"}
+
+        Use these friendly reason templates:
+            - "This does not look like a CV. Please upload your CV as a PDF or Word document."
+            - "This looks like a job advert, not a CV. Please upload your own CV."
+            - "This looks like a cover letter, not a full CV. Please upload your complete CV."
+            - "This looks like a certificate or transcript. Please upload your full CV."
+            - "This file is empty or unreadable. Please upload a PDF or Word CV with real text."
+            - "This content is too short to be a CV. Please upload your full CV."
+            - "This does not appear to belong to one person. Please upload your own CV."
+
+        ═══════════════════════════════════════════════════════════════
+        STEP 2: EXTRACT THE CV DATA (only if _valid = true)
+        ═══════════════════════════════════════════════════════════════
+        Return ONLY a single valid JSON object — no markdown, no commentary, no code fences.
+        Use null or an empty array for any field you cannot find. Never invent data.
 
         {
+        "_valid": true,
         "first_name": string|null,
         "last_name": string|null,
         "phone": string|null,
@@ -2698,7 +2765,7 @@ class AiService
         "projects": [{"name": string, "description": string|null, "url": string|null}]
         }
 
-        For education, include a "grade" field (e.g., "A", "B+", "First Class", "Distinction", "Merit", "Pass", "GPA: 3.8/4.0", etc.) if mentioned in the CV, otherwise null.
+        For education, include a "grade" field (e.g., "A", "B+", "First Class", "Distinction", "GPA: 3.8/4.0") if mentioned, otherwise null.
 
         Resume text:
         ---

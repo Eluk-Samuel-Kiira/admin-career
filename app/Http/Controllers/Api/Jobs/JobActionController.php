@@ -361,8 +361,9 @@ class JobActionController extends Controller
     }
 
     /**
-     * Update application status (for job seeker)
-     * The job seeker can update their own application status
+     * Update application status (for job seeker).
+     * The job seeker can update their own application status at any time,
+     * including after the job has expired or been deactivated.
      */
     public function updateApplicationStatus(Request $request, $jobId): JsonResponse
     {
@@ -370,52 +371,63 @@ class JobActionController extends Controller
 
         if (!$user) {
             return response()->json([
-                'success' => false,
-                'message' => 'Please login',
-                'requires_login' => true
+                'success'        => false,
+                'message'        => 'Please login',
+                'requires_login' => true,
             ], 401);
         }
 
-        // Get the seeker profile from the authenticated user
         $seekerProfile = $user->seekerProfile;
         if (!$seekerProfile) {
             return response()->json([
                 'success' => false,
-                'message' => 'Seeker profile not found'
+                'message' => 'Seeker profile not found',
             ], 404);
         }
 
         $request->validate([
-            'status' => 'required|in:applied,interviewing,hired,rejected',
+            'status'          => 'required|in:applied,interviewing,hired,rejected',
+            'interview_date'  => 'nullable|date',
         ]);
 
-        // Find the job application for this seeker and job
+        // Find the application — works whether the job is live, expired, or inactive
         $jobSeekerJob = JobSeekerJob::where([
             'seeker_profile_id' => $seekerProfile->id,
-            'job_post_id' => $jobId,
+            'job_post_id'       => $jobId,
         ])->first();
 
         if (!$jobSeekerJob) {
             return response()->json([
                 'success' => false,
-                'message' => 'Application not found'
+                'message' => 'Application not found',
             ], 404);
         }
 
-        // Update status
+        // Reset all flags first so state is always clean on every transition.
+        // This prevents bugs like "hired + rejected" both being true after
+        // consecutive updates.
+        $jobSeekerJob->is_called_for_interview = false;
+        $jobSeekerJob->is_got_job              = false;
+        $jobSeekerJob->is_rejected             = false;
+        $jobSeekerJob->interview_date          = null;
+
         switch ($request->status) {
             case 'interviewing':
                 $jobSeekerJob->is_called_for_interview = true;
                 $jobSeekerJob->interview_date = $request->interview_date ?? now();
                 break;
+
             case 'hired':
-                $jobSeekerJob->is_got_job = true;
+                $jobSeekerJob->is_called_for_interview = true; // implied
+                $jobSeekerJob->is_got_job              = true;
                 break;
+
             case 'rejected':
                 $jobSeekerJob->is_rejected = true;
                 break;
-            default:
-                // applied - no change to flags
+
+            case 'applied':
+                // Already reset above — nothing else to set
                 break;
         }
 
@@ -423,8 +435,8 @@ class JobActionController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Application status updated successfully',
-            'status' => $this->getApplicationStatus($jobSeekerJob),
+            'message' => 'Application status updated successfully.',
+            'status'  => $this->getApplicationStatus($jobSeekerJob),
         ]);
     }
 

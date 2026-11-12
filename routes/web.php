@@ -285,11 +285,29 @@ Route::get('/auto-apply/download', [\App\Http\Controllers\AutoApply\DownloadCont
 use App\Http\Controllers\AutoApply\AutoApplyController;
 
 Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () {
-    Route::get('/auto-apply',             [AutoApplyController::class, 'index'])->name('auto-apply.index');
     Route::get('/auto-apply/stats',       [AutoApplyController::class, 'stats'])->name('auto-apply.stats');
     Route::get('/auto-apply/runs',        [AutoApplyController::class, 'runs'])->name('auto-apply.runs');
     Route::get('/auto-apply/relays',      [AutoApplyController::class, 'relays'])->name('auto-apply.relays');
 });
+
+Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () {
+    Route::get('/auto-apply',           [AutoApplyController::class, 'index'])->name('auto-apply.index');
+    Route::post('/auto-apply/trigger',  [AutoApplyController::class, 'triggerDraft'])->name('auto-apply.trigger');
+    Route::get('/auto-apply/drafts',    [AutoApplyController::class, 'drafts'])->name('auto-apply.drafts');
+    Route::post('/auto-apply/send/{id}',[AutoApplyController::class, 'sendRelay'])->name('auto-apply.send-relay');
+    Route::post('/auto-apply/mark/{id}',[AutoApplyController::class, 'markApplied'])->name('auto-apply.mark-applied');
+    Route::delete('/auto-apply/draft/{id}', [AutoApplyController::class, 'deleteDraft'])->name('auto-apply.delete-draft');
+    Route::get('/auto-apply/download/{id}', [AutoApplyController::class, 'downloadDraft'])->name('auto-apply.download');
+    Route::get('/auto-apply/status', [AutoApplyController::class, 'status'])->name('auto-apply.status');
+    Route::get('/auto-apply/logs',      [AutoApplyController::class, 'logs'])->name('auto-apply.logs');
+    Route::post('/auto-apply/retry/{id}', [AutoApplyController::class, 'retryRelay'])->name('auto-apply.retry');
+    Route::post('/auto-apply/mark-failed/{id}', [AutoApplyController::class, 'markFailed'])->name('auto-apply.mark-failed');
+    Route::post('/auto-apply/update-draft/{id}', [AutoApplyController::class, 'updateDraftContent'])->name('auto-apply.update-draft');
+    Route::post('/auto-apply/retry-user/{userId}', [AutoApplyController::class, 'retryUserRun'])->name('auto-apply.retry-user');
+    Route::get('/auto-apply/history', [AutoApplyController::class, 'history'])->name('auto-apply.history');
+});
+
+
 
 
 require __DIR__.'/auth.php';

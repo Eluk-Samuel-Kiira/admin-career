@@ -21,7 +21,7 @@ class PaymentInitController extends Controller
         $validated = $request->validate([
             'amount_cents'      => 'required|integer|min:1',
             'currency_code'     => 'required|string|size:3',
-            'purpose_type'      => 'required|string|max:64',
+            'purpose_type'      => 'required|string|in:cv_review,cover_letter,auto_apply_subscription',
             'purpose_reference' => 'required|uuid',
             'description'       => 'nullable|string|max:255',
             'phone'             => 'nullable|string|max:25',
@@ -82,7 +82,7 @@ class PaymentInitController extends Controller
             'depositor_phone'     => $validated['phone'] ?? $user->phone,
             'depositor_email'     => $user->email,
             'depositor_name'      => $user->name,
-            'country_code'        => $user->country_code ?? config('app.country_code', 'UG'),
+            'country_code'        => $user->country_code,
             'created_by'          => $user->id,
         ]);
 
@@ -122,4 +122,20 @@ class PaymentInitController extends Controller
                 : 'A payment prompt has been sent to your phone. Enter your PIN to complete payment.',
         ]);
     }
+
+    public function status($reference)
+    {
+        $deposit = Deposit::where('deposit_ref', $reference)->first();
+        
+        if (!$deposit) {
+            return response()->json(['success' => false, 'message' => 'Deposit not found'], 404);
+        }
+
+        return response()->json([
+            'success' => true,
+            'status'  => $deposit->status, // 'pending', 'completed', or 'failed'
+        ]);
+    }
+
+
 }

@@ -80,24 +80,11 @@ class RelayChannel
 
     protected function sendEmail(SeekerProfile $seeker, JobPost $job, array $cv, ?string $coverHtml): void
     {
-        $coverPath = null;
-        if ($coverHtml) {
-            $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.auto-apply.tailored-cover-letter', [
-                'content' => $coverHtml,
-                'seeker'  => $seeker,
-                'job'     => ['job_title' => $job->job_title],
-            ])->setPaper('a4');
-
-            $coverPath = 'auto-apply/' . \Illuminate\Support\Str::uuid() . '/cover-letter.pdf';
-            Storage::disk('public')->put($coverPath, $pdf->output());
-        }
-
         Mail::to($seeker->user->email)->send(new TailoredApplicationMail(
-            seeker:      $seeker,
-            job:         $job,
-            cvPath:      $cv['path'],
-            coverPath:   $coverPath,
-            coverHtml:   $coverHtml,
+            seeker:    $seeker,
+            job:       $job,
+            cvHtml:    $cv['html'],
+            coverHtml: $coverHtml,
         ));
     }
 

@@ -356,3 +356,130 @@ if ($deposit->purpose_type === 'cover_letter') {
 
 Log::info("[{$runId}] webhook-success: DONE");
 echo "\nDone.\n";
+
+
+
+
+// clear logs for auto apply in tinker
+// // 1. Delete child records first (relays & external drafts)
+// \App\Models\AutoApplyRelay::query()->delete();
+// \App\Models\AutoApplyExternalDraft::query()->delete();
+
+// // 2. Delete parent runs
+// \App\Models\AutoApplyRun::query()->delete();
+
+// // 3. Reset IDs back to 1
+// \DB::statement('ALTER TABLE auto_apply_relays AUTO_INCREMENT = 1');
+// \DB::statement('ALTER TABLE auto_apply_external_drafts AUTO_INCREMENT = 1');
+// \DB::statement('ALTER TABLE auto_apply_runs AUTO_INCREMENT = 1');
+
+// // 4. Delete orphaned PDFs/HTML from disk (old approach)
+// $oldPath = storage_path('app/public/auto-apply');
+// if (is_dir($oldPath)) {
+//     $it = new RecursiveIteratorIterator(
+//         new RecursiveDirectoryIterator($oldPath, FilesystemIterator::SKIP_DOTS),
+//         RecursiveIteratorIterator::CHILD_FIRST
+//     );
+//     foreach ($it as $file) {
+//         $file->isDir() ? @rmdir($file->getRealPath()) : @unlink($file->getRealPath());
+//     }
+//     @rmdir($oldPath);
+// }
+
+// // 5. Confirm clean state
+// dump([
+//     'relays'   => \App\Models\AutoApplyRelay::count(),
+//     'external' => \App\Models\AutoApplyExternalDraft::count(),
+//     'runs'     => \App\Models\AutoApplyRun::count(),
+// ]);
+
+
+
+
+
+
+
+
+// $depositRef = '7c33eb07-bdbf-4dc1-b900-b04333b5a80e';
+
+// $deposit = \App\Models\Deposit::where('deposit_ref', $depositRef)->first();
+
+// if (!$deposit) {
+//     echo "❌ Deposit not found.\n";
+// } else {
+//     echo "✅ Found Deposit #{$deposit->id}\n";
+
+//     // Mark deposit as completed
+//     $deposit->update([
+//         'status'       => 'completed',
+//         'cleared_date' => now(),
+//     ]);
+//     echo "✅ Deposit marked as completed.\n";
+
+//     if ($deposit->purpose_type === 'auto_apply_subscription') {
+
+//         // Pull currency code from the deposit's currency relation
+//         $currencyCode = $deposit->currency?->code
+//             ?? $deposit->paidBy?->country_code
+//             ?? 'UGX';
+
+//         // Find the matching service price so amount_cents/price_id/interval are consistent
+//         $price = \App\Models\Service\ServicePrice::where('country_code', $deposit->country_code ?? 'UG')
+//             ->whereHas('service', fn($q) => $q->where('key', 'premium_alerts'))
+//             ->first();
+
+//         $subscription = \App\Models\Subscription\Subscription::updateOrCreate(
+//             [
+//                 'user_id'     => $deposit->paid_by_user_id,
+//                 'service_key' => 'premium_alerts',
+//             ],
+//             [
+//                 'country_code'         => $deposit->country_code ?? 'UG',
+//                 'currency'             => $currencyCode,
+//                 'amount_cents'         => $deposit->amount,
+//                 'interval'             => $price?->interval ?? 'month',
+//                 'price_id'             => $price?->id,
+//                 'gateway'              => 'marzpay',
+//                 'status'               => 'active',
+//                 'starts_at'            => now(),
+//                 'current_period_start' => now(),
+//                 'current_period_end'   => now()->addDays(28),
+//                 'feature_snapshot'     => [
+//                     'auto_apply'      => 10,
+//                     'whatsapp_alerts' => true,
+//                     'telegram_alerts' => true,
+//                 ],
+//             ]
+//         );
+
+//         echo "✅ Subscription activated!\n";
+//         echo "   ID:      {$subscription->id}\n";
+//         echo "   User:    {$subscription->user_id}\n";
+//         echo "   Country: {$subscription->country_code}\n";
+//         echo "   Currency: {$subscription->currency}\n";
+//         echo "   Amount:  {$subscription->amount_cents}\n";
+//         echo "   Expires: {$subscription->current_period_end}\n";
+
+//         // ── Also record the payment so it shows in history ──
+//         $payment = \App\Models\Subscription\SubscriptionPayment::create([
+//             'subscription_id'        => $subscription->id,
+//             'user_id'                => $deposit->paid_by_user_id,
+//             'gateway'                => 'marzpay',
+//             'gateway_reference'      => $deposit->deposit_ref,
+//             'gateway_transaction_id' => $deposit->source_reference ?? $deposit->deposit_ref,
+//             'currency'               => $currencyCode,
+//             'amount_cents'           => $deposit->amount,
+//             'status'                 => 'paid',
+//             'paid_at'                => now(),
+//             'gateway_payload'        => [
+//                 'deposit_ref' => $deposit->deposit_ref,
+//                 'method'      => $deposit->deposit_method,
+//             ],
+//         ]);
+
+//         echo "✅ SubscriptionPayment recorded! (id #{$payment->id})\n";
+//     }
+
+//     echo "\n🎉 Done. Reload the proxy now — the modal should flip to the Runs view.\n";
+// }
+

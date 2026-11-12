@@ -42,6 +42,7 @@ class SyncPermissions extends Command
             'create subscriptions',
             'edit subscriptions',
             'delete subscriptions',
+            'send manual emails',
             
 
             // ============================================================

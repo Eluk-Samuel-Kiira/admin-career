@@ -17,6 +17,9 @@ class EmployerSubscriptionController extends Controller
      */
     private const PAYMENT_PURPOSES = [
         'subscription',
+        'auto_apply_subscription',
+        'premium_alerts',
+        'featured_applicant',
         'cv_review',
         'cover_letter',
         'job_submission',
@@ -43,6 +46,8 @@ class EmployerSubscriptionController extends Controller
         ]);
     }
 
+
+
     // ═════════════════════════════════════════════════════════════
     // STATS
     // ═════════════════════════════════════════════════════════════
@@ -64,7 +69,13 @@ class EmployerSubscriptionController extends Controller
 
         $paidThisMonth = (clone $depositQuery)
             ->where('status', 'completed')
-            ->where('cleared_date', '>=', now()->startOfMonth())
+            ->where(function ($q) {
+                $q->where('cleared_date', '>=', now()->startOfMonth())
+                ->orWhere(function ($q2) {
+                    $q2->whereNull('cleared_date')
+                        ->where('created_at', '>=', now()->startOfMonth());
+                });
+            })
             ->sum('amount');
 
         $paidToday = (clone $depositQuery)
@@ -93,6 +104,7 @@ class EmployerSubscriptionController extends Controller
                 'refunds_30d'         => $refunds30d,
                 'paid_this_month'     => (int) $paidThisMonth,
                 'paid_today'          => (int) $paidToday,
+                'currency'            => $role === 'employer' ? 'UGX' : 'UGX',
             ],
         ]);
     }
@@ -255,9 +267,26 @@ class EmployerSubscriptionController extends Controller
             return response()->json(['success' => false], 403);
         }
 
+        // 1. Try to find the subscription by UUID first
         $sub = Subscription::with(['user:id,name,email,phone,country_code', 'service:id,key,name,description'])
             ->where('uuid', $uuid)
             ->first();
+
+        // 2. Fallback: the reference might belong to a deposit (e.g., auto_apply_subscription),
+        //    so look up the deposit and find its owner's subscription instead
+        if (!$sub) {
+            $deposit = Deposit::where('purpose_reference', $uuid)
+                ->orWhere('deposit_ref', $uuid)
+                ->first();
+
+            if ($deposit) {
+                // Match the deposit's user to their most recent subscription
+                $sub = Subscription::with(['user:id,name,email,phone,country_code', 'service:id,key,name,description'])
+                    ->where('user_id', $deposit->paid_by_user_id)
+                    ->orderByDesc('id')
+                    ->first();
+            }
+        }
 
         if (!$sub) {
             return response()->json([
@@ -382,7 +411,7 @@ class EmployerSubscriptionController extends Controller
 
             'currency'             => $s->currency,
             'amount_cents'         => (int) $s->amount_cents,
-            'amount_formatted'     => strtoupper($s->currency) . ' ' . number_format($s->amount_cents / 100, $s->currency === 'UGX' ? 0 : 2),
+            'amount_formatted' => $s->formatted_amount,
             'interval'             => $s->interval,
 
             'starts_at'            => $s->starts_at?->toISOString(),
@@ -392,11 +421,23 @@ class EmployerSubscriptionController extends Controller
             'cancelled_at'         => $s->cancelled_at?->toISOString(),
             'cancel_at_period_end' => (bool) $s->cancel_at_period_end,
 
-            'gateway'              => $s->gateway,
+            'gateway'                 => $s->gateway,
             'gateway_subscription_id' => $s->gateway_subscription_id,
-            'feature_snapshot'     => $s->feature_snapshot,
-            'created_at'           => $s->created_at?->toISOString(),
+            'feature_snapshot'        => $s->feature_snapshot,
+            'created_at'              => $s->created_at?->toISOString(),
         ];
+    }
+
+    private function formatMoney(?string $currencyCode, int $amountCents): string
+    {
+        $code = strtoupper($currencyCode ?? 'UGX');
+        $currency = \App\Models\Currency::where('code', $code)->first();
+
+        if ($currency) {
+            return $currency->formatAmount($amountCents);
+        }
+
+        return $code . ' ' . number_format($amountCents, 0);
     }
 
     /**
@@ -465,7 +506,7 @@ class EmployerSubscriptionController extends Controller
             'gateway_transaction_id' => $d->gateway_transaction_uuid,
             'currency'               => $currency,
             'amount_cents'           => (int) $d->amount,
-            'amount_formatted'       => $d->currency
+            'amount_formatted' => $d->currency
                 ? $d->currency->formatAmount((int) $d->amount)
                 : strtoupper($currency) . ' ' . number_format($d->amount / 100, 2),
             'status'                 => $d->status,

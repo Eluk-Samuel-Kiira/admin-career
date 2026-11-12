@@ -93,6 +93,19 @@ class Subscription extends Model
     // ── Accessors ─────────────────────────────────────────────
     public function getFormattedAmountAttribute(): string
     {
-        return strtoupper($this->currency) . ' ' . number_format($this->amount_cents / 100, $this->currency === 'UGX' ? 0 : 2);
+        $code = $this->currency ?? 'UGX';
+
+        $currency = \App\Models\Currency::where('code', $code)->first();
+
+        if ($currency) {
+            return $currency->formatAmount((int) $this->amount_cents);
+        }
+
+        $decimals = in_array($code, ['UGX', 'JPY', 'KRW'], true) ? 0 : 2;
+        $divisor  = $decimals === 0 ? 1 : 100;
+
+        return $code . ' ' . number_format($this->amount_cents / $divisor, $decimals);
     }
+
+    
 }

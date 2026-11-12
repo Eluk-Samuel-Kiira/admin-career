@@ -347,9 +347,16 @@
         if (!d) return '—';
         return new Date(d).toLocaleString();
     }
-    function formatMoney(cents) {
-        return (cents || 0).toLocaleString();
+    function formatMoney(cents, currency = 'UGX') {
+        const amount = (cents || 0);
+        const decimals = currency === 'UGX' ? 0 : 2;
+        const divisor  = currency === 'UGX' ? 1 : 100;
+        return `${currency} ${(amount / divisor).toLocaleString(undefined, {
+            minimumFractionDigits: decimals,
+            maximumFractionDigits: decimals,
+        })}`;
     }
+
     function debounce(fn, wait) {
         let timer;
         return (...a) => { clearTimeout(timer); timer = setTimeout(() => fn(...a), wait); };
@@ -452,8 +459,9 @@
             document.getElementById('statCancelled').textContent = s.cancelled_subs ?? 0;
             document.getElementById('statFailed30d').textContent = s.failed_payments_30d ?? 0;
             document.getElementById('statRefunds30d').textContent= s.refunds_30d ?? 0;
-            document.getElementById('statPaidMonth').textContent = formatMoney(s.paid_this_month ?? 0);
-            document.getElementById('statPaidToday').textContent = formatMoney(s.paid_today ?? 0);
+            
+            document.getElementById('statPaidMonth').textContent = formatMoney(s.paid_this_month ?? 0, s.currency || 'UGX');
+            document.getElementById('statPaidToday').textContent = formatMoney(s.paid_today ?? 0, s.currency || 'UGX');
         } catch (e) { /* ignore */ }
     }
 
@@ -680,14 +688,13 @@
                     ${p.paid_at ? 'Paid ' + formatDate(p.paid_at) : 'Attempted ' + formatDate(p.created_at)}
                 </td>
                 <td class="text-end">
-                    ${p.purpose_reference ? `
-                        <button class="btn btn-sm btn-icon btn-light"
-                                data-open-sub="${esc(p.purpose_reference)}" title="View subscription">
+                    ${['subscription', 'premium_alerts', 'featured_applicant', 'auto_apply_subscription'].includes(p.purpose_type) && p.purpose_reference
+                        ? `<button class="btn btn-sm btn-icon btn-light" data-open-sub="${esc(p.purpose_reference)}" title="View subscription">
                             <i class="ki-duotone ki-eye fs-3">
                                 <span class="path1"></span><span class="path2"></span><span class="path3"></span>
                             </i>
-                        </button>
-                    ` : '<span class="text-muted fs-8">—</span>'}
+                        </button>`
+                        : '<span class="text-muted fs-8">—</span>'}
                 </td>
             </tr>`;
     }

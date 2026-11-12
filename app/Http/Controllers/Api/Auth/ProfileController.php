@@ -69,8 +69,15 @@ class ProfileController extends Controller
                 'work_experience' => $user->seekerProfile?->work_experience,
                 'projects' => $user->seekerProfile?->projects,
                 'cv_files' => $user->seekerProfile?->cv_files,
+
+                // ✅ Academic documents
+                'academic_documents_path'          => $user->seekerProfile?->academic_documents_path,
+                'academic_documents_original_name' => $user->seekerProfile?->academic_documents_original_name,
+                'academic_documents_size'          => $user->seekerProfile?->academic_documents_size,
+                'academic_documents_uploaded_at'   => $user->seekerProfile?->academic_documents_uploaded_at?->toISOString(),
+
                 'is_public' => $user->seekerProfile?->is_public ?? true,
-                'job_preferences' => $user->seekerProfile?->job_preferences ?? [], // ✅ Fixed
+                'job_preferences' => $user->seekerProfile?->job_preferences ?? [],
 
                 'job_category_id'     => $user->seekerProfile?->job_category_id,
                 'industry_id'         => $user->seekerProfile?->industry_id,
@@ -256,6 +263,12 @@ class ProfileController extends Controller
                     'projects'             => $user->seekerProfile?->projects,
                     'is_public'            => $user->seekerProfile?->is_public ?? true,
                     'job_preferences'      => $user->seekerProfile?->job_preferences ?? [],
+
+                    // ✅ Academic documents
+                    'academic_documents_path'          => $user->seekerProfile?->academic_documents_path,
+                    'academic_documents_original_name' => $user->seekerProfile?->academic_documents_original_name,
+                    'academic_documents_size'          => $user->seekerProfile?->academic_documents_size,
+                    'academic_documents_uploaded_at'   => $user->seekerProfile?->academic_documents_uploaded_at?->toISOString(),
 
                     // Filter FK IDs — required for the profile form to preselect
                     'job_category_id'     => $user->seekerProfile?->job_category_id,

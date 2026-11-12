@@ -72,6 +72,35 @@ class PricingController extends Controller
     }
 
     /**
+     * GET /services/pricing/auto-apply
+     * Returns the price for the auto-apply subscription.
+     */
+    public function autoApply(Request $request): JsonResponse
+    {
+        $countryCode = strtoupper($request->header('X-Country-Code') ?? 'UG');
+        
+        // Assuming the service_key for auto-apply is 'premium_alerts' or similar
+        $price = \App\Models\Service\ServicePrice::resolve('premium_alerts', $countryCode);
+
+        if (!$price) {
+            return response()->json([
+                'success' => false, 
+                'message' => 'Pricing is not available in your region yet.'
+            ], 404);
+        }
+
+        return response()->json([
+            'success' => true,
+            'price' => [
+                'amount_cents' => (int) $price->amount_cents,
+                'currency'     => $price->currency->code,
+                'formatted'    => $price->formatted_amount,
+                'interval'     => $price->interval ?? 'month',
+            ]
+        ]);
+    }
+
+    /**
      * Turn the service's meta block into a clean list of human-readable feature
      * bullets, so the frontend does not have to know about the raw meta keys.
      */

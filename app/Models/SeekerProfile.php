@@ -54,6 +54,11 @@ class SeekerProfile extends Model
         'salary_range_id',
         'profile_completed_at',
 
+        'academic_documents_path',
+        'academic_documents_original_name',
+        'academic_documents_size',
+        'academic_documents_uploaded_at',
+
     ];
 
     protected $casts = [
@@ -79,6 +84,8 @@ class SeekerProfile extends Model
         'salary_range_id'       => 'integer',
         'profile_completed_at'  => 'datetime',
 
+        'academic_documents_uploaded_at' => 'datetime',
+        'academic_documents_size' => 'integer',
     ];
 
     // =================================================================
@@ -124,6 +131,12 @@ class SeekerProfile extends Model
         return $this->belongsTo(\App\Models\Job\Country::class, 'preferred_country_code', 'code');
     }
 
+    public function getAcademicDocumentsUrlAttribute(): ?string
+    {
+        return $this->academic_documents_path
+            ? asset('storage/' . $this->academic_documents_path)
+            : null;
+    }
 
     /**
      * Get the user that owns the seeker profile

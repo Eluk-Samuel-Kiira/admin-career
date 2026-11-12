@@ -26,6 +26,8 @@ class JobSeekerJob extends Model
         'cv_used_path',
         'applied_at',
         'saved_at',
+        'auto_apply_draft_id',
+        'auto_apply_draft_type',
         'interview_date',
         'interview_notes',
         'notes',
