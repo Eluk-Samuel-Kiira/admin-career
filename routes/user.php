@@ -242,3 +242,22 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     Route::get('/employer-subscriptions/payments',     [EmployerSubscriptionController::class, 'payments'])->name('employer-subscriptions.payments');  // ← ADD
     Route::get('/employer-subscriptions/{uuid}',       [EmployerSubscriptionController::class, 'show'])->name('employer-subscriptions.show');
 });
+
+
+// routes/web.php (main app, inside admin group)
+use App\Http\Controllers\Admin\ManualEmailController;
+
+Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () {
+    Route::get('/manual-email',                    [ManualEmailController::class, 'index'])->name('manual-email.index');
+    Route::get('/manual-email/search',             [ManualEmailController::class, 'searchUsers'])->name('manual-email.search');
+    Route::get('/manual-email/bulk-recipients',    [ManualEmailController::class, 'bulkRecipients'])->name('manual-email.bulk-recipients');
+    Route::post('/manual-email/upload',            [ManualEmailController::class, 'upload'])->name('manual-email.upload');
+    Route::post('/manual-email/send',              [ManualEmailController::class, 'send'])->name('manual-email.send');
+    Route::get('/manual-email/log',                [ManualEmailController::class, 'log'])->name('manual-email.log');
+    Route::get('/manual-email/{id}',               [ManualEmailController::class, 'show'])->whereNumber('id')->name('manual-email.show');
+    Route::delete('/manual-email/{id}',            [ManualEmailController::class, 'destroy'])->whereNumber('id')->name('manual-email.destroy');
+    Route::post('/manual-email/bulk-delete',       [ManualEmailController::class, 'bulkDelete'])->name('manual-email.bulk-delete');
+
+    Route::post('/manual-email/send-application', [ManualEmailController::class, 'sendApplication'])->name('manual-email.send-application');
+});
+

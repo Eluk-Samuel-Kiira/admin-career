@@ -231,9 +231,9 @@
                     </div>
 
                     {{-- Job Seekers --}}
-                    @canany(['view seekers', 'manage job alerts', 'send job alerts', 'view cv review requests'])
+                    @canany(['view seekers', 'manage job alerts', 'manage job alerts', 'send job alerts', 'view cv review requests'])
                     <div data-kt-menu-trigger="click" class="menu-item menu-accordion {{ request()->routeIs('admin.seekers*', 'admin.alerts.*',
-                            'admin.auto-apply.*',  'admin.cv-review-requests*',
+                            'admin.auto-apply.*',  'admin.cv-review-requests*', 'admin.manual-email.*',
                             'admin.cover-letters.*')
                             || (request()->routeIs('admin.employer-subscriptions.*') && request('role') === 'seeker')
                                 ? 'show here' : '' }}">
@@ -284,6 +284,16 @@
                                 href="{{ route('admin.auto-apply.index') }}">
                                     <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
                                     <span class="menu-title">Auto Apply Agent</span>
+                                </a>
+                            </div>
+                            @endcan
+
+                            @can('send manual emails')
+                            <div class="menu-item">
+                                <a class="menu-link {{ request()->routeIs('admin.manual-email.*') ? 'active' : '' }}"
+                                href="{{ route('admin.manual-email.index') }}">
+                                    <span class="menu-bullet"><span class="bullet bullet-dot"></span></span>
+                                    <span class="menu-title">Manual Email</span>
                                 </a>
                             </div>
                             @endcan

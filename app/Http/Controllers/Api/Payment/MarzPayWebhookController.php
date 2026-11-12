@@ -256,10 +256,69 @@ class MarzPayWebhookController extends Controller
         }
 
         match ($deposit->purpose_type) {
-            'cv_review' => $this->activateCvReview($deposit),
-            'cover_letter' => $this->activateCoverLetter($deposit),
-            default => null,
+            'cv_review'              => $this->activateCvReview($deposit),
+            'cover_letter'           => $this->activateCoverLetter($deposit),
+            'auto_apply_subscription' => $this->activateAutoApply($deposit), // <-- Add this
+            default                  => null,
         };
+    }
+
+    protected function activateAutoApply(Deposit $deposit): void
+    {
+        $user = \App\Models\User::find($deposit->paid_by_user_id);
+        if (!$user) return;
+
+        $currencyCode = $deposit->currency?->code ?? 'UGX';
+
+        // Find the price row so price_id/interval are filled in
+        $price = \App\Models\Service\ServicePrice::where('country_code', $deposit->country_code ?? 'UG')
+            ->whereHas('service', fn($q) => $q->where('key', 'premium_alerts'))
+            ->first();
+
+        $subscription = \App\Models\Subscription\Subscription::updateOrCreate(
+            [
+                'user_id'     => $user->id,
+                'service_key' => 'premium_alerts',
+            ],
+            [
+                'country_code'         => $deposit->country_code ?? $user->country_code ?? 'UG',
+                'currency'             => $currencyCode,
+                'amount_cents'         => $deposit->amount,
+                'interval'             => $price?->interval ?? 'month',
+                'price_id'             => $price?->id,
+                'gateway'              => 'marzpay',
+                'status'               => 'active',
+                'starts_at'            => now(),
+                'current_period_start' => now(),
+                'current_period_end'   => now()->addDays(28),
+                'feature_snapshot'     => [
+                    'auto_apply'      => 10,
+                    'whatsapp_alerts' => true,
+                    'telegram_alerts' => true,
+                ],
+            ]
+        );
+
+        // Record the payment
+        \App\Models\Subscription\SubscriptionPayment::firstOrCreate(
+            ['gateway_reference' => $deposit->deposit_ref],
+            [
+                'subscription_id'        => $subscription->id,
+                'user_id'                => $user->id,
+                'gateway'                => 'marzpay',
+                'gateway_transaction_id' => $deposit->source_reference ?? $deposit->deposit_ref,
+                'currency'               => $currencyCode,
+                'amount_cents'           => $deposit->amount,
+                'status'                 => 'paid',
+                'paid_at'                => now(),
+                'gateway_payload'        => ['deposit_ref' => $deposit->deposit_ref],
+            ]
+        );
+
+        Log::info('[activate] Auto Apply Subscription activated', [
+            'user_id'         => $user->id,
+            'subscription_id' => $subscription->id,
+        ]);
     }
 
     protected function activateCvReview(Deposit $deposit): void

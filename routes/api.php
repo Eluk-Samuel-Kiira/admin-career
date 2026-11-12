@@ -273,13 +273,16 @@ Route::middleware(['verifycountry'])->group(function () {
 
     // Protected initiation
     Route::middleware(['auth:sanctum'])->group(function () {
-        Route::post('/payments/initiate', [\App\Http\Controllers\Api\Payment\PaymentController::class, 'initiate']);
+        Route::post('/payments/initiate', [\App\Http\Controllers\Api\Payment\PaymentInitController::class, 'initiate']);
+        Route::get('/payments/status/{reference}', [\App\Http\Controllers\Api\Payment\PaymentInitController::class, 'status']);
     });
+    
 
     Route::middleware(['auth:sanctum'])->prefix('my-jobs')->group(function () {
         Route::get('/', [\App\Http\Controllers\Api\Jobs\MyJobsController::class, 'index']);
     });
 
+    Route::get('/services/pricing/auto-apply', [\App\Http\Controllers\Api\Service\PricingController::class, 'autoApply']);
 
     
     Route::get('/unsubscribe', [\App\Http\Controllers\Api\UnsubscribeController::class, 'handle'])
