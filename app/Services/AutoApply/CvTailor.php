@@ -3,85 +3,59 @@
 namespace App\Services\AutoApply;
 
 use App\Models\SeekerProfile;
-use App\Services\Jobs\AiService;
-use App\Services\Jobs\CvTextExtractionService;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
+use App\Services\Jobs\CvTailorService;
+use Illuminate\Support\Facades\Log;
 
 class CvTailor
 {
     public function __construct(
-        protected AiService $ai,
-        protected CvTextExtractionService $extractor,
+        protected CvTailorService $tailorService,
     ) {}
 
-    /**
-     * Produce a tailored CV for the job.
-     *
-     * Returns ['html' => string, 'path' => string] where path is on the public disk.
-     */
     public function tailor(SeekerProfile $seeker, array $jobContext): array
     {
+        // 1. Get the CV file text
         $cvText = $this->resolveCvText($seeker);
 
-        if ($cvText === '') {
+        // 2. Prepare the DB profile data
+        $dbProfile = [
+            'full_name' => $seeker->full_name,
+            'email' => $seeker->email,
+            'phone' => $seeker->phone,
+            'city' => $seeker->city,
+            'country' => $seeker->country,
+            'professional_title' => $seeker->professional_title,
+            'professional_summary' => $seeker->professional_summary,
+            'years_of_experience' => $seeker->years_of_experience,
+            'skills' => $seeker->skills_array,
+            'languages' => $seeker->languages_array,
+            'education' => $seeker->education_array,
+            'work_experience' => $seeker->work_experience_array,
+            'certifications' => $seeker->certifications_array,
+            'projects' => $seeker->projects_array,
+        ];
+
+        // 3. If both are empty, throw an error
+        if (trim($cvText) === '' && empty($seeker->work_experience_array) && empty($seeker->education_array)) {
             throw new \Exception('No CV text available for tailoring.');
         }
 
-        $html = $this->ai->tailorCv($cvText, $jobContext);
+        $result = $this->tailorService->tailor(
+            cvText:         $cvText,
+            jobTitle:       $jobContext['job_title']    ?? 'the advertised post',
+            companyName:    $jobContext['company_name'] ?? 'the organisation',
+            jobDescription: $jobContext['job_description'] ?? '',
+            dbProfile:      $dbProfile
+        );
 
-        // Render to PDF using your existing DomPDF wiring (pdf.auto-apply.tailored-cv view).
-        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.auto-apply.tailored-cv', [
-            'content' => $html,
-            'seeker'  => $seeker,
-            'job'     => $jobContext,
-        ])->setPaper('a4');
-
-        $path = 'auto-apply/' . Str::uuid() . '/tailored-cv.pdf';
-        Storage::disk('public')->put($path, $pdf->output());
-
-        return ['html' => $html, 'path' => $path];
+        return [
+            'html' => $result['html'],
+            'path' => null, // no PDF stored
+        ];
     }
 
-    protected function resolveCvText(SeekerProfile $seeker): string
+    public function resolveCvText(SeekerProfile $seeker): string
     {
-        $paths = array_filter([
-            $seeker->cv_file_path,
-            ...array_map(
-                fn($f) => is_array($f) ? ($f['path'] ?? null) : null,
-                is_array($seeker->cv_files) ? $seeker->cv_files : []
-            ),
-        ]);
-
-        foreach ($paths as $path) {
-            if (!Storage::disk('public')->exists($path)) continue;
-
-            try {
-                $absolute = Storage::disk('public')->path($path);
-                $mime = Storage::disk('public')->mimeType($path) ?: 'application/pdf';
-                $text = trim($this->extractor->extract($absolute, $mime));
-                if ($text !== '') return $text;
-            } catch (\Throwable $e) {
-                \Log::warning('Auto-apply: CV extraction failed', [
-                    'path'  => $path,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
-
-        // Fall back to a structured profile summary
-        return $this->buildProfileText($seeker);
-    }
-
-    protected function buildProfileText(SeekerProfile $seeker): string
-    {
-        $lines = array_filter([
-            $seeker->professional_title   ? "Title: {$seeker->professional_title}" : null,
-            $seeker->professional_summary ? "Summary: {$seeker->professional_summary}" : null,
-            $seeker->years_of_experience  ? "Years of Experience: {$seeker->years_of_experience}" : null,
-            !empty($seeker->skills_array) ? 'Skills: ' . implode(', ', $seeker->skills_array) : null,
-        ]);
-
-        return implode("\n", $lines);
+        return $this->tailorService->resolveCvText($seeker);
     }
 }

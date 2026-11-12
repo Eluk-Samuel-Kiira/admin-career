@@ -12,7 +12,7 @@ use Illuminate\Support\Facades\Storage;
 
 class CvController extends Controller
 {
-    private const MAX_CV_FILES = 3;
+    private const MAX_CV_FILES = 2;
 
     public function __construct(
         protected CvTextExtractionService $textExtractor,
@@ -71,25 +71,12 @@ class CvController extends Controller
 
         $cvFiles = $this->getCvFiles($profile);
 
-        // Log the count for debugging
-        // Log::info('CV Files list', [
-        //     'user_id' => $user->id,
-        //     'count' => count($cvFiles),
-        //     'cv_files' => $cvFiles
-        // ]);
-
-        // Add full URLs for each file
-        $cvFilesWithUrls = array_map(function($file) {
-            if (isset($file['path'])) {
-                $file['url'] = Storage::disk('public')->url($file['path']);
-            }
-            return $file;
-        }, $cvFiles);
-
+        // ✅ NO MORE `url` — only the path is returned.
+        // The proxy will use `path` to hit the download endpoint.
         return response()->json([
             'success' => true,
-            'cv_files' => $cvFilesWithUrls,
-            'total_count' => count($cvFilesWithUrls),
+            'cv_files' => $cvFiles,
+            'total_count' => count($cvFiles),
             'max_files' => self::MAX_CV_FILES,
         ]);
     }
@@ -108,19 +95,15 @@ class CvController extends Controller
             return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
         }
 
-        // Get or create seeker profile
         $profile = $user->seekerProfile()->firstOrNew();
         $profile->user_id = $user->id;
 
-        // Get current CV files as array
         $currentFiles = $this->getCvFiles($profile);
-        
-        // Check if user already has 3 CVs
         if (count($currentFiles) >= self::MAX_CV_FILES) {
             return response()->json([
-                'success' => false,
-                'message' => 'You have already uploaded the maximum of ' . self::MAX_CV_FILES . ' CVs. Please delete one before uploading another.',
-                'max_files' => self::MAX_CV_FILES,
+                'success'       => false,
+                'message'       => 'You have already uploaded the maximum of ' . self::MAX_CV_FILES . ' CVs. Please delete one before uploading another.',
+                'max_files'     => self::MAX_CV_FILES,
                 'current_count' => count($currentFiles),
             ], 422);
         }
@@ -128,80 +111,88 @@ class CvController extends Controller
         $file = $request->file('cv');
 
         try {
-            // Extract text from file
+            // Extract text
             $text = $this->textExtractor->extract($file->getRealPath(), $file->getMimeType());
 
             if (trim($text) === '') {
-                // Still save the file even if text extraction failed
+                // File saved, but no readable text — treat as soft warning
                 $cvFile = $this->saveCvFile($file);
                 $currentFiles[] = $cvFile;
                 $profile->cv_files = $currentFiles;
                 $profile->save();
 
                 return response()->json([
-                    'success' => true,
-                    'message' => "CV uploaded but no text could be extracted. You can manually fill in the details.",
-                    'profile' => $profile->fresh(),
-                    'cv_files' => $this->getCvFiles($profile),
+                    'success'     => true,
+                    'message'     => "CV uploaded but no readable text could be extracted. You can fill in the details manually.",
+                    'profile'     => $profile->fresh(),
+                    'cv_files'    => $this->getCvFiles($profile),
                     'total_count' => count($this->getCvFiles($profile)),
-                    'max_files' => self::MAX_CV_FILES,
+                    'max_files'   => self::MAX_CV_FILES,
                 ]);
             }
 
-            // Extract data using AI
+            // Ask AI to extract (may throw NotACvException)
             $extracted = $this->aiService->extractCvData($text);
-            
-            // Log::info('CV extraction completed', [
-            //     'has_data' => !empty(array_filter($extracted)),
-            //     'fields_found' => array_keys(array_filter($extracted, function($v) { 
-            //         return !empty($v); 
-            //     }))
-            // ]);
+
+        } catch (\App\Exceptions\NotACvException $e) {
+            // ────────────────────────────────────────────────────────
+            // AI says this isn't a CV → reject BEFORE saving the file
+            // ────────────────────────────────────────────────────────
+            Log::info('CV upload rejected as non-CV', [
+                'user_id' => $user->id,
+                'reason'  => $e->reason,
+            ]);
+
+            return response()->json([
+                'success'     => false,
+                'code'        => 'not_a_cv',
+                'message'     => $e->reason,
+                'current_count' => count($currentFiles),
+                'max_files'   => self::MAX_CV_FILES,
+            ], 422);
 
         } catch (\Throwable $e) {
+            // AI failed for a technical reason (timeout, API error, etc.)
+            // Still save the file so the user isn't stuck — they can fill manually.
             Log::error('CV extraction failed: ' . $e->getMessage());
-            
-            // Still save the file even if AI fails
+
             $cvFile = $this->saveCvFile($file);
             $currentFiles[] = $cvFile;
             $profile->cv_files = $currentFiles;
             $profile->save();
 
             return response()->json([
-                'success' => true,
-                'message' => "CV uploaded successfully. We couldn't auto-extract all details, but you can manually fill them in.",
-                'profile' => $profile->fresh(),
-                'cv_files' => $this->getCvFiles($profile),
+                'success'     => true,
+                'message'     => "CV uploaded successfully. We couldn't auto-extract all details, but you can fill them in manually.",
+                'profile'     => $profile->fresh(),
+                'cv_files'    => $this->getCvFiles($profile),
                 'total_count' => count($this->getCvFiles($profile)),
-                'max_files' => self::MAX_CV_FILES,
+                'max_files'   => self::MAX_CV_FILES,
             ]);
         }
 
+        // ────────────────────────────────────────────────────────────────
+        // Valid CV → save the file and fill the profile
+        // ────────────────────────────────────────────────────────────────
         try {
-            // Save the CV file
             $cvFile = $this->saveCvFile($file);
-            
-            // Add to cv_files array
             $currentFiles[] = $cvFile;
             $profile->cv_files = $currentFiles;
-            
-            // Fill extracted data if available
+
             if (!empty(array_filter($extracted))) {
                 $profile->fill($this->mapToProfile($extracted));
             }
-            
-            $profile->save();
 
-            // Refresh the profile
+            $profile->save();
             $profile->refresh();
 
             return response()->json([
-                'success' => true,
-                'message' => 'CV processed successfully!',
-                'profile' => $profile,
-                'cv_files' => $this->getCvFiles($profile),
+                'success'     => true,
+                'message'     => 'CV processed successfully!',
+                'profile'     => $profile,
+                'cv_files'    => $this->getCvFiles($profile),
                 'total_count' => count($this->getCvFiles($profile)),
-                'max_files' => self::MAX_CV_FILES,
+                'max_files'   => self::MAX_CV_FILES,
             ]);
 
         } catch (\Exception $e) {
@@ -293,6 +284,44 @@ class CvController extends Controller
             'total_count' => count($this->getCvFiles($profile)),
             'max_files' => self::MAX_CV_FILES,
         ]);
+    }
+
+    /**
+     * GET /auth/user/cv/download?path=cvs/abc.pdf
+     * Streams the file. Only allows downloading files the authenticated user owns.
+     */
+    public function download(Request $request)
+    {
+        $request->validate(['path' => 'required|string']);
+
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+        }
+
+        $profile = $user->seekerProfile;
+        if (!$profile) {
+            return response()->json(['success' => false, 'message' => 'Profile not found'], 404);
+        }
+
+        $requestedPath = $request->query('path');
+        $cvFiles = $this->getCvFiles($profile);
+
+        // Ownership check
+        $owned = collect($cvFiles)->contains(fn ($f) => ($f['path'] ?? null) === $requestedPath);
+        if (!$owned) {
+            return response()->json(['success' => false, 'message' => 'File not found.'], 404);
+        }
+
+        if (!Storage::disk('public')->exists($requestedPath)) {
+            return response()->json(['success' => false, 'message' => 'File no longer exists on disk.'], 404);
+        }
+
+        return Storage::disk('public')->download(
+            $requestedPath,
+            basename($requestedPath),
+            ['Content-Type' => Storage::disk('public')->mimeType($requestedPath) ?: 'application/pdf']
+        );
     }
 
 

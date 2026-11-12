@@ -5,11 +5,9 @@ namespace App\Http\Controllers\Api\Seeker;
 use App\Http\Controllers\Controller;
 use App\Models\AutoApplyRelay;
 use App\Models\AutoApplyRun;
-use App\Models\Job\JobPost;
 use App\Services\Subscription\SubscriptionGate;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\URL;
 
 class AutoApplyController extends Controller
 {
@@ -23,20 +21,35 @@ class AutoApplyController extends Controller
         $seeker = $user->seekerProfile;
         if (!$seeker) return response()->json(['success' => false, 'message' => 'Seeker profile not found'], 404);
 
+        // 1. Check the Subscription
         $featureEnabled = $this->gate->hasAutoApply($user);
 
-        // Runs, last 30 days
+        // 2. Fetch the runs (History)
         $runs = AutoApplyRun::where('user_id', $user->id)
             ->orderByDesc('run_date')
             ->limit(30)
             ->get();
 
-        // Relay details grouped by run
+        // 3. Fetch the relays (Detailed job applications)
         $relaysByRun = AutoApplyRelay::where('user_id', $user->id)
             ->with(['jobPost:id,job_title,slug,company_id', 'jobPost.company:id,name'])
             ->orderByDesc('id')
             ->get()
             ->groupBy('auto_apply_run_id');
+
+        // 4. Also fetch all direct applied jobs (External links marked applied)
+        $appliedJobs = \App\Models\Job\JobSeekerJob::with(['jobPost:id,job_title,slug,company_id', 'jobPost.company:id,name'])
+            ->where('seeker_profile_id', $seeker->id)
+            ->where('is_applied', true)
+            ->orderByDesc('applied_at')
+            ->get()
+            ->map(fn($j) => [
+                'job_title' => $j->jobPost?->job_title,
+                'job_slug'  => $j->jobPost?->slug,
+                'company'   => $j->jobPost?->company?->name,
+                'applied_at'=> $j->applied_at?->toISOString(),
+                'source'    => $j->notes ?? 'Auto Applied',
+            ]);
 
         $runsOut = $runs->map(function (AutoApplyRun $run) use ($relaysByRun) {
             $relays = $relaysByRun[$run->id] ?? collect();
@@ -53,21 +66,23 @@ class AutoApplyController extends Controller
                 'quota_total'     => $run->quota_total,
                 'quota_remaining' => $run->quota_remaining,
                 'relays' => $relays->map(fn($r) => [
-                    'id'        => $r->id,
-                    'job_title' => $r->jobPost?->job_title,
-                    'job_slug'  => $r->jobPost?->slug,
-                    'company'   => $r->jobPost?->company?->name,
-                    'reason'    => $r->reason,
-                    'channels'  => $r->channels_sent ?? [],
-                    'status'    => $r->status,
-                    'sent_at'   => $r->sent_at?->toISOString(),
+                    'id'         => $r->id,
+                    'job_title'  => $r->jobPost?->job_title,
+                    'job_slug'   => $r->jobPost?->slug,
+                    'company'    => $r->jobPost?->company?->name,
+                    'reason'     => $r->reason,
+                    'channels'   => $r->channels_sent ?? [],
+                    'status'     => $r->status,
+                    'sent_at'    => $r->sent_at?->toISOString(),
+                    'cv_html'    => $r->tailored_cv_html ?? '',    // <--- ADD THIS
+                    'cover_html' => $r->cover_letter_html ?? '',   // <--- ADD THIS
                 ])->values(),
             ];
         });
 
         return response()->json([
             'success'         => true,
-            // 'feature_enabled' => $featureEnabled,
+            'feature_enabled' => $featureEnabled, // <--- Send this to the proxy
             'stats' => [
                 'total_applied' => $runs->sum('applied_count'),
                 'total_relayed' => $runs->sum('relayed_count'),
@@ -75,6 +90,7 @@ class AutoApplyController extends Controller
                 'quota_total'   => $this->gate->autoApplyQuota($user),
             ],
             'runs' => $runsOut,
+            'applied_jobs' => $appliedJobs, // <--- Pass the direct applied jobs for history
         ]);
     }
 

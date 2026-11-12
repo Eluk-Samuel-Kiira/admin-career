@@ -356,3 +356,39 @@ if ($deposit->purpose_type === 'cover_letter') {
 
 Log::info("[{$runId}] webhook-success: DONE");
 echo "\nDone.\n";
+
+
+
+
+// clear logs for auto apply in tinker
+// // 1. Delete child records first (relays & external drafts)
+// \App\Models\AutoApplyRelay::query()->delete();
+// \App\Models\AutoApplyExternalDraft::query()->delete();
+
+// // 2. Delete parent runs
+// \App\Models\AutoApplyRun::query()->delete();
+
+// // 3. Reset IDs back to 1
+// \DB::statement('ALTER TABLE auto_apply_relays AUTO_INCREMENT = 1');
+// \DB::statement('ALTER TABLE auto_apply_external_drafts AUTO_INCREMENT = 1');
+// \DB::statement('ALTER TABLE auto_apply_runs AUTO_INCREMENT = 1');
+
+// // 4. Delete orphaned PDFs/HTML from disk (old approach)
+// $oldPath = storage_path('app/public/auto-apply');
+// if (is_dir($oldPath)) {
+//     $it = new RecursiveIteratorIterator(
+//         new RecursiveDirectoryIterator($oldPath, FilesystemIterator::SKIP_DOTS),
+//         RecursiveIteratorIterator::CHILD_FIRST
+//     );
+//     foreach ($it as $file) {
+//         $file->isDir() ? @rmdir($file->getRealPath()) : @unlink($file->getRealPath());
+//     }
+//     @rmdir($oldPath);
+// }
+
+// // 5. Confirm clean state
+// dump([
+//     'relays'   => \App\Models\AutoApplyRelay::count(),
+//     'external' => \App\Models\AutoApplyExternalDraft::count(),
+//     'runs'     => \App\Models\AutoApplyRun::count(),
+// ]);

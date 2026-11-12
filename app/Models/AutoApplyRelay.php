@@ -11,16 +11,30 @@ class AutoApplyRelay extends Model
     protected $table = 'auto_apply_relays';
 
     protected $fillable = [
-        'auto_apply_run_id', 'user_id', 'job_post_id',
-        'reason', 'channels_attempted', 'channels_sent',
-        'cv_path', 'cover_letter',
-        'status', 'error_message', 'sent_at',
+        'auto_apply_run_id',
+        'user_id',
+        'job_post_id',
+        'reason',
+        'channels_attempted',
+        'channels_sent',
+        'cv_path',
+        'tailored_cv_html',     // ← ADDED
+        'cover_letter_html',    // ← ADDED
+        'status',
+        'error_message',
+        'sent_at',
+        'send_attempts',
+        'last_attempt_at',
+        'next_retry_at',
     ];
 
     protected $casts = [
         'channels_attempted' => 'array',
         'channels_sent'      => 'array',
         'sent_at'            => 'datetime',
+        'last_attempt_at' => 'datetime',
+        'next_retry_at'   => 'datetime',
+
     ];
 
     public function run(): BelongsTo
@@ -36,5 +50,10 @@ class AutoApplyRelay extends Model
     public function jobPost(): BelongsTo
     {
         return $this->belongsTo(JobPost::class);
+    }
+
+    public function externalDrafts(): HasMany
+    {
+        return $this->hasMany(AutoApplyExternalDraft::class, 'auto_apply_run_id');
     }
 }

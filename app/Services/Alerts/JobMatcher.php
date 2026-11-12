@@ -24,33 +24,39 @@ class JobMatcher
         $useSkill  = !empty($prefs['alert_by_skill_match']) || !empty($prefs['alert_by_cv_skill']);
         $threshold = (int) ($prefs['skill_match_threshold'] ?? 50);
 
-        // ── THE 3-DAY WINDOW ──
-        // Only fetch jobs published in the last 72 hours (3 days)
-        $threeDaysAgo = now()->subDays(3)->startOfDay();
+        // ── 3.5-DAY WINDOW (Efficiency Buffer) ──
+        $windowStart = now()->subDays(3)->subHours(12)->startOfDay();
 
         $query = JobPost::with(['company:id,name', 'jobLocation'])
             ->where('is_active', true)
             ->where('deadline', '>=', now())
             ->whereNotNull('published_at')
-            ->where('published_at', '>=', $threeDaysAgo) // <--- ONLY LAST 3 DAYS
+            ->where('published_at', '>=', $windowStart)
             ->orderByDesc('published_at');
 
-        // ── Country
+        // ── Country ──
         $countryCode = $this->resolveCountryCode($seeker);
         if ($countryCode) {
             $query->where('country_code', $countryCode);
         }
 
-        // ── Categories
-        if (!$wantsAll && !empty($cats)) {
+        // ── Category Filter ──
+        $hasCategoryFilter = !$wantsAll && !empty($cats);
+        if ($hasCategoryFilter) {
             $query->whereIn('job_category_id', $cats);
         }
 
-        // ── Fetch jobs
+        // Fetch jobs (Max 500 for memory efficiency)
         $jobs = $query->limit(500)->get();
 
-        // ── Skill Threshold
-        if ($useSkill && $jobs->isNotEmpty()) {
+        // ─────────────────────────────────────────────────────────────
+        // EFFICIENCY LOGIC:
+        // If the user picked a Category, we ALREADY know these are the jobs they want.
+        // Running the AI Skill Matcher on them is a waste of resources.
+        // We ONLY run the skill matcher if the user did NOT pick a category.
+        // ─────────────────────────────────────────────────────────────
+        if ($useSkill && !$hasCategoryFilter && $jobs->isNotEmpty()) {
+            
             $scored = $jobs->map(fn ($j) => [
                 'job'   => $j,
                 'score' => $this->skillMatcher->score($seeker, $j),
@@ -65,10 +71,7 @@ class JobMatcher
                     ->pluck('job')
                     ->values();
             } else {
-                \Log::info('JobMatcher: skill score was 0 for all candidates — skipping threshold', [
-                    'seeker_id'  => $seeker->id,
-                    'candidates' => $jobs->count(),
-                ]);
+                // Seeker has no skills on file, fallback to unfiltered jobs
                 $jobs = $scored->pluck('job')->values();
             }
         }
@@ -76,10 +79,6 @@ class JobMatcher
         return $jobs->take($limit)->values();
     }
 
-    /**
-     * Try preferred_country_code → user.country_code → seeker.country,
-     * return a 2-char ISO code. Handles both "UG" and "Uganda".
-     */
     protected function resolveCountryCode(SeekerProfile $seeker): ?string
     {
         $candidates = [
@@ -96,9 +95,6 @@ class JobMatcher
         return null;
     }
 
-    /**
-     * "UG" → "UG"; "Uganda" → "UG"; "uganda" → "UG"; "" → null.
-     */
     protected function toCode(?string $value): ?string
     {
         if ($value === null) return null;
@@ -106,7 +102,6 @@ class JobMatcher
         $value = trim($value);
         if ($value === '') return null;
 
-        // Already a 2-letter code
         if (preg_match('/^[A-Za-z]{2}$/', $value)) {
             return strtoupper($value);
         }
@@ -116,7 +111,6 @@ class JobMatcher
             return self::$countryCache[$key];
         }
 
-        // Look up via Country model (name is unique enough; also try code)
         $code = Country::whereRaw('LOWER(name) = ?', [$key])
             ->orWhereRaw('LOWER(code) = ?', [$key])
             ->value('code');

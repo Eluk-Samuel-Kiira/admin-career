@@ -19,7 +19,7 @@ class JobFinder
         $prefs = $seeker->job_preferences_array;
 
         $query = JobPost::query()
-            ->with(['company:id,name,email,telephone', 'jobLocation:id,district,city'])
+            ->with(['company:id,name', 'jobLocation:id,district,city'])
             ->where('is_active', true)
             ->where(function ($q) {
                 $q->whereNull('deadline')->orWhere('deadline', '>=', now());
@@ -34,7 +34,7 @@ class JobFinder
             $query->where('country_code', $countryCode);
         }
 
-        // Primary filter: alert_by_category, else profile category/industry
+        // Primary filter: alert_by_category
         $categoryIds = $prefs['alert_by_category'] ?? [];
         if (!empty($categoryIds)) {
             $query->whereIn('job_category_id', $categoryIds);
@@ -50,26 +50,24 @@ class JobFinder
         if ($seeker->job_location_id) {
             $query->where(function ($q) use ($seeker) {
                 $q->where('job_location_id', $seeker->job_location_id)
-                  ->orWhereNull('job_location_id');
+                ->orWhereNull('job_location_id');
             });
         }
 
-        // Exclude jobs the seeker already applied to
+        // Exclude already applied
         $appliedIds = JobSeekerJob::where('seeker_profile_id', $seeker->id)
             ->where('is_applied', true)
             ->pluck('job_post_id')
             ->all();
-
         if (!empty($appliedIds)) {
             $query->whereNotIn('id', $appliedIds);
         }
 
-        // Exclude jobs already relayed to this seeker
+        // Exclude already relayed
         $relayedIds = AutoApplyRelay::where('user_id', $seeker->user_id)
             ->whereIn('status', ['sent', 'partial'])
             ->pluck('job_post_id')
             ->all();
-
         if (!empty($relayedIds)) {
             $query->whereNotIn('id', $relayedIds);
         }

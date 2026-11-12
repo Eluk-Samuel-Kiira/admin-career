@@ -8,7 +8,8 @@ use App\Http\Controllers\Api\Jobs\{ CountryController,CompanyController, JobCont
 use App\Http\Controllers\Api\Pages\PageController;
 use App\Http\Controllers\Api\Blog\{BlogController};
 
-use App\Http\Controllers\Api\Auth\{ LoginTokenController, ProfileController, CvController, EmployerProfileController };
+use App\Http\Controllers\Api\Auth\{ LoginTokenController, ProfileController, CvController, 
+    EmployerProfileController, AcademicDocumentsController };
 use App\Http\Controllers\Api\Service\{ CvReviewRequestController };
 
 
@@ -101,9 +102,17 @@ Route::middleware(['verifycountry'])->group(function () {
 
         Route::get('/user/cv', [CvController::class, 'list']);            
         Route::delete('/user/cv', [CvController::class, 'delete']);
+            Route::get('/user/cv/download', [CvController::class, 'download'])->name('api.cv.download');
 
     });
 
+    Route::middleware(['auth:sanctum'])->prefix('auth')->group(function () {
+
+        Route::get('/user/academic-documents',            [AcademicDocumentsController::class, 'show']);
+        Route::post('/user/academic-documents',           [AcademicDocumentsController::class, 'upload']);
+        Route::delete('/user/academic-documents',         [AcademicDocumentsController::class, 'destroy']);
+        Route::get('/user/academic-documents/download',   [AcademicDocumentsController::class, 'download']);
+    });
     
     // PUBLIC — guests only need a counter bump
     Route::post('jobs/{id}/track-application-guest', [JobController::class, 'trackApplication'])

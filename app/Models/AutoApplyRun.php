@@ -39,10 +39,17 @@ class AutoApplyRun extends Model
         return $this->hasMany(AutoApplyRelay::class);
     }
 
+    public function externalDrafts(): HasMany
+    {
+        return $this->hasMany(AutoApplyExternalDraft::class, 'auto_apply_run_id');
+    }
+
     public function getStatusBadgeAttribute(): string
     {
         $map = [
             'queued'            => ['light-secondary', 'Queued'],
+            'drafting'          => ['light-info',      'Drafting'],
+            'drafted'           => ['light-success',   'Drafted'],
             'processing'        => ['light-info',      'Processing'],
             'completed'         => ['light-success',   'Completed'],
             'failed'            => ['light-danger',    'Failed'],
@@ -57,6 +64,9 @@ class AutoApplyRun extends Model
 
     public function isFinished(): bool
     {
-        return in_array($this->status, ['completed', 'failed', 'quota_exhausted', 'no_cv', 'no_preferences'], true);
+        return in_array($this->status, [
+            'completed', 'failed', 'quota_exhausted',
+            'no_cv', 'no_preferences', 'drafted'
+        ], true);
     }
 }

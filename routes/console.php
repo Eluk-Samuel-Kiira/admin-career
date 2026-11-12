@@ -5,6 +5,10 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schedule;
+use App\Models\Job\JobPost;
+use App\Models\SeekerProfile;
+use App\Models\Subscription\Subscription;
+use App\Jobs\DraftAutoApplyJob;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
@@ -109,10 +113,47 @@ Schedule::command('screening:cleanup-stuck')
     ->hourly()
     ->withoutOverlapping();
 
-Schedule::command('auto-apply:run')
-    ->dailyAt('03:00')
+// ═══════════════════════════════════════════════════════════════════
+//  AUTO APPLY — AI DRAFTING (Every 3 Days)
+//
+//  Every 3 days at 03:00 AM, we find active subscribers and dispatch
+//  the DraftAutoApplyJob. This job:
+//    - Finds matching jobs (last 3 days)
+//    - Uses AI to tailor the CV and cover letter
+//    - Saves them as drafts for the admin to review and send
+// ═══════════════════════════════════════════════════════════════════
+Schedule::call(function () {
+    $activeSubs = \App\Models\Subscription\Subscription::whereIn('status', ['active', 'trialing'])
+        ->where('current_period_end', '>', now())
+        ->pluck('user_id');
+
+    $seekers = \App\Models\SeekerProfile::whereIn('user_id', $activeSubs)
+        ->where('is_active', true)
+        ->get();
+
+    foreach ($seekers as $seeker) {
+        \App\Jobs\DraftAutoApplyJob::dispatch($seeker->id)->onQueue('auto-apply');
+    }
+
+    \Illuminate\Support\Facades\Log::info('Auto Apply: Drafting jobs dispatched for ' . $seekers->count() . ' active subscribers.');
+})
+    ->cron('0 3 */3 * *')
+    ->name('auto-apply-drafts')      // <--- MUST COME BEFORE withoutOverlapping
     ->withoutOverlapping();
 
+// ═══════════════════════════════════════════════════════════════════
+//  AUTO APPLY — LEGACY RUNNER (Keep as fallback)
+// ═══════════════════════════════════════════════════════════════════
+// Disabled by default because it sends immediately without admin review.
+// Uncomment if you ever want fully automatic sending.
+//
+// Schedule::command('auto-apply:run')
+//     ->dailyAt('03:00')
+//     ->withoutOverlapping();
+
+// ═══════════════════════════════════════════════════════════════════
+//  DATA CLEANUP
+// ═══════════════════════════════════════════════════════════════════
 Schedule::command('queue:prune-failed --hours=168')
     ->dailyAt('04:00')
     ->withoutOverlapping();
@@ -157,11 +198,29 @@ Schedule::call(function () {
     }
 })->dailyAt('05:00')->name('queue-locks-cleanup');
 
-
-use App\Models\Job\JobPost;
+// ═══════════════════════════════════════════════════════════════════
+//  FEATURED JOB EXPIRY
+// ═══════════════════════════════════════════════════════════════════
 Schedule::call(function () {
     JobPost::where('is_featured', true)
         ->whereNotNull('featured_until')
         ->where('featured_until', '<', now())
         ->update(['is_featured' => false]);
 })->hourly()->name('unfeature-expired-jobs');
+
+// Re-dispatch queued relays that missed their retry window
+Schedule::call(function () {
+    $stuck = \App\Models\AutoApplyRelay::where('status', 'queued')
+        ->whereNotNull('next_retry_at')
+        ->where('next_retry_at', '<=', now())
+        ->where('send_attempts', '<', 3)
+        ->get();
+
+    foreach ($stuck as $relay) {
+        \App\Jobs\RetrySendRelayJob::dispatch($relay->id);
+    }
+
+    if ($stuck->count() > 0) {
+        \Log::info("AutoApply: Re-dispatched {$stuck->count()} overdue relays");
+    }
+})->everyTenMinutes()->name('auto-apply-retry-watchdog');
