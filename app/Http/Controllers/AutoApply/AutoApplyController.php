@@ -21,6 +21,7 @@ use App\Services\AutoApply\ShareToSeekerService;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use App\Models\Job\JobSeekerJob;
 
 class AutoApplyController extends Controller
 {
@@ -224,9 +225,16 @@ class AutoApplyController extends Controller
         ]);
     }
 
+
     /**
-     * List all pending drafts (relays + external).
      * GET /admin/auto-apply/drafts
+     *
+     * Query params:
+     *   - search   : string (seeker name/email, job title, employer email)
+     *   - type     : 'relay' | 'external' | '' (all)
+     *   - channel  : 'email' | 'whatsapp' | '' (only applies to relay)
+     *   - page     : int
+     *   - per_page : int (default 20)
      */
     public function drafts(Request $request): JsonResponse
     {
@@ -234,14 +242,52 @@ class AutoApplyController extends Controller
             return response()->json(['success' => false], 403);
         }
 
-        $relays = AutoApplyRelay::with([
+        $perPage = min((int) $request->input('per_page', 20), 100);
+        $search  = trim((string) $request->input('search', ''));
+        $type    = $request->input('type');       // relay | external | null
+        $channel = $request->input('channel');    // email | whatsapp | null
+
+        $like = '%' . $search . '%';
+
+        // ── Relay query ──
+        $relayQuery = AutoApplyRelay::with([
                 'user:id,name,email',
                 'jobPost:id,job_title,slug,email,qualifications,application_procedure,is_resume_required,is_cover_letter_required,is_academic_documents_required,is_application_required',
             ])
-            ->where('status', 'queued')
-            ->orderByDesc('id')
-            ->get()
-            ->map(fn($r) => [
+            ->where('status', 'queued');
+
+        if ($search !== '') {
+            $relayQuery->where(function ($q) use ($like) {
+                $q->whereHas('user', fn($uq) => $uq->where('name', 'like', $like)->orWhere('email', 'like', $like))
+                ->orWhereHas('jobPost', fn($jq) => $jq->where('job_title', 'like', $like)->orWhere('email', 'like', $like));
+            });
+        }
+
+        // channel filter — stored as an array in channels_attempted, so use JSON LIKE
+        if (in_array($channel, ['email', 'whatsapp'], true)) {
+            $relayQuery->where('channels_attempted', 'like', '%"' . $channel . '"%');
+        }
+
+        // ── External query ──
+        $externalQuery = AutoApplyExternalDraft::with([
+                'user:id,name,email',
+                'jobPost:id,job_title,slug,email,qualifications,application_procedure,is_resume_required,is_cover_letter_required,is_academic_documents_required,is_application_required',
+            ])
+            ->where('status', 'drafted');
+
+        if ($search !== '') {
+            $externalQuery->where(function ($q) use ($like) {
+                $q->whereHas('user', fn($uq) => $uq->where('name', 'like', $like)->orWhere('email', 'like', $like))
+                ->orWhereHas('jobPost', fn($jq) => $jq->where('job_title', 'like', $like)->orWhere('email', 'like', $like));
+            });
+        }
+
+        // ── Decide what to query based on type filter ──
+        $includeRelays   = !in_array($type, ['external'], true);
+        $includeExternal = !in_array($type, ['relay'], true);
+
+        $relays = $includeRelays
+            ? $relayQuery->orderByDesc('id')->get()->map(fn($r) => [
                 'id'              => $r->id,
                 'type'            => 'relay',
                 'user_name'       => $r->user?->name ?? 'Unknown',
@@ -261,16 +307,11 @@ class AutoApplyController extends Controller
                     'is_application_required'        => (bool) ($r->jobPost?->is_application_required ?? false),
                 ],
                 'created_at'      => $r->created_at->toISOString(),
-            ]);
-
-        $external = AutoApplyExternalDraft::with([
-                'user:id,name,email',
-                'jobPost:id,job_title,slug,email,qualifications,application_procedure,is_resume_required,is_cover_letter_required,is_academic_documents_required,is_application_required',
             ])
-            ->where('status', 'drafted')
-            ->orderByDesc('id')
-            ->get()
-            ->map(fn($e) => [
+            : collect();
+
+        $external = $includeExternal
+            ? $externalQuery->orderByDesc('id')->get()->map(fn($e) => [
                 'id'              => $e->id,
                 'type'            => 'external',
                 'user_name'       => $e->user?->name ?? 'Unknown',
@@ -290,21 +331,76 @@ class AutoApplyController extends Controller
                     'is_application_required'        => (bool) ($e->jobPost?->is_application_required ?? false),
                 ],
                 'created_at'      => $e->created_at->toISOString(),
-            ]);
+            ])
+            : collect();
+
+        // ── Merge, sort, then paginate manually ──
+        $merged = $relays->concat($external)
+            ->sortByDesc('created_at')
+            ->values();
+
+        $total    = $merged->count();
+        $page     = max(1, (int) $request->input('page', 1));
+        $lastPage = max(1, (int) ceil($total / $perPage));
+        $page     = min($page, $lastPage);
+
+        $items = $merged->forPage($page, $perPage)->values();
+
+        // Keep the same shape the frontend already expects (relays/external split)
+        $paginatedRelays   = $items->where('type', 'relay')->values();
+        $paginatedExternal = $items->where('type', 'external')->values();
+
+        // Build a Laravel paginator for the footer partial
+        $paginator = new \Illuminate\Pagination\LengthAwarePaginator(
+            $items,
+            $total,
+            $perPage,
+            $page,
+            ['path' => $request->url(), 'query' => $request->query()]
+        );
+
+        $paginationHtml = $paginator->hasPages()
+            ? view('job-seeker.auto-apply.partials.pagination', ['paginator' => $paginator])->render()
+            : '';
 
         return response()->json([
             'success' => true,
             'data'    => [
-                'relays'   => $relays,
-                'external' => $external,
-                'total'    => $relays->count() + $external->count(),
+                'relays'   => $paginatedRelays,
+                'external' => $paginatedExternal,
+                'total'    => $total,
+            ],
+            'pagination' => [
+                'current_page' => $paginator->currentPage(),
+                'last_page'    => $paginator->lastPage(),
+                'total'        => $paginator->total(),
+                'per_page'     => $paginator->perPage(),
+                'from'         => $paginator->firstItem(),
+                'to'           => $paginator->lastItem(),
+                'has_pages'    => $paginator->hasPages(),
+                'html'         => $paginationHtml,
+            ],
+            'filters' => [
+                'search'  => $search,
+                'type'    => $type,
+                'channel' => $channel,
             ],
         ]);
     }
 
-        /**
+
+    
+    /**
      * GET /admin/auto-apply/history
-     * Returns successfully applied jobs for all seekers.
+     * Returns successfully applied jobs for seekers with active auto-apply subscription.
+     *
+     * Query params:
+     *   - search  : string (matches seeker name, email, job title, company)
+     *   - source  : 'relay' | 'external' (filter by draft type)
+     *   - from    : date (applied_at >= from)
+     *   - to      : date (applied_at <= to)
+     *   - page    : int
+     *   - per_page: int (default 20)
      */
     public function history(Request $request): JsonResponse
     {
@@ -312,52 +408,161 @@ class AutoApplyController extends Controller
             return response()->json(['success' => false], 403);
         }
 
-        $history = \App\Models\Job\JobSeekerJob::with([
+        $perPage = min((int) $request->input('per_page', 20), 100);
+        $search  = trim((string) $request->input('search', ''));
+        $source  = $request->input('source'); // 'relay' | 'external'
+        $from    = $request->input('from');
+        $to      = $request->input('to');
+
+        // ── 1. Resolve user IDs that currently have an active auto-apply subscription ──
+        $activeSubUserIds = $this->gate->userIdsWithAutoApply();
+
+        if (empty($activeSubUserIds)) {
+            return response()->json([
+                'success' => true,
+                'data'    => ['data' => []],
+                'pagination' => [
+                    'current_page' => 1,
+                    'last_page'    => 1,
+                    'total'        => 0,
+                    'per_page'     => $perPage,
+                ],
+                'filters' => [
+                    'search' => $search,
+                    'source' => $source,
+                    'from'   => $from,
+                    'to'     => $to,
+                ],
+            ]);
+        }
+
+        // ── 2. Resolve seeker profile IDs for those users ──
+        $seekerProfileIds = SeekerProfile::whereIn('user_id', $activeSubUserIds)
+            ->pluck('id')
+            ->all();
+
+        if (empty($seekerProfileIds)) {
+            return response()->json([
+                'success' => true,
+                'data'    => ['data' => []],
+                'pagination' => [
+                    'current_page' => 1,
+                    'last_page'    => 1,
+                    'total'        => 0,
+                    'per_page'     => $perPage,
+                ],
+                'filters' => [
+                    'search' => $search,
+                    'source' => $source,
+                    'from'   => $from,
+                    'to'     => $to,
+                ],
+            ]);
+        }
+
+        // ── 3. Build the query ──
+        $query = JobSeekerJob::with([
                 'seekerProfile:id,user_id,first_name,last_name,phone',
                 'seekerProfile.user:id,name,email',
                 'jobPost:id,job_title,slug,country_code,email,telephone,application_procedure,qualifications,company_id',
-                'jobPost.company:id,name'
+                'jobPost.company:id,name',
             ])
             ->where('is_applied', true)
-            ->where('applied_at', '>=', now()->subDays(30))
-            ->orderByDesc('applied_at')
-            ->paginate(50);
+            ->whereIn('seeker_profile_id', $seekerProfileIds);
+
+        // Date range (default: last 30 days)
+        $query->where('applied_at', '>=', $from ? \Carbon\Carbon::parse($from)->startOfDay() : now()->subDays(30));
+        if ($to) {
+            $query->where('applied_at', '<=', \Carbon\Carbon::parse($to)->endOfDay());
+        }
+
+        // Source filter (relay vs external)
+        if (in_array($source, ['relay', 'external'], true)) {
+            $query->where('auto_apply_draft_type', $source);
+        }
+
+        // Search: seeker name/email, job title, company name
+        if ($search !== '') {
+            $like = '%' . $search . '%';
+            $query->where(function ($q) use ($like) {
+                $q->whereHas('seekerProfile', function ($sq) use ($like) {
+                    $sq->where('first_name', 'like', $like)
+                       ->orWhere('last_name', 'like', $like)
+                       ->orWhere('phone', 'like', $like)
+                       ->orWhereHas('user', function ($uq) use ($like) {
+                           $uq->where('name', 'like', $like)
+                              ->orWhere('email', 'like', $like);
+                       });
+                })
+                ->orWhereHas('jobPost', function ($jq) use ($like) {
+                    $jq->where('job_title', 'like', $like)
+                       ->orWhereHas('company', function ($cq) use ($like) {
+                           $cq->where('name', 'like', $like);
+                       });
+                });
+            });
+        }
+
+        $history = $query->orderByDesc('applied_at')->paginate($perPage);
+
+        // ── 4. Transform the paginated results ──
+        $transformed = $history->through(function ($item) {
+            $draft = null;
+            if ($item->auto_apply_draft_type === 'relay') {
+                $draft = AutoApplyRelay::find($item->auto_apply_draft_id);
+            } elseif ($item->auto_apply_draft_type === 'external') {
+                $draft = AutoApplyExternalDraft::find($item->auto_apply_draft_id);
+            }
+
+            $jobUrl = $item->jobPost ? $item->jobPost->generateUrl() : null;
+
+            return [
+                'id'          => $item->id,
+                'seeker_name' => $item->seekerProfile?->full_name ?? 'Unknown',
+                'seeker_email'=> $item->seekerProfile?->user?->email,
+                'seeker_phone'=> $item->seekerProfile?->phone,
+                'job_title'   => $item->jobPost?->job_title ?? '—',
+                'company'     => $item->jobPost?->company?->name ?? '—',
+                'job_url'     => $jobUrl,
+                'applied_at'  => $item->applied_at?->toISOString(),
+                'source'      => $item->notes ?? 'Auto-Apply',
+                'draft_type'  => $item->auto_apply_draft_type,
+                'cv_html'     => $draft?->tailored_cv_html ?? '',
+                'cover_html'  => $draft?->cover_letter_html ?? '',
+                'employer_email' => $item->jobPost?->email,
+                'employer_phone' => $item->jobPost?->telephone,
+                'application_procedure' => $item->jobPost?->application_procedure,
+            ];
+        });
+
+        // ── 5. Build pagination links (Metronic-friendly) ──
+        $paginator = $history->appends($request->only(['search', 'source', 'from', 'to', 'per_page']));
+
+        $paginationHtml = '';
+        if ($paginator->hasPages()) {
+            $paginationHtml = view('job-seeker.auto-apply.partials.pagination', [
+                'paginator' => $paginator,
+            ])->render();
+        }
 
         return response()->json([
             'success' => true,
-            'data'    => $history->through(function($item) {
-                // 1. Fetch the specific draft used
-                $draft = null;
-                if ($item->auto_apply_draft_type === 'relay') {
-                    $draft = \App\Models\AutoApplyRelay::find($item->auto_apply_draft_id);
-                } elseif ($item->auto_apply_draft_type === 'external') {
-                    $draft = \App\Models\AutoApplyExternalDraft::find($item->auto_apply_draft_id);
-                }
-
-                // 2. Generate the correct country-based URL
-                $jobUrl = $item->jobPost ? $item->jobPost->generateUrl() : null;
-
-                return [
-                    'id'          => $item->id,
-                    'seeker_name' => $item->seekerProfile?->full_name ?? 'Unknown',
-                    'seeker_email'=> $item->seekerProfile?->user?->email,
-                    'seeker_phone'=> $item->seekerProfile?->phone,
-                    'job_title'   => $item->jobPost?->job_title ?? '—',
-                    'company'     => $item->jobPost?->company?->name ?? '—',
-                    'job_url'     => $jobUrl, // <--- Correct country URL
-                    'applied_at'  => $item->applied_at?->toISOString(),
-                    'source'      => $item->notes ?? 'Auto-Apply',
-                    'cv_html'     => $draft?->tailored_cv_html ?? '',
-                    'cover_html'  => $draft?->cover_letter_html ?? '',
-                    'employer_email' => $item->jobPost?->email,
-                    'employer_phone' => $item->jobPost?->telephone,
-                    'application_procedure' => $item->jobPost?->application_procedure,
-                ];
-            }),
+            'data'    => $transformed,
             'pagination' => [
-                'current_page' => $history->currentPage(),
-                'last_page'    => $history->lastPage(),
-                'total'        => $history->total(),
+                'current_page' => $paginator->currentPage(),
+                'last_page'    => $paginator->lastPage(),
+                'total'        => $paginator->total(),
+                'per_page'     => $paginator->perPage(),
+                'from'         => $paginator->firstItem(),
+                'to'           => $paginator->lastItem(),
+                'has_pages'    => $paginator->hasPages(),
+                'html'         => $paginationHtml,   // ready-to-inject Metronic pagination
+            ],
+            'filters' => [
+                'search' => $search,
+                'source' => $source,
+                'from'   => $from,
+                'to'     => $to,
             ],
         ]);
     }
@@ -527,8 +732,15 @@ class AutoApplyController extends Controller
     }
 
     /**
-     * Logs: recent runs and the completed/failed items.
      * GET /admin/auto-apply/logs
+     *
+     * Query params:
+     *   - search   : string (user name/email)
+     *   - status   : 'queued'|'drafting'|'drafted'|'completed'|'failed'|'quota_exhausted'|'no_cv'|'no_preferences'
+     *   - from     : date
+     *   - to       : date
+     *   - page     : int
+     *   - per_page : int (default 20)
      */
     public function logs(Request $request): JsonResponse
     {
@@ -536,10 +748,54 @@ class AutoApplyController extends Controller
             return response()->json(['success' => false], 403);
         }
 
-        $runs = AutoApplyRun::with('user:id,name,email')
-            ->orderByDesc('id')
-            ->paginate(25);
+        $perPage = min((int) $request->input('per_page', 20), 100);
+        $search  = trim((string) $request->input('search', ''));
+        $status  = $request->input('status');
+        $from    = $request->input('from');
+        $to      = $request->input('to');
 
+        $query = AutoApplyRun::with('user:id,name,email');
+
+        // Search: user name or email
+        if ($search !== '') {
+            $like = '%' . $search . '%';
+            $query->whereHas('user', fn($uq) => $uq->where('name', 'like', $like)->orWhere('email', 'like', $like));
+        }
+
+        if (in_array($status, [
+            'queued', 'drafting', 'drafted', 'processing', 'completed',
+            'failed', 'quota_exhausted', 'no_cv', 'no_preferences',
+        ], true)) {
+            $query->where('status', $status);
+        }
+
+        if ($from) {
+            $query->whereDate('run_date', '>=', \Carbon\Carbon::parse($from)->toDateString());
+        }
+        if ($to) {
+            $query->whereDate('run_date', '<=', \Carbon\Carbon::parse($to)->toDateString());
+        }
+
+        $runs = $query->orderByDesc('id')->paginate($perPage)->appends($request->query());
+
+        $transformed = $runs->through(fn($run) => [
+            'id'            => $run->id,
+            'user_id'       => $run->user_id,
+            'run_date'      => $run->run_date?->toDateString(),
+            'user_name'     => $run->user?->name,
+            'user_email'    => $run->user?->email,
+            'jobs_scanned'  => (int) $run->jobs_scanned,
+            'applied_count' => (int) $run->applied_count,
+            'relayed_count' => (int) $run->relayed_count,
+            'skipped_count' => (int) $run->skipped_count,
+            'failed_count'  => (int) $run->failed_count,
+            'status'        => $run->status,
+            'status_badge'  => $run->status_badge,
+            'error_message' => $run->error_message,
+            'created_at'    => $run->created_at->toISOString(),
+        ]);
+
+        // ── Stats remain global (not filtered) so the numbers are always meaningful ──
         $stats = [
             'runs_today'         => AutoApplyRun::whereDate('created_at', today())->count(),
             'applications_today' => AutoApplyRun::whereDate('created_at', today())->sum('applied_count'),
@@ -547,30 +803,32 @@ class AutoApplyController extends Controller
             'failed_today'       => AutoApplyRun::whereDate('created_at', today())->sum('failed_count'),
         ];
 
+        $paginationHtml = $runs->hasPages()
+            ? view('job-seeker.auto-apply.partials.pagination', ['paginator' => $runs])->render()
+            : '';
+
         return response()->json([
             'success' => true,
-            'data'    => $runs->through(fn($run) => [
-                'id'            => $run->id,
-                'user_id'       => $run->user_id,   // <--- ADD
-                'run_date'      => $run->run_date?->toDateString(),
-                'user_name'     => $run->user?->name,
-                'user_email'    => $run->user?->email,
-                'jobs_scanned'  => (int) $run->jobs_scanned,
-                'applied_count' => (int) $run->applied_count,
-                'relayed_count' => (int) $run->relayed_count,
-                'skipped_count' => (int) $run->skipped_count,
-                'failed_count'  => (int) $run->failed_count,
-                'status'        => $run->status,
-                'status_badge'  => $run->status_badge,
-                'error_message' => $run->error_message,  // <--- ADD
-                'created_at'    => $run->created_at->toISOString(),
-            ]),
+            'data'    => $transformed,
             'pagination' => [
                 'current_page' => $runs->currentPage(),
                 'last_page'    => $runs->lastPage(),
                 'total'        => $runs->total(),
+                'per_page'     => $runs->perPage(),
+                'from'         => $runs->firstItem(),
+                'to'           => $runs->lastItem(),
+                'has_pages'    => $runs->hasPages(),
+                'html'         => $paginationHtml,
             ],
-            'stats' => $stats,
+            'stats'   => $stats,
+            'filters' => [
+                'search' => $search,
+                'status' => $status,
+                'from'   => $from,
+                'to'     => $to,
+            ],
         ]);
     }
+
+
 }

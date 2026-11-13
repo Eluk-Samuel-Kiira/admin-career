@@ -56,6 +56,26 @@ class SubscriptionGate
         return $this->hasFeature($user, 'telegram_alerts');
     }
 
+    /**
+     * Returns array of user IDs whose active subscription includes the auto_apply feature.
+     */
+    public function userIdsWithAutoApply(): array
+    {
+        $subs = Subscription::with('service')
+            ->whereIn('status', ['active', 'trialing'])
+            ->where('current_period_end', '>', now())
+            ->get();
+
+        $ids = [];
+        foreach ($subs as $sub) {
+            if ($sub->hasFeature('auto_apply') && ($sub->featureQuota('auto_apply') ?? 0) !== 0) {
+                $ids[] = $sub->user_id;
+            }
+        }
+
+        return array_values(array_unique($ids));
+    }
+
     public function cvScreeningQuota(User $user): ?int
     {
         return $this->quota($user, 'cv_screening');
