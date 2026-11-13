@@ -333,7 +333,7 @@
                             clearInterval(poll);
                             btn.disabled = false; label.textContent = original; spinner.classList.add('d-none');
                             progressEl.textContent = `✅ Done — ${relayed} drafts ready!`;
-                            setTimeout(() => { progressEl.classList.add('d-none'); loadDrafts(); }, 2000);
+                            setTimeout(() => { progressEl.classList.add('d-none'); loadDrafts(1); }, 2000);
                             return;
                         }
                     }
@@ -350,32 +350,56 @@
         }
     });
 
-    // ═══════════════════════════════════════════════════════════
-    // Load Drafts
-    // ═══════════════════════════════════════════════════════════
-    async function loadDrafts() {
+
+    let draftsState = {
+        page: 1,
+        search: '',
+        type: '',        // '' | 'relay' | 'external'
+        channel: '',     // '' | 'email' | 'whatsapp'
+        per_page: 20,
+    };
+
+    async function loadDrafts(page = 1) {
         const wrap = document.getElementById('draftsWrap');
         wrap.innerHTML = '<div class="text-center py-10"><div class="spinner-border text-primary"></div></div>';
 
+        draftsState.page = page;
+
+        const params = new URLSearchParams();
+        params.set('page', page);
+        params.set('per_page', draftsState.per_page);
+        if (draftsState.search)  params.set('search', draftsState.search);
+        if (draftsState.type)    params.set('type', draftsState.type);
+        if (draftsState.channel) params.set('channel', draftsState.channel);
+
         try {
-            const res = await fetch('{{ route("admin.auto-apply.drafts") }}', { headers: { 'Accept': 'application/json' } });
+            const res = await fetch(`{{ route("admin.auto-apply.drafts") }}?${params.toString()}`, {
+                headers: { 'Accept': 'application/json' },
+            });
             const data = await res.json();
 
-            if (!data.success || (data.data.relays.length === 0 && data.data.external.length === 0)) {
+            if (!data.success) throw new Error('Request failed.');
+
+            const total = data.data.total ?? 0;
+
+            if (total === 0) {
                 wrap.innerHTML = `<div class="text-center py-15">
                     <i class="ki-duotone ki-information-5 fs-5tx text-muted mb-4 d-block"><span class="path1"></span><span class="path2"></span><span class="path3"></span></i>
                     <h4 class="fw-bold text-gray-800 mb-2">No drafts yet</h4>
-                    <p class="text-muted">Trigger the drafting process above.</p>
+                    <p class="text-muted">${draftsState.search || draftsState.type || draftsState.channel ? 'No results match your filters.' : 'Trigger the drafting process above.'}</p>
                 </div>`;
                 return;
             }
 
+            // IMPORTANT: keep the "current page" list for drawer lookups
             currentData = data.data;
 
-            let html = '';
+            const p = data.pagination;
+
+            let body = '';
 
             if (data.data.relays.length > 0) {
-                html += `
+                body += `
                     <div class="mb-8">
                         <h5 class="fw-bold mb-4 text-gray-800">Email &amp; WhatsApp Applications</h5>
                         <div class="table-responsive">
@@ -417,8 +441,8 @@
             }
 
             if (data.data.external.length > 0) {
-                html += `
-                    <div>
+                body += `
+                    <div class="mb-8">
                         <h5 class="fw-bold mb-4 text-gray-800">External Links (Submit Manually)</h5>
                         <div class="table-responsive">
                             <table class="table align-middle table-row-dashed fs-6 gy-5">
@@ -454,15 +478,75 @@
                 `;
             }
 
-            wrap.innerHTML = html;
+            wrap.innerHTML = `
+                {{-- Filter bar --}}
+                <div class="d-flex flex-wrap gap-2 mb-5">
+                    <div class="flex-grow-1" style="min-width:220px;">
+                        <input type="text" class="form-control form-control-sm" id="draftsSearchInput"
+                            placeholder="Search seeker, email, job, employer email…"
+                            value="${escapeHtml(draftsState.search)}">
+                    </div>
+                    <select class="form-select form-select-sm w-auto" id="draftsTypeFilter">
+                        <option value="">All Types</option>
+                        <option value="relay"    ${draftsState.type === 'relay' ? 'selected' : ''}>Email / WhatsApp</option>
+                        <option value="external" ${draftsState.type === 'external' ? 'selected' : ''}>External Link</option>
+                    </select>
+                    <select class="form-select form-select-sm w-auto" id="draftsChannelFilter">
+                        <option value="">All Channels</option>
+                        <option value="email"    ${draftsState.channel === 'email' ? 'selected' : ''}>Email</option>
+                        <option value="whatsapp" ${draftsState.channel === 'whatsapp' ? 'selected' : ''}>WhatsApp</option>
+                    </select>
+                    <button class="btn btn-sm btn-light-primary" id="draftsApplyFilters">Apply</button>
+                    <button class="btn btn-sm btn-light" id="draftsResetFilters">Reset</button>
+                </div>
 
+                ${body}
+
+                {{-- Footer: count + pagination --}}
+                <div class="d-flex flex-wrap justify-content-between align-items-center mt-4">
+                    <div class="text-muted fs-7">
+                        Showing <strong>${p.from ?? 0}–${p.to ?? 0}</strong> of <strong>${p.total}</strong>
+                        · page <strong>${p.current_page}</strong> of <strong>${p.last_page}</strong>
+                    </div>
+                    <div id="draftsPagination">${p.html || ''}</div>
+                </div>
+            `;
+
+            // Wire row-open buttons
             wrap.querySelectorAll('.open-drawer-btn').forEach(btn => {
                 btn.addEventListener('click', function () {
                     openDrawer(parseInt(this.dataset.id), this.dataset.type);
                 });
             });
 
+            // Wire filter buttons
+            document.getElementById('draftsApplyFilters')?.addEventListener('click', () => {
+                draftsState.search  = document.getElementById('draftsSearchInput').value.trim();
+                draftsState.type    = document.getElementById('draftsTypeFilter').value;
+                draftsState.channel = document.getElementById('draftsChannelFilter').value;
+                loadDrafts(1);
+            });
+
+            document.getElementById('draftsResetFilters')?.addEventListener('click', () => {
+                draftsState = { page: 1, search: '', type: '', channel: '', per_page: 20 };
+                loadDrafts(1);
+            });
+
+            document.getElementById('draftsSearchInput')?.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') document.getElementById('draftsApplyFilters').click();
+            });
+
+            // Wire pagination
+            document.querySelectorAll('#draftsPagination .page-link[data-page]').forEach(link => {
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const page = parseInt(link.dataset.page, 10);
+                    if (page && page !== draftsState.page) loadDrafts(page);
+                });
+            });
+
         } catch (e) {
+            console.error('Drafts load error:', e);
             wrap.innerHTML = `<div class="alert alert-danger">Failed to load drafts.</div>`;
         }
     }
@@ -564,7 +648,7 @@
                 if (data.success) {
                     window.showToast?.('success', data.message);
                     drawer.hide();
-                    loadDrafts(); // Refresh the list
+                    loadDrafts(draftsState.page);  
                 } else {
                     window.showToast?.('error', data.message);
                     btn.disabled = false;
@@ -594,19 +678,34 @@
         drawer.show();
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // Load Applied History
-    // ═══════════════════════════════════════════════════════════
-    async function loadHistory() {
+    let historyState = {
+        page: 1,
+        search: '',
+        source: '',
+        from: '',
+        to: '',
+        per_page: 20,
+    };
+
+    async function loadHistory(page = 1) {
         const wrap = document.getElementById('historyWrap');
         wrap.innerHTML = '<div class="text-center py-10"><div class="spinner-border text-primary"></div></div>';
 
+        historyState.page = page;
+
+        const params = new URLSearchParams();
+        params.set('page', page);
+        params.set('per_page', historyState.per_page);
+        if (historyState.search) params.set('search', historyState.search);
+        if (historyState.source) params.set('source', historyState.source);
+        if (historyState.from)   params.set('from', historyState.from);
+        if (historyState.to)     params.set('to', historyState.to);
+
         try {
-            const res = await fetch('{{ route("admin.auto-apply.history") }}', { 
-                headers: { 'Accept': 'application/json' } 
+            const res = await fetch(`{{ route("admin.auto-apply.history") }}?${params.toString()}`, {
+                headers: { 'Accept': 'application/json' },
             });
 
-            // Handle non-JSON responses (500 errors)
             let data;
             try {
                 data = await res.json();
@@ -615,22 +714,48 @@
                 throw new Error(`Server returned ${res.status} (not JSON). Check laravel.log.`);
             }
 
-            if (!res.ok) {
-                throw new Error(data.message || `HTTP ${res.status}`);
-            }
+            if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
 
-            if (!data.success || !data.data?.data?.length) {
-                wrap.innerHTML = `<div class="text-center py-15">
-                    <i class="ki-duotone ki-information-5 fs-5tx text-muted mb-4 d-block"><span class="path1"></span><span class="path2"></span><span class="path3"></span></i>
-                    <h4 class="fw-bold text-gray-800 mb-2">No applied history yet</h4>
-                    <p class="text-muted">Jobs you mark as applied will appear here.</p>
-                </div>`;
+            if (!data.success) throw new Error('Request failed.');
+
+            currentHistoryData = data.data?.data || [];
+
+            if (currentHistoryData.length === 0) {
+                wrap.innerHTML = `
+                    <div class="text-center py-15">
+                        <i class="ki-duotone ki-information-5 fs-5tx text-muted mb-4 d-block">
+                            <span class="path1"></span><span class="path2"></span><span class="path3"></span>
+                        </i>
+                        <h4 class="fw-bold text-gray-800 mb-2">No applied history yet</h4>
+                        <p class="text-muted">Jobs applied by auto-apply subscribers will appear here.</p>
+                    </div>`;
                 return;
             }
 
-            currentHistoryData = data.data.data;
+            const p = data.pagination;
 
             wrap.innerHTML = `
+                {{-- ── Filter Bar ── --}}
+                <div class="d-flex flex-wrap gap-2 mb-5">
+                    <div class="flex-grow-1" style="min-width:220px;">
+                        <input type="text" class="form-control form-control-sm" id="historySearchInput"
+                            placeholder="Search seeker, email, job, company…"
+                            value="${escapeHtml(historyState.search)}">
+                    </div>
+                    <select class="form-select form-select-sm w-auto" id="historySourceFilter">
+                        <option value="">All Sources</option>
+                        <option value="relay" ${historyState.source === 'relay' ? 'selected' : ''}>Email / WhatsApp</option>
+                        <option value="external" ${historyState.source === 'external' ? 'selected' : ''}>External Link</option>
+                    </select>
+                    <input type="date" class="form-control form-control-sm w-auto" id="historyFromFilter"
+                        value="${escapeHtml(historyState.from)}" title="From date">
+                    <input type="date" class="form-control form-control-sm w-auto" id="historyToFilter"
+                        value="${escapeHtml(historyState.to)}" title="To date">
+                    <button class="btn btn-sm btn-light-primary" id="historyApplyFilters">Apply</button>
+                    <button class="btn btn-sm btn-light" id="historyResetFilters">Reset</button>
+                </div>
+
+                {{-- ── Results Table ── --}}
                 <div class="table-responsive">
                     <table class="table align-middle table-row-dashed fs-7 gy-3">
                         <thead>
@@ -643,7 +768,7 @@
                             </tr>
                         </thead>
                         <tbody>
-                            ${data.data.data.map(h => `
+                            ${currentHistoryData.map(h => `
                                 <tr>
                                     <td class="text-start text-muted">${new Date(h.applied_at).toLocaleString()}</td>
                                     <td class="text-start">
@@ -668,7 +793,47 @@
                         </tbody>
                     </table>
                 </div>
+
+                {{-- ── Footer: count + Metronic pagination ── --}}
+                <div class="d-flex flex-wrap justify-content-between align-items-center mt-4">
+                    <div class="text-muted fs-7">
+                        Showing <strong>${p.from ?? 0}–${p.to ?? 0}</strong> of <strong>${p.total}</strong>
+                        · page <strong>${p.current_page}</strong> of <strong>${p.last_page}</strong>
+                    </div>
+                    <div id="historyPagination">
+                        ${p.html || ''}
+                    </div>
+                </div>
             `;
+
+            // ── Wire filter buttons ──
+            document.getElementById('historyApplyFilters')?.addEventListener('click', () => {
+                historyState.search = document.getElementById('historySearchInput').value.trim();
+                historyState.source = document.getElementById('historySourceFilter').value;
+                historyState.from   = document.getElementById('historyFromFilter').value;
+                historyState.to     = document.getElementById('historyToFilter').value;
+                loadHistory(1);
+            });
+
+            document.getElementById('historyResetFilters')?.addEventListener('click', () => {
+                historyState = { page: 1, search: '', source: '', from: '', to: '', per_page: 20 };
+                loadHistory(1);
+            });
+
+            // Enter key on search
+            document.getElementById('historySearchInput')?.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') document.getElementById('historyApplyFilters').click();
+            });
+
+            // ── Wire pagination (data-page attributes) ──
+            document.querySelectorAll('#historyPagination .page-link[data-page]').forEach(link => {
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const page = parseInt(link.dataset.page, 10);
+                    if (page && page !== historyState.page) loadHistory(page);
+                });
+            });
+
         } catch (e) {
             console.error('History load error:', e);
             wrap.innerHTML = `<div class="alert alert-danger">
@@ -922,7 +1087,7 @@
                 window.showToast?.('success', data.message || 'Sent.');
                 emailModal.hide();
                 drawer.hide();
-                loadDrafts();
+                loadDrafts(draftsState.page);   // ← CHANGED (was: loadDrafts();)
             } else {
                 window.showToast?.('error', data.message || 'Send failed.');
             }
@@ -935,23 +1100,74 @@
         }
     });
 
-    // ═══════════════════════════════════════════════════════════
-    // Load Logs (with drawer integration)
-    // ═══════════════════════════════════════════════════════════
-    async function loadLogs() {
+    let logsState = {
+        page: 1,
+        search: '',
+        status: '',
+        from: '',
+        to: '',
+        per_page: 20,
+    };
+
+    async function loadLogs(page = 1) {
         const wrap = document.getElementById('logsWrap');
         wrap.innerHTML = '<div class="text-center py-10"><div class="spinner-border text-primary"></div></div>';
 
+        logsState.page = page;
+
+        const params = new URLSearchParams();
+        params.set('page', page);
+        params.set('per_page', logsState.per_page);
+        if (logsState.search) params.set('search', logsState.search);
+        if (logsState.status) params.set('status', logsState.status);
+        if (logsState.from)   params.set('from', logsState.from);
+        if (logsState.to)     params.set('to', logsState.to);
+
         try {
-            const res = await fetch('{{ route("admin.auto-apply.logs") }}', { headers: { 'Accept': 'application/json' } });
+            const res = await fetch(`{{ route("admin.auto-apply.logs") }}?${params.toString()}`, {
+                headers: { 'Accept': 'application/json' },
+            });
             const data = await res.json();
 
-            if (!data.success || !data.data?.data?.length) {
-                wrap.innerHTML = `<div class="text-center py-15"><h4 class="fw-bold">No activity yet.</h4></div>`;
+            if (!data.success) throw new Error('Request failed.');
+
+            if (!data.data?.data?.length) {
+                wrap.innerHTML = `<div class="text-center py-15">
+                    <h4 class="fw-bold text-gray-800 mb-2">No activity yet.</h4>
+                    <p class="text-muted">${logsState.search || logsState.status || logsState.from || logsState.to ? 'No runs match your filters.' : 'Trigger the drafting process above.'}</p>
+                </div>`;
                 return;
             }
 
+            const p = data.pagination;
+
             wrap.innerHTML = `
+                {{-- Filter bar --}}
+                <div class="d-flex flex-wrap gap-2 mb-5">
+                    <div class="flex-grow-1" style="min-width:220px;">
+                        <input type="text" class="form-control form-control-sm" id="logsSearchInput"
+                            placeholder="Search user name or email…"
+                            value="${escapeHtml(logsState.search)}">
+                    </div>
+                    <select class="form-select form-select-sm w-auto" id="logsStatusFilter">
+                        <option value="">All Statuses</option>
+                        ${[
+                            ['queued','Queued'], ['drafting','Drafting'], ['drafted','Drafted'],
+                            ['processing','Processing'], ['completed','Completed'], ['failed','Failed'],
+                            ['quota_exhausted','Quota Exhausted'], ['no_cv','No CV'],
+                            ['no_preferences','No Preferences'],
+                        ].map(([v,l]) =>
+                            `<option value="${v}" ${logsState.status === v ? 'selected' : ''}>${l}</option>`
+                        ).join('')}
+                    </select>
+                    <input type="date" class="form-control form-control-sm w-auto" id="logsFromFilter"
+                        value="${escapeHtml(logsState.from)}" title="From date">
+                    <input type="date" class="form-control form-control-sm w-auto" id="logsToFilter"
+                        value="${escapeHtml(logsState.to)}" title="To date">
+                    <button class="btn btn-sm btn-light-primary" id="logsApplyFilters">Apply</button>
+                    <button class="btn btn-sm btn-light" id="logsResetFilters">Reset</button>
+                </div>
+
                 <div class="table-responsive">
                     <table class="table align-middle table-row-dashed fs-7 gy-3">
                         <thead>
@@ -1000,8 +1216,18 @@
                         </tbody>
                     </table>
                 </div>
+
+                {{-- Footer: count + pagination --}}
+                <div class="d-flex flex-wrap justify-content-between align-items-center mt-4">
+                    <div class="text-muted fs-7">
+                        Showing <strong>${p.from ?? 0}–${p.to ?? 0}</strong> of <strong>${p.total}</strong>
+                        · page <strong>${p.current_page}</strong> of <strong>${p.last_page}</strong>
+                    </div>
+                    <div id="logsPagination">${p.html || ''}</div>
+                </div>
             `;
 
+            // Retry buttons
             wrap.querySelectorAll('.retry-run-btn').forEach(btn => {
                 btn.addEventListener('click', function () {
                     if (!confirm('Clear failed drafts and retry for this user?')) return;
@@ -1020,7 +1246,7 @@
                     .then(d => {
                         if (d.success) {
                             window.showToast?.('success', d.message);
-                            setTimeout(() => { loadLogs(); loadDrafts(); }, 1500);
+                            setTimeout(() => { loadLogs(logsState.page); loadDrafts(draftsState.page); }, 1500);
                         } else {
                             window.showToast?.('error', d.message);
                         }
@@ -1033,7 +1259,36 @@
                     });
                 });
             });
+
+            // Filters
+            document.getElementById('logsApplyFilters')?.addEventListener('click', () => {
+                logsState.search = document.getElementById('logsSearchInput').value.trim();
+                logsState.status = document.getElementById('logsStatusFilter').value;
+                logsState.from   = document.getElementById('logsFromFilter').value;
+                logsState.to     = document.getElementById('logsToFilter').value;
+                loadLogs(1);
+            });
+
+            document.getElementById('logsResetFilters')?.addEventListener('click', () => {
+                logsState = { page: 1, search: '', status: '', from: '', to: '', per_page: 20 };
+                loadLogs(1);
+            });
+
+            document.getElementById('logsSearchInput')?.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') document.getElementById('logsApplyFilters').click();
+            });
+
+            // Pagination
+            document.querySelectorAll('#logsPagination .page-link[data-page]').forEach(link => {
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const page = parseInt(link.dataset.page, 10);
+                    if (page && page !== logsState.page) loadLogs(page);
+                });
+            });
+
         } catch (e) {
+            console.error('Logs load error:', e);
             wrap.innerHTML = `<div class="alert alert-danger">Failed to load logs.</div>`;
         }
     }
@@ -1045,18 +1300,52 @@
         const d = document.createElement('div'); d.textContent = String(t); return d.innerHTML;
     }
 
-    // ── Boot ──
-    document.getElementById('reloadBtn')?.addEventListener('click', () => { loadDrafts(); loadLogs(); loadHistory(); });
+    document.getElementById('reloadBtn')?.addEventListener('click', () => {
+        // ── Reset all filter state ──
+        draftsState  = { page: 1, search: '', type: '',    channel: '', per_page: 20 };
+        historyState = { page: 1, search: '', source: '',  from: '',    to: '', per_page: 20 };
+        logsState    = { page: 1, search: '', status: '',  from: '',    to: '', per_page: 20 };
+
+        // ── Clear the visible inputs (in case any tab is currently rendered) ──
+        const clearIfExists = (id, val = '') => {
+            const el = document.getElementById(id);
+            if (el) el.value = val;
+        };
+        // Drafts
+        clearIfExists('draftsSearchInput');
+        clearIfExists('draftsTypeFilter');
+        clearIfExists('draftsChannelFilter');
+        // History
+        clearIfExists('historySearchInput');
+        clearIfExists('historySourceFilter');
+        clearIfExists('historyFromFilter');
+        clearIfExists('historyToFilter');
+        // Logs
+        clearIfExists('logsSearchInput');
+        clearIfExists('logsStatusFilter');
+        clearIfExists('logsFromFilter');
+        clearIfExists('logsToFilter');
+
+        // ── Reload all three tabs from page 1 with no filters ──
+        loadDrafts(1);
+        loadHistory(1);
+        loadLogs(1);
+
+        window.showToast?.('success', 'Filters cleared and data reloaded.');
+    });
+
     document.querySelectorAll('a[data-bs-toggle="tab"]').forEach(a => {
         a.addEventListener('shown.bs.tab', function (e) {
             const href = e.target.getAttribute('href');
-            if (href === '#tab_logs') loadLogs();
-            else if (href === '#tab_history') loadHistory();
-            else loadDrafts();
+            if (href === '#tab_logs')         loadLogs(logsState.page);
+            else if (href === '#tab_history') loadHistory(historyState.page);
+            else                              loadDrafts(draftsState.page);
         });
     });
 
-    loadDrafts();
+    // Initial boot
+    loadDrafts(1);
+
 })();
 </script>
 @endpush
