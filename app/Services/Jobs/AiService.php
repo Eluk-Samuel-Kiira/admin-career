@@ -94,6 +94,348 @@ class AiService
         });
     }
 
+    /**
+     * Small prompt for the long-post path: AI only extracts metadata.
+     * Sends ~2.5K chars instead of ~23K. Cohere answers this in 10-15s
+     * because the output is a few hundred tokens, not thousands.
+     */
+    protected function buildCompactMetadataPrompt(
+        string $content,
+        string $sourceType,
+        array  $referenceData,
+        ?string $position = null
+    ): string {
+        $twoWeeksAhead  = Carbon::now()->addWeeks(2)->format('Y-m-d');
+        $referenceBlock = $this->formatReferenceListsForPrompt($referenceData);
+
+        // ── Select only the slices the metadata extractor needs ──
+        $snippet = $this->buildMetadataSnippet($content);
+
+        $positionRule = $position !== null && trim($position) !== ''
+            ? 'Extract metadata for the position titled "' . str_replace('"', '', trim($position)) . '".'
+            : 'If the advert lists several positions, use the first one.';
+
+        return <<<PROMPT
+        You are an expert job-board metadata extractor. The job BODY (description, responsibilities,
+        qualifications, skills, application procedure) has already been captured verbatim by the system.
+        You only need to extract the METADATA from the snippets below.
+
+        SOURCE TYPE: {$sourceType}
+        {$positionRule}
+
+        SNIPPETS FROM THE ADVERT:
+        ---
+        {$snippet}
+        ---
+
+        {$referenceBlock}
+
+        RULES:
+        - Return metadata ONLY. Do not return job_description, responsibilities, qualifications, skills,
+        or application_procedure — they will be overwritten from the source.
+        - Every category *_name field must match an exact value from the lists above, or null.
+        - company_name is written exactly as found — it is not a list.
+        - Emails, phone numbers and links go ONLY in their own fields.
+        - Return ONLY a single valid JSON object. No prose, no code fences.
+        APPLICATION LINK (critical):
+        - Look for the "APPLICATION URLS" block in the snippets below.
+        - From those URLs, pick the SINGLE URL that a candidate clicks to actually submit
+        their application (a job-specific page, an application form, a Google Form,
+        an ATS portal such as Workday/Workable/Greenhouse/Lever/BambooHR/SmartRecruiters).
+        - Put that ONE URL in "application_links" as an array with one element.
+        - NEVER include:
+            * the employer's homepage (e.g. https://www.wfp.org, https://www.unicef.org)
+            * social media (LinkedIn, Facebook, Twitter/X, Instagram, YouTube, TikTok)
+            * generic "View all jobs" or "About us" pages
+            * links inside the body text unless they are the actual apply URL
+        - If the page has a "share this job" or "apply" URL at the very bottom, that is
+        usually the real apply link — pick it.
+        - If you cannot identify a specific apply URL, return "application_links": [].
+        An empty array is better than wrong links.
+        - Maximum length of "application_links": 1.
+
+        SEO/AEO FOR THE METADATA YOU WRITE:
+        - meta_title: 50-60 chars: "{Job Title} at {Employer} in {Location}". Use the exact role name.
+        - meta_description: 120-158 chars. Cover role + location + deadline. Human voice — this is
+        the snippet a recruiter sees in a Google result, so it must read as typed by a person.
+        - keywords: 8-12 real search phrases, not stuffed. Include the title, "title + jobs in + district",
+        and the sector ("WASH jobs Uganda", "SRHR officer jobs"). No repeats.
+        - faqs: 5-6 questions real seekers type (what the job involves, where, salary or "not stated",
+        deadline, how to apply, who can apply). One or two sentences each, from source facts only.
+        - Do NOT use these words: delve, leverage, dynamic, passionate, fast-paced, cutting-edge,
+        "take your career to the next level", "we are excited to announce".
+
+        OUTPUT SHAPE:
+        {
+        "job_title": "",
+        "company_name": "",
+        "duty_station": null,
+        "deadline": "YYYY-MM-DD",
+        "email": null,
+        "telephone": null,
+        "is_whatsapp_contact": false,
+        "is_telephone_call": false,
+        "application_links": [],
+        "employment_type": "full-time|part-time|contract|internship|volunteer|temporary",
+        "location_type": "on-site|remote|hybrid",
+        "salary_amount": null,
+        "payment_period": null,
+        "currency": null,
+        "work_hours": null,
+        "meta_title": "",
+        "meta_description": "",
+        "keywords": "",
+        "faqs": [{"q": "", "a": ""}],
+        "experience_level_name": null,
+        "education_level_name": null,
+        "industry_name": null,
+        "category_name": null,
+        "job_type_name": null,
+        "job_location_name": null,
+        "salary_range_name": null,
+        "country_code": null,
+        "is_urgent": false,
+        "is_featured": false,
+        "is_resume_required": true,
+        "is_cover_letter_required": false,
+        "is_academic_documents_required": false,
+        "is_application_required": true,
+        "other_positions": []
+        }
+
+        SMART DEFAULTS (only when the field is missing):
+        - deadline: "{$twoWeeksAhead}"
+        - employment_type: "full-time"
+        - location_type: "on-site"
+        PROMPT;
+    }
+
+    /**
+     * Collects the pieces of a long post the metadata extractor needs:
+     *   - First 800 chars (title, company, location are almost always here)
+     *   - Any line matching email/phone/deadline/location labels
+     *   - The "How to apply" section
+     * Total ~2-3K chars instead of the full 18-23K.
+     */
+    protected function buildMetadataSnippet(string $content): string
+    {
+        $lines = preg_split('/\R/u', $content);
+        $out   = [];
+
+        // 1. Head — first 800 chars (title, company, location live here)
+        $head = mb_substr(trim($content), 0, 800);
+        $out[] = "=== HEAD ===\n" . $head;
+
+        // 2. Any labelled line anywhere (email, phone, deadline, salary, etc.)
+        $labelRe = '/^(job title|position|role|company|employer|organisation|organization|location|duty station|town|district|deadline|closing date|apply before|salary|remuneration|employment type|work hours|email|e-mail|phone|telephone|mobile|whatsapp|apply|how to apply)\s*:/i';
+        $hits = [];
+        foreach ($lines as $l) {
+            $t = trim($l);
+            if ($t !== '' && preg_match($labelRe, $t)) {
+                $hits[] = $t;
+                if (count($hits) >= 30) break;
+            }
+        }
+        if ($hits) {
+            $out[] = "=== LABELLED LINES ===\n" . implode("\n", $hits);
+        }
+
+        // 3. "How to apply" section if present (grab the block after its heading)
+        if (preg_match('/^(how to apply|application procedure|to apply)\s*:?\s*$/im', $content, $m, PREG_OFFSET_CAPTURE)) {
+            $from = $m[0][1] + strlen($m[0][0]);
+            $snippet = mb_substr($content, $from, 700);
+            $out[] = "=== HOW TO APPLY ===\n" . trim($snippet);
+        }
+
+        // 4. Application URLs — make them impossible to miss
+        if (preg_match_all('#https?://[^\s<>"\']+#i', $content, $m)) {
+            $urls = [];
+            foreach (array_unique($m[0]) as $u) {
+                $host = strtolower((string) parse_url($u, PHP_URL_HOST));
+                // Skip social + share links
+                if (preg_match('/(^|\.)(facebook|twitter|x|instagram|youtube|tiktok|linkedin)\.(com|me)$/i', $host)) {
+                    continue;
+                }
+                $urls[] = $u;
+                if (count($urls) >= 5) break;
+            }
+            if ($urls) {
+                $out[] = "=== APPLICATION URLS (in page order, " . count($urls) . " total) ===\n"
+                    . implode("\n", $urls)
+                    . "\n\nThe LAST URL in this list is usually the specific apply link "
+                    . "(it is the 'share this job' / 'apply' URL at the bottom of the page). "
+                    . "Pick exactly ONE specific apply URL and put it in application_links. "
+                    . "Do NOT include homepages or social media.";
+            }
+        }
+
+        return implode("\n\n", $out);
+    }
+
+    /**
+     * COPY-AND-PASTE MODE for long employer postings.
+     *
+     * Extracts the job body from the source text using its own section headings.
+     * No AI call. Runs in <10ms. Returns null if the text has no recognisable
+     * headings (then callers should fall back to AI copy).
+     *
+     * This is the FAST path — it exists so we don't ask Cohere to retype 1,200
+     * words, which it always summarises first.
+     */
+    protected function buildVerbatimBody(string $text): ?array
+    {
+        $text  = str_replace(["\r\n", "\r"], "\n", $text);
+        $lines = [];
+        foreach (explode("\n", $text) as $l) {
+            $l = trim(preg_replace('/[ \t\x{00A0}]+/u', ' ', $l));
+            if ($l !== '') {
+                $lines[] = $l;
+            }
+        }
+
+        // Find where the advert itself starts (skip site header/menu text).
+        $start = 0;
+        foreach ($lines as $i => $l) {
+            if (preg_match('/^job title\s*:/i', $l)) { $start = $i; break; }
+        }
+        if ($start === 0) {
+            foreach ($lines as $i => $l) {
+                if (preg_match('/^(about\b.{0,60}|job purpose:?|job summary:?|overview:?|background:?)$/i', $l)) {
+                    $start = $i; break;
+                }
+            }
+        }
+
+        $respRe    = '/^(key |main |core )?(duties|responsibilities|duties and responsibilities|roles? and responsibilities|key result areas?|kras?|key performance areas?|kpas?|in this role,? you will|the role|what you.?ll do|what you will do|role description|job description:?)\s*[:.]?$/i';
+        $kpiRe     = '/^(key performance indicators?|kpis?|performance indicators?|success measures?)\s*:?$/i';
+        $qualRe    = '/^(required |minimum |preferred |academic |educational |essential |desired )?(qualifications?|requirements?|qualifications? and experience|education and experience|person specification|minimum requirements|desired qualifications?|to be successful in this role|what we.?re looking for|who you are|about you|the ideal candidate|you will need|you should have|essential criteria|desired criteria|skills and experience required)(,? you will need)?\s*[:.]?$/i';
+        $skillRe   = '/^(required |key |core |technical |professional )?(skills?|competenc(y|ies)|skills? and competencies|skills? and abilities|technical skills?|functional skills?|behavioural competenc(y|ies))(:? (required|needed|include|are))?\s*:?$/i';
+        $applyRe   = '/^(how to apply|application procedure|application process|to apply|mode of application|submission|apply now|interested in this job|apply for this (job|role|post|position)|application instructions?)\s*[:.?]?$/i';
+        $closingRe = '/^(disclaimer\b|we encourage\b|.*\bequal opportunit|.*\bdoes not charge\b|.*\bdo not pay\b|.*\bno fee\b)/i';
+        $noiseRe   = '/^(apply to position|use my indeed resume|apply using linkedin|apply now|job openings.*|company website.*|job description|view website|view all jobs|help|accessibility|powered by.*)$/i';
+        $endRe     = '/^(powered by|.*sharing button|cookie notice|share this job)/i';
+
+        $b = ['desc' => [], 'resp' => [], 'qual' => [], 'skill' => [], 'apply' => [], 'closing' => []];
+        $state = 'desc';
+
+        foreach (array_slice($lines, $start) as $l) {
+            if (preg_match($endRe, $l)) break;
+            if (preg_match($noiseRe, $l)) continue;
+
+            if ($state !== 'closing' && preg_match($closingRe, $l)) {
+                $state = 'closing';
+            } elseif (mb_strlen($l) <= 80) {
+                if (preg_match($kpiRe, $l))      { $state = 'resp'; }        // keep heading, continue list
+                elseif (preg_match($respRe, $l)) { $state = 'resp';   continue; }
+                elseif (preg_match($qualRe, $l)) { $state = 'qual';   continue; }
+                elseif (preg_match($skillRe, $l)){ $state = 'skill';  continue; }
+                elseif (preg_match($applyRe, $l)){ $state = 'apply';  continue; }
+            }
+            $b[$state][] = $l;
+        }
+
+        // Nothing to extract → tell the caller to use AI copy instead
+        if (empty($b['resp']) && empty($b['qual'])) {
+            return null;
+        }
+
+        $closing = $this->renderVerbatimBlocks($b['closing'], false);
+
+        return [
+            'job_description'       => $this->renderVerbatimBlocks($b['desc'], false) . $closing,
+            'responsibilities'      => $this->renderVerbatimBlocks($b['resp'], true),
+            'qualifications'        => $this->renderVerbatimBlocks($b['qual'], true),
+            'skills'                => $this->renderVerbatimSkills($b['skill']),
+            'application_procedure' => $this->renderVerbatimBlocks($b['apply'], false),
+        ];
+    }
+
+    /** Is this line a section heading (not a sentence, not a data line)? */
+    private function isVerbatimHeading(string $l): bool
+    {
+        $words = preg_split('/\s+/', $l);
+        $n = count($words);
+
+        // Numbered heading: "1. Assess patients"
+        if (preg_match('/^\d{1,2}[.)]\s+\S/', $l)) {
+            return $n <= 10 && !preg_match('/[.;,]$/', $l);
+        }
+        // Ends with colon and is short
+        if (preg_match('/:$/', $l)) {
+            return $n <= 6;
+        }
+        // Not a heading if it ends with punctuation, has commas, or is a sentence
+        if (preg_match('/[.;,!?]$/', $l) || preg_match('/[:,]/', $l) || $n > 5) {
+            return false;
+        }
+        // ALL CAPS or Title Case short line
+        $small = ['and', 'of', 'the', 'for', 'to', 'in', 'on', '&', 'a', 'or', 'with'];
+        foreach ($words as $w) {
+            if (!in_array(mb_strtolower($w), $small, true) && !preg_match('/^[\p{Lu}\d]/u', $w)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Lines → HTML. Preserves headings and list items exactly. */
+    private function renderVerbatimBlocks(array $lines, bool $asList): string
+    {
+        $esc   = fn(string $s) => htmlspecialchars($s, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $html  = '';
+        $open  = false;
+        $close = function () use (&$html, &$open) {
+            if ($open) { $html .= '</ul>'; $open = false; }
+        };
+
+        foreach ($lines as $l) {
+            if ($this->isVerbatimHeading($l)) {
+                $close();
+                $html .= '<p><strong>' . $esc($l) . '</strong></p>';
+                continue;
+            }
+            if (preg_match('/:$/', $l)) { // lead-in sentence such as "Assessed against:"
+                $close();
+                $html .= '<p>' . $esc($l) . '</p>';
+                continue;
+            }
+            // Strip any bullet glyph the source had
+            $item = preg_replace('/^[\x{2022}\x{25AA}\x{25CF}\x{00B7}*\-\x{2013}\x{2014}]\s*/u', '', $l);
+
+            if ($asList) {
+                if (!$open) { $html .= '<ul>'; $open = true; }
+                $html .= '<li>' . $esc($item) . '</li>';
+            } else {
+                $html .= '<p>' . $esc($item) . '</p>';
+            }
+        }
+        $close();
+
+        return $html;
+    }
+
+    /** Short skill tokens → comma string. Long skill sentences → headed lists. */
+    private function renderVerbatimSkills(array $lines): string
+    {
+        if (empty($lines)) return '';
+
+        $short = true;
+        foreach ($lines as $l) {
+            if (count(preg_split('/\s+/', $l)) > 4 || $this->isVerbatimHeading($l)) {
+                $short = false;
+                break;
+            }
+        }
+        if ($short) {
+            $items = array_map(
+                fn($l) => rtrim(preg_replace('/^[\x{2022}\x{25AA}\x{25CF}\x{00B7}*\-\x{2013}\x{2014}]\s*/u', '', $l), '.;, '),
+                $lines
+            );
+            return htmlspecialchars(implode(', ', $items), ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        }
+        return $this->renderVerbatimBlocks($lines, true);
+    }
+
     protected function formatReferenceListsForPrompt(array $ref): string
     {
         $line = fn(string $label, array $items) => empty($items)
@@ -200,13 +542,6 @@ class AiService
         return $this->config[$model] ?? null;
     }
 
-    /**
-     * Extract job data from text or URL.
-     *
-     * For URL sources this now actually fetches the page (previously the raw
-     * URL string itself was sent to the model as "content", which no plain
-     * chat-completion endpoint can browse - it was just guessing/hallucinating).
-     */
     public function extractJobData(string $content, string $sourceType = 'text', ?string $model = null, ?string $country = null, ?string $position = null): array
     {
         $model     = $model ?? $this->defaultModel;
@@ -223,61 +558,302 @@ class AiService
 
         $referenceData = $this->getReferenceData($country);
         $sourceWords   = $this->countWords($content);
-        $mode          = $sourceWords < self::THIN_POST_WORDS ? 'enrich' : 'preserve';
 
+        // ─────────────────────────────────────────────────────────────
+        //  FAST PATH — long post, PHP extracts the body, AI only sees
+        //  metadata snippets. This is what makes Cohere fast AND gets
+        //  the application link into the right place.
+        // ─────────────────────────────────────────────────────────────
+        if ($sourceWords >= self::THIN_POST_WORDS) {
+
+            $body = $this->buildVerbatimBody($content);
+
+            if ($body !== null) {
+
+                // 1. Ask the AI for METADATA ONLY (small prompt).
+                //    This is the step that was missing — without it, the
+                //    "APPLICATION URLS" block never reaches the model and
+                //    application_links stays empty.
+                $metaPrompt = $this->buildCompactMetadataPrompt($content, $sourceType, $referenceData, $position);
+
+                $meta = $this->callWithFallback($model, $metaPrompt, function ($m, $key) use ($metaPrompt) {
+                    $raw  = $this->callAiApi($m, $key, $metaPrompt, null, true);
+                    $text = is_string($raw)
+                        ? trim(preg_replace('/^```(?:json)?\s*|\s*```$/i', '', trim($raw)))
+                        : json_encode($raw);
+                    $data = $this->decodeJsonLenient($text);
+                    if (!is_array($data) || empty($data)) {
+                        throw new \Exception('Metadata reply was not valid JSON.');
+                    }
+                    return $data;
+                }, expectJson: true);
+
+                if (!empty($meta['error'])) {
+                    // Metadata extraction failed — fall through to the slow path.
+                    // (The current code would have returned a partial result.)
+                    goto slow_path;
+                }
+
+                // 2. Start from the AI metadata, then overwrite body fields with
+                //    the PHP-verbatim text. This guarantees verbatim body wins,
+                //    while metadata (title, company, links, deadline…) comes
+                //    from the AI.
+                $result = $this->coerceModelOutput($meta);
+
+                foreach ($body as $field => $html) {
+                    if (trim(strip_tags($html)) !== '') {
+                        $result[$field] = $html;
+                    }
+                }
+
+                // 3. Decide whether to protect body fields from the "fallback"
+                //    generators in applySmartDefaults().
+                $criticalFilled = 0;
+                foreach (['job_description', 'responsibilities', 'qualifications'] as $f) {
+                    if (!empty(trim(strip_tags((string) ($result[$f] ?? ''))))) {
+                        $criticalFilled++;
+                    }
+                }
+                $result['_verbatim'] = ($criticalFilled === 3);
+
+                // 4. Thin-post enrichment only when actually needed.
+                $descWords = str_word_count(strip_tags((string) ($result['job_description'] ?? '')));
+                $hasResp   = trim(strip_tags((string) ($result['responsibilities'] ?? ''))) !== '';
+                $hasQual   = trim(strip_tags((string) ($result['qualifications'] ?? ''))) !== '';
+
+                $sourceWasThin = $sourceWords < self::THIN_POST_WORDS;
+                $descIsThin    = $descWords < 120;
+
+                if ($sourceWasThin && ($descIsThin || !$hasResp || !$hasQual)) {
+                    $result = $this->enrichThinPosting($result, $model, $sourceWords);
+                }
+
+                // 3.5 — If PHP verbatim didn't find a skills section, ask the AI for it
+                //       (role-specific beats the static pool). Only fires when truly empty.
+                if (trim(strip_tags((string) ($result['skills'] ?? ''))) === '') {
+                    $result['skills'] = $this->generateSkillsForRole(
+                        $result['job_title']    ?? '',
+                        $result['company_name'] ?? '',
+                        $result['duty_station'] ?? '',
+                        strip_tags((string) ($result['responsibilities'] ?? '')),
+                        strip_tags((string) ($result['qualifications'] ?? '')),
+                        $model
+                    );
+                }
+                $result = $this->applySmartDefaults($result, $country);
+                $result = $this->applyApplicationLinkHandling($result, $sourceUrl);
+                return $this->applyGeorgiaFontToContentFields($result);
+            }
+
+            // ─────────────────────────────────────────────────────────
+            //  SLOW PATH — long post but PHP couldn't find headings
+            //  (or metadata extraction failed). Same as before.
+            // ─────────────────────────────────────────────────────────
+            slow_path:
+
+            $mode   = 'preserve';
+            $prompt = $this->buildExtractionPrompt($content, $sourceType, $referenceData, $mode, $position, $sourceWords);
+
+            $result = $this->callWithFallback($model, $prompt, function ($m, $key) use ($prompt, $sourceWords, $mode) {
+                $attemptPrompt = $prompt;
+                for ($try = 1; $try <= 2; $try++) {
+                    $raw  = $this->callAiApi($m, $key, $attemptPrompt, null, true);
+                    $text = is_string($raw)
+                        ? trim(preg_replace('/^```(?:json)?\s*|\s*```$/i', '', trim($raw)))
+                        : json_encode($raw);
+                    $data = $this->decodeJsonLenient($text);
+                    if (!is_array($data) || empty($data)) {
+                        throw new \Exception('Reply was not valid JSON.');
+                    }
+                    if (!empty($data['error'])) return $data;
+                    try {
+                        $this->checkExtractionCompleteness($data, $sourceWords, $mode);
+                        return $data;
+                    } catch (\Exception $e) {
+                        if ($try === 2 || !str_contains($e->getMessage(), 'cut short')) throw $e;
+                        $attemptPrompt = $prompt
+                            . "\n\nCORRECTION: your previous reply was rejected. " . $e->getMessage()
+                            . " Do it again. Copy EVERY paragraph, heading and bullet of the position word for word.";
+                    }
+                }
+                throw new \Exception('Reply cut short after a retry.');
+            }, expectJson: true);
+
+            if (!empty($result['error'])) {
+                throw new \Exception($result['message'] ?? 'No valid job posting could be found.');
+            }
+
+            $result = $this->coerceModelOutput($result);
+            $result = $this->applySmartDefaults($result, $country);
+            $result = $this->applyApplicationLinkHandling($result, $sourceUrl);
+            return $this->applyGeorgiaFontToContentFields($result);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        //  THIN POST — unchanged
+        // ─────────────────────────────────────────────────────────────
+        $mode   = 'enrich';
         $prompt = $this->buildExtractionPrompt($content, $sourceType, $referenceData, $mode, $position, $sourceWords);
 
         $result = $this->callWithFallback($model, $prompt, function ($m, $key) use ($prompt, $sourceWords, $mode) {
             $attemptPrompt = $prompt;
-
             for ($try = 1; $try <= 2; $try++) {
-                $raw = $this->callAiApi($m, $key, $attemptPrompt, null, true);
-
+                $raw  = $this->callAiApi($m, $key, $attemptPrompt, null, true);
                 $text = is_string($raw)
                     ? trim(preg_replace('/^```(?:json)?\s*|\s*```$/i', '', trim($raw)))
                     : json_encode($raw);
-
                 $data = $this->decodeJsonLenient($text);
-
                 if (!is_array($data) || empty($data)) {
-                    throw new \Exception('Reply was not valid JSON (it may have been cut off).');
+                    throw new \Exception('Reply was not valid JSON.');
                 }
-
-                if (!empty($data['error'])) {
-                    return $data;
-                }
-
+                if (!empty($data['error'])) return $data;
                 try {
                     $this->checkExtractionCompleteness($data, $sourceWords, $mode);
                     return $data;
                 } catch (\Exception $e) {
-                    // Only a "summarised it" reply is worth one more try with the same model
-                    if ($try === 2 || !str_contains($e->getMessage(), 'cut short')) {
-                        throw $e;
-                    }
-
-                    Log::info("AI model '{$m}' shortened the advert, retrying once", ['detail' => $e->getMessage()]);
-
+                    if ($try === 2 || !str_contains($e->getMessage(), 'cut short')) throw $e;
                     $attemptPrompt = $prompt
                         . "\n\nCORRECTION: your previous reply was rejected. " . $e->getMessage()
-                        . " Do it again. Copy EVERY paragraph, heading and bullet of the position word for word."
-                        . " Do not summarise, merge, shorten or skip any bullet.";
+                        . " Do it again.";
                 }
             }
-
             throw new \Exception('Reply cut short after a retry.');
         }, expectJson: true);
 
         if (!empty($result['error'])) {
-            throw new \Exception($result['message'] ?? 'No valid job posting could be found in the provided content.');
+            throw new \Exception($result['message'] ?? 'No valid job posting could be found.');
         }
 
         $result = $this->coerceModelOutput($result);
         $result = $this->applySmartDefaults($result, $country);
         $result = $this->applyApplicationLinkHandling($result, $sourceUrl);
-
         return $this->applyGeorgiaFontToContentFields($result);
     }
+
+    
+    /**
+     * Ask the AI for a role-specific, comma-separated skills list.
+     *
+     * Fires only when PHP's verbatim extraction (or the AI metadata pass)
+     * produced no skills section — e.g. WaterAid posts that list duties and
+     * qualifications but never a "Skills:" heading.
+     *
+     * Falls back to generateFallbackSkills() if the AI call fails or returns
+     * nothing usable, so this method never returns an empty string when a
+     * job_title exists.
+     */
+    protected function generateSkillsForRole(
+        string $title,
+        string $company,
+        string $location,
+        string $responsibilities,
+        string $qualifications,
+        ?string $model
+    ): string {
+        $title = trim($title);
+        if ($title === '') {
+            return '';
+        }
+
+        // Trim long inputs so the prompt stays small (and fast for Cohere).
+        $resp = mb_substr($responsibilities, 0, 1200);
+        $qual = mb_substr($qualifications,   0, 1200);
+
+        $prompt = <<<PROMPT
+        You write the "Required Skills" line for a job advert on a Ugandan and East African job board.
+
+        JOB TITLE: {$title}
+        EMPLOYER:  {$company}
+        LOCATION:  {$location}
+
+        RESPONSIBILITIES (from the advert):
+        {$resp}
+
+        QUALIFICATIONS (from the advert):
+        {$qual}
+
+        TASK
+        List the 8 to 12 specific, work-related skills a successful candidate for this job needs,
+        based on the duties and qualifications above. These must be concrete skills, not traits.
+
+        RULES
+        - Return ONLY the skills, as a single comma-separated line. No numbering, no bullets, no JSON, no quotes.
+        - Each skill is 1 to 3 words. Use title case ("Patient care", "Stock control", "Report writing").
+        - Prefer domain-specific skills the profession actually uses (e.g. for WASH/SRHR: "WASH FIT tool",
+        "Infection prevention and control", "Community scorecards", "Formative research", "Gender inclusion").
+        - Do NOT use generic filler unless it is genuinely required here: no "hard-working", "team player",
+        "communication" (unless the advert asks for it specifically), "problem solving", "time management".
+        - No duplicates. No trailing comma. No full stop at the end.
+        - If a skill from the advert appears word for word, keep the advert's wording.
+
+        Return the line now.
+        PROMPT;
+
+        try {
+            $text = $this->callWithFallback($model ?? $this->defaultModel, $prompt, function ($m, $key) use ($prompt) {
+                return $this->callAiApi($m, $key, $prompt);
+            }, expectJson: false);
+
+            $text = $this->extractTextFromResult($text);
+            $text = $this->normaliseSkillsLine($text);
+
+            if ($text !== '') {
+                return $text;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Skill generation failed, falling back to static pool', ['error' => $e->getMessage()]);
+        }
+
+        return $this->generateFallbackSkills($title);
+    }
+
+    /**
+     * Turn whatever the model returned into a clean comma-separated line:
+     * strips bullets/numbers/JSON/code fences, dedupes, drops trailing punctuation.
+     */
+    protected function normaliseSkillsLine(string $raw): string
+    {
+        $raw = trim($raw);
+
+        // Strip code fences
+        $raw = preg_replace('/^```[a-z]*\s*|\s*```$/i', '', $raw);
+
+        // If the model wrapped it in JSON by accident, pull the array out
+        if (preg_match('/\[(.*)\]/s', $raw, $m)) {
+            $raw = $m[1];
+        }
+
+        // Drop leading bullet/number markers per line, then join
+        $parts  = preg_split('/\r?\n|,|;/', $raw);
+        $skills = [];
+        foreach ($parts as $p) {
+            $p = preg_replace('/^\s*[\-\*\x{2022}\d.)]+\s*/u', '', $p);
+            $p = trim($p, " \t\n\r\0\x0B\"'.,;:");
+            if ($p === '') continue;
+
+            // Reject things that look like prose or a whole sentence
+            if (mb_strlen($p) > 40)      continue;
+            if (substr_count($p, ' ') > 5) continue;
+
+            $skills[] = $p;
+        }
+
+        // Dedupe case-insensitively, preserve order
+        $seen = [];
+        $out  = [];
+        foreach ($skills as $s) {
+            $key = mb_strtolower($s);
+            if (isset($seen[$key])) continue;
+            $seen[$key] = true;
+            $out[]      = $s;
+        }
+
+        // Keep it tight — max 12 skills
+        $out = array_slice($out, 0, 12);
+
+        return implode(', ', $out);
+    }
+
 
     /**
      * Removes text that is never part of the job (menus, buttons, tracking lines, the employer's
@@ -317,7 +893,14 @@ class AiService
                 continue;
             }
             if (preg_match('#^https?://\S+$#i', $t)) {
-                continue;                                   // a line that is only a URL
+                // Keep apply-oriented URLs; only drop navigation / social / tracking ones.
+                $host = strtolower((string) parse_url($t, PHP_URL_HOST));
+                $keepHost = '/(workable|greenhouse|lever|bamboohr|smartrecruiters|recruitee|personio|jobvite|ashby|breezy|workday|taleo|successfactors|icims|applytojob|forms\.gle|docs\.google\.com|typeform|jotform|airtable)/i';
+                if (preg_match($keepHost, $host) || preg_match('#/apply\b|/jobs?/|/careers?/|/vacanc(y|ies)/|/j/#i', $t)) {
+                    $out[] = $t;   // keep — likely an apply link
+                    continue;
+                }
+                continue;          // otherwise drop
             }
 
             $out[] = $t;
@@ -604,7 +1187,7 @@ class AiService
     {
         $bodyFields = ['job_description', 'responsibilities', 'qualifications', 'skills', 'application_procedure'];
 
-        // 1. Links the model returned in the dedicated field(s)
+        // 1. Links returned by the model in the dedicated field(s)
         $links = [];
         foreach (['application_links', 'application_link'] as $f) {
             if (!empty($data[$f])) {
@@ -612,59 +1195,59 @@ class AiService
             }
         }
 
-        // 2. Links the model left inside the body text (belt and braces)
+        // 2. Links left inside body text (belt and braces)
         foreach ($bodyFields as $field) {
-            if (empty($data[$field]) || !is_string($data[$field])) {
-                continue;
-            }
+            if (empty($data[$field]) || !is_string($data[$field])) continue;
             $links = array_merge($links, $this->findLinks($data[$field]));
         }
 
-        // 3. Pulled from a web page that showed no separate apply link: apply on the source page
+        // 3. Source URL fallback (only for URL source type)
         if (!$links && $sourceUrl && filter_var($sourceUrl, FILTER_VALIDATE_URL)) {
             $links[] = $sourceUrl;
         }
 
         $links = $this->cleanLinkList($links);
+        $links = $this->narrowToApplicationLink($links);
 
-        // 4. Remove links, emails and phone numbers from the body fields
+        // 4. Strip links/emails/phones from body fields
         foreach (['job_description', 'responsibilities', 'qualifications', 'skills', 'application_procedure'] as $field) {
-            if (empty($data[$field]) || !is_string($data[$field])) {
-                continue;
-            }
-            $clean = preg_replace('#<a\b[^>]*>(.*?)</a>#is', '$1', $data[$field]);          // keep the link text, drop the anchor
+            if (empty($data[$field]) || !is_string($data[$field])) continue;
+            $clean = preg_replace('#<a\b[^>]*>(.*?)</a>#is', '$1', $data[$field]);
             $clean = preg_replace('#https?://[^\s<>"\']+#i', '', $clean);
             $clean = preg_replace('/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/', '', $clean);
-            // Ugandan-style phone numbers: 0701 220529, +256 701 220 529, 0701-220-529
             $clean = preg_replace('/(?<![\d,.])(?:\+?256[\s-]?|0)7\d{2}[\s-]?\d{3}[\s-]?\d{3}(?![\d,])/', '', $clean);
             $data[$field] = $clean;
         }
 
-        // 5. Add the hyperlinked apply line(s) after whatever procedure the employer wrote
+        // 5. Build the "Click here" line(s)
         if ($links) {
-            $existing = (string) ($data['application_procedure'] ?? '');
             $linkHtml = $this->buildApplyLinkHtml($links);
+            $existing = trim(strip_tags((string) ($data['application_procedure'] ?? '')));
 
-            $data['application_procedure'] = trim(strip_tags($existing)) !== '' ? $existing . $linkHtml : $linkHtml;
+            if ($existing === '') {
+                // No employer-written procedure — the link IS the procedure
+                $data['application_procedure'] = $linkHtml;
+            } else {
+                // Employer wrote something — append the link block after it
+                $data['application_procedure'] = $data['application_procedure'] . $linkHtml;
+            }
             $data['is_application_required'] = true;
         }
 
-        // 6. Several contact numbers are always comma-separated
+        // 6. Normalise contacts
         if (!empty($data['telephone']) && is_string($data['telephone'])) {
             $data['telephone'] = $this->normalizeTelephone($data['telephone']);
         }
-        // Several emails too
         if (!empty($data['email']) && is_string($data['email'])) {
             $emails = preg_split('/\s*(?:,|;|\/|\||\band\b|\bor\b)\s*/i', $data['email']);
             $emails = array_values(array_unique(array_filter(array_map('trim', $emails))));
             $data['email'] = implode(', ', $emails);
         }
 
-        // Every job gets a "never pay for this job" warning in the application procedure
+        // 7. Payment warning (runs LAST so it always appears)
         $data = $this->applyPaymentWarning($data);
 
-        unset($data['application_link'], $data['application_links']); // not form fields
-
+        unset($data['application_link'], $data['application_links']);
         return $data;
     }
 
@@ -714,19 +1297,61 @@ class AiService
     }
 
     /**
-    * "To apply for this role or job click here" with "click here" as the hyperlink.
-    * More than one link: each gets its own line, numbered "(link 2)", "(link 3)".
-    */
+     * Collapses a list of URLs into the single most likely "apply" link.
+     *
+     * Rule:
+     *   1. If any URL's host is a known job-application / ATS provider,
+     *      keep ALL of those (job boards sometimes split across two ATS hosts).
+     *   2. Otherwise keep only the LAST URL. Job-board pages (Workday, Workable,
+     *      Greenhouse, Breezy, Lever, BambooHR, etc.) always put the real apply
+     *      link at the bottom of the post — the "share this job" / "apply" link.
+     *      Homepages, About-Us links, and social URLs appear earlier and get dropped.
+     *   3. If the list was already empty, return empty.
+     *
+     * Returns at most 2 links (some jobs really do have two application portals,
+     * e.g. an online form + an email form). One is the normal case.
+     */
+    protected function narrowToApplicationLink(array $links): array
+    {
+        if (empty($links)) {
+            return [];
+        }
+
+        // ATS / application-portal hosts. Anything matching one of these is a real apply link.
+        $applyHost = '/(^|\.)(workable|greenhouse|lever|bamboohr|smartrecruiters|recruitee|personio|jobvite|ashby|breezy|workday|myworkdaysite|taleo|successfactors|icims|applytojob|oraclecloud|sapsf|eightfold|phenom|jobs\.|careers\.|apply\.|recruit\.|forms\.gle|docs\.google\.com|typeform|jotform|airtable|workable\.com)/i';
+
+        $applyMatches = [];
+        foreach ($links as $i => $link) {
+            $host = strtolower((string) parse_url($link, PHP_URL_HOST));
+            if ($host !== '' && preg_match($applyHost, $host)) {
+                $applyMatches[] = $link;
+            }
+        }
+
+        if (!empty($applyMatches)) {
+            // Prefer a single ATS match; if the page lists more than one, keep just the last.
+            return [end($applyMatches)];
+        }
+
+        // No ATS-looking host → assume the very last URL on the page is the apply link.
+        return [end($links)];
+    }
+
+
+    /**
+     * "Interested in this Job? - Click here" with "Click here" hyperlinked.
+     * More than one link: each gets its own line, numbered.
+     */
     protected function buildApplyLinkHtml(array $links): string
     {
         $html = '';
 
         foreach (array_values($links) as $i => $link) {
             $safe  = htmlspecialchars($link, ENT_QUOTES, 'UTF-8');
-            $label = $i === 0 ? 'click here' : 'click here (link ' . ($i + 1) . ')';
+            $label = $i === 0 ? 'Click here' : 'Click here (link ' . ($i + 1) . ')';
 
-            $html .= '<p>To apply for this role or job <a href="' . $safe . '" target="_blank" rel="noopener noreferrer">'
-                . $label . '</a></p>';
+            $html .= '<p>Interested in this Job? - <a href="' . $safe
+                . '" target="_blank" rel="noopener noreferrer">' . $label . '</a> to view and apply.</p>';
         }
 
         return $html;
@@ -768,22 +1393,29 @@ class AiService
         $procedure = (string) ($data['application_procedure'] ?? '');
         $plain     = trim(strip_tags($procedure));
 
-        // Source already carries a capitalised "do not pay" notice? Leave it alone.
+        // Source already carries a "do not pay" notice? Skip.
         if ($plain !== '' && preg_match('/\b(DO NOT|DON\'T|NEVER|NO)\W+(?:\w+\W+){0,4}(PAY|PAYMENT|FEE|FEES|MONEY)\b/', $plain)) {
-            $data['application_procedure'] = $procedure;
             return $data;
         }
 
         $seedBase = ($data['job_title'] ?? '') . '|' . ($data['company_name'] ?? '') . '|' . ($data['deadline'] ?? '');
 
-        if ($plain === '') {
-            $procedure = $this->generateFallbackApplicationProcedure($seedBase, !empty($data['email']), !empty($data['telephone']));
+        // If procedure is empty OR just a "click here" apply link, don't add a fallback —
+        // the link is already the procedure. Just append the payment warning.
+        $hasOnlyLink = $plain === '' && str_contains($procedure, '<a ');
+
+        if ($plain === '' && !$hasOnlyLink) {
+            $procedure = $this->generateFallbackApplicationProcedure(
+                $seedBase,
+                !empty($data['email']),
+                !empty($data['telephone'])
+            );
         }
 
         $variants = $this->paymentWarningVariants();
         $text     = $variants[crc32($seedBase . 'w') % count($variants)];
         $style    = crc32($seedBase . 's') % 3;
-        $before   = crc32($seedBase . 'p') % 4 === 0; // mostly after, sometimes first
+        $before   = crc32($seedBase . 'p') % 4 === 0;
 
         $notice = match ($style) {
             0       => '<p><strong>' . $text . '</strong></p>',
@@ -1995,7 +2627,13 @@ class AiService
         CONTACT DETAILS:
             - Emails go in "email". Phone numbers go in "telephone" as one comma-separated string. Never use "/", "and" or "or" to join numbers. If there is more than one email, join them with commas in "email" as well.
             - Set is_whatsapp_contact to true only if a number is described as WhatsApp. Set is_telephone_call to true if a number is described as callable, or if no qualifier is given.
-            - LINKS: every web link (http or https) that a candidate can use to apply, register or submit documents (application portals, Google Forms, career pages, "Apply" buttons, job-specific pages) goes in "application_links" as an array of full URLs, in the order they appear. Do not put emails or phone numbers there. Do not include social media links or the employer's general website.
+            LINKS: find the ONE URL a candidate clicks to actually submit their application
+            (a job-specific page, an application form, a Google Form, or an ATS host such as
+            Workday / Workable / Greenhouse / Lever / BambooHR / SmartRecruiters). Put that
+            single URL in "application_links" as a one-element array. Do NOT include:
+            the employer's homepage, social media, "View all jobs" pages, or any URL that is
+            not the specific apply link. If no specific apply URL is visible, return
+            "application_links": [].
             - Never write an email address, phone number or any link inside job_description, responsibilities, qualifications, skills or application_procedure. The system writes the "click here" apply line itself. In application_procedure, keep only the employer's own instructions (documents required, deadline, subject line to use), and say "by email, using the address on this page" instead of repeating the address.
 
         GROUPING (keep the source's own structure):
@@ -2098,7 +2736,11 @@ class AiService
             . "job_description, responsibilities, qualifications, or skills - put them only in the "
             . "dedicated email/telephone/application_links fields. If more than one contact number is "
             . "visible, list them all in telephone separated by commas (never with \"/\", \"and\", or \"or\"). "
-            . "If one or more application links (http or https) are visible, put every one in application_links as an array of full URLs "
+            . "If an application URL is visible in the image (a job-specific page, form URL, or "
+            . "ATS host such as Workday/Workable/Greenhouse/Lever/BambooHR/SmartRecruiters), "
+            . "put exactly ONE such URL in \"application_links\" as a single-element array. "
+            . "Never include the employer's homepage or social media links. If you cannot "
+            . "identify the specific apply URL, return \"application_links\": []. "
             . "(not in application_procedure and not in any other field). Emails and phone numbers are never links. "
             . "application_procedure). Do not write any warning about paying money in application_procedure, "
             . "one is added automatically. Any content you write rather than copy from the image must read as "
