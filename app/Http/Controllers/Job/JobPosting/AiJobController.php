@@ -3,7 +3,7 @@
 namespace App\Http\Controllers\Job\JobPosting;
 
 use App\Http\Controllers\Controller;
-use App\Services\Jobs\AiService;
+use App\Services\Jobs\AiJobService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -11,12 +11,12 @@ use Illuminate\Support\Facades\Validator;
 
 class AiJobController extends Controller
 {
-    public function __construct(protected AiService $aiService) {}
+    public function __construct(protected AiJobService $AiJobService) {}
 
     public function getModels(): JsonResponse
     {
         return $this->success([
-            'data'    => $this->aiService->getAvailableModels(),
+            'data'    => $this->AiJobService->getAvailableModels(),
             'default' => config('ai.default', 'gemini'),
         ]);
     }
@@ -81,7 +81,7 @@ class AiJobController extends Controller
         $model = $request->input('model') ?: config('ai.default');
 
         try {
-            $result = $this->aiService->extractFromImage(
+            $result = $this->AiJobService->extractFromImage(
                 $request->input('image_base64'),
                 $model,
                 $request->input('country')
@@ -107,7 +107,7 @@ class AiJobController extends Controller
         $model = $request->input('model') ?: config('ai.default');
 
         try {
-            $enhanced = $this->aiService->enhanceField(
+            $enhanced = $this->AiJobService->enhanceField(
                 $request->input('field_name'),
                 $request->input('content'),
                 $request->input('instruction'),
@@ -134,7 +134,7 @@ class AiJobController extends Controller
         $model = $request->input('model') ?: config('ai.default');
 
         try {
-            $result = $this->aiService->generateFromTitle(
+            $result = $this->AiJobService->generateFromTitle(
                 $request->input('title'),
                 $request->input('company'),
                 $request->input('country'),

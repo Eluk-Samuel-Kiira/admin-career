@@ -8,6 +8,8 @@ use App\Models\Subscription\Subscription;
 use App\Models\Subscription\PaymentWebhook;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\{ Log, DB };
+use Illuminate\Support\Str;
 
 class EmployerSubscriptionController extends Controller
 {
@@ -598,4 +600,352 @@ class EmployerSubscriptionController extends Controller
             default     => '<span class="badge badge-light-secondary">' . e((string) $status) . '</span>',
         };
     }
+
+    /**
+     * GET /admin/subscriptions/service-options
+     *
+     * Returns ONLY subscription-billed, active services that have a real price
+     * for the given country. Any other service (one-time, free, or without a
+     * price row) is excluded.
+     */
+    public function serviceOptions(Request $request): JsonResponse
+    {
+        if (!auth()->user()->can('view subscriptions')) {
+            return response()->json(['success' => false], 403);
+        }
+
+        $country = strtoupper((string) $request->query('country_code', 'UG'));
+
+        $services = \App\Models\Service\Service::active()
+            ->where('billing_type', 'subscription')      // ← the key filter
+            ->ordered()
+            ->get();
+
+        $data = $services->map(function ($service) use ($country) {
+            $price = \App\Models\Service\ServicePrice::resolve($service->key, $country);
+
+            // Skip services without a price — nothing to activate
+            if (!$price) {
+                return null;
+            }
+
+            // Skip zero-priced services — a subscription must have an amount
+            if ((int) $price->amount_cents < 1) {
+                return null;
+            }
+
+            return [
+                'key'          => $service->key,
+                'name'         => $service->name,
+                'billing_type' => $service->billing_type,
+                'amount_cents' => (int) $price->amount_cents,
+                'formatted'    => $price->formatted_amount,
+                'currency'     => $price->currency?->code,
+                'interval'     => $price->interval,
+                'is_global'    => $price->country_code === \App\Models\Service\ServicePrice::GLOBAL_CODE,
+            ];
+        })->filter()->values();
+
+        return response()->json([
+            'success' => true,
+            'country' => $country,
+            'data'    => $data,
+        ]);
+    }
+
+    public function userSearch(Request $request): JsonResponse
+    {
+        if (!auth()->user()->can('view subscriptions')) {
+            return response()->json(['success' => false], 403);
+        }
+
+        $q = trim((string) $request->query('q', ''));
+
+        $query = \App\Models\User::query()
+            ->with('roles:id,name')
+            ->where('is_active', true);
+
+        if ($q !== '') {
+            $like = '%' . $q . '%';
+            $query->where(function ($w) use ($like) {
+                $w->where('name', 'like', $like)
+                ->orWhere('email', 'like', $like)
+                ->orWhere('phone', 'like', $like);
+            });
+        }
+
+        $users = $query->orderBy('name')->limit(25)->get();
+
+        return response()->json([
+            'success' => true,
+            'data'    => $users->map(fn($u) => [
+                'id'           => $u->id,
+                'name'         => $u->name,
+                'email'        => $u->email,
+                'phone'        => $u->phone,
+                'country_code' => $u->country_code,
+                'role'         => $u->roles->first()?->name ?? 'unknown',
+            ]),
+        ]);
+    }
+
+
+    /**
+     * GET /admin/subscriptions/manual-create-form
+     * Returns the modal body fragment.
+     */
+    public function manualCreateForm(Request $request)
+    {
+        if (!auth()->user()->can('view subscriptions')) {
+            abort(403);
+        }
+
+        $country = strtoupper((string) $request->query('country_code', 'UG'));
+
+        $paymentMethods = \App\Models\PaymentMethod::where('is_active', true)
+            ->orderBy('name')
+            ->get(['id', 'name']);
+
+        $sources = \App\Models\PaymentSource::active()
+            ->orderBy('name')
+            ->get(['id', 'name', 'slug']);
+
+        $currencies = \App\Models\Currency::active()
+            ->orderByDesc('is_default')
+            ->orderBy('code')
+            ->get(['id', 'code', 'symbol', 'decimal_places', 'is_default']);
+
+        $defaultCurrency = $currencies->firstWhere('is_default', true)
+            ?? $currencies->first();
+
+        return view('employer.subscriptions.partials.manual-deposit-form', compact(
+            'country',
+            'paymentMethods',
+            'sources',
+            'currencies',
+            'defaultCurrency'
+        ));
+    }
+
+    /**
+     * POST /admin/subscriptions/manual-deposit
+     *
+     * Records a completed deposit and activates the matching subscription
+     * for the chosen user. Works for any service that has a price row.
+     */
+    public function manualDeposit(Request $request): JsonResponse
+    {
+        if (!auth()->user()->can('view subscriptions')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        $validated = $request->validate([
+            'user_id'            => 'required|integer|exists:users,id',
+            'service_key'        => 'required|string|exists:services,key',
+            'payment_method_id'  => 'required|integer|exists:payment_methods,id',
+            'payment_source_id'  => 'required|integer|exists:payment_sources,id',
+            'deposit_method'     => 'required|in:cash,mobile_money,bank_transfer,cheque',
+            'amount'             => 'required|numeric|min:0.01',
+            'currency_id'        => 'required|integer|exists:currencies,id',
+            'payment_reference'  => 'nullable|string|max:255',
+            'note'               => 'nullable|string|max:500',
+            'deposit_date'       => 'nullable|date',
+        ]);
+
+        $user = \App\Models\User::with('roles')->findOrFail($validated['user_id']);
+
+        $service = \App\Models\Service\Service::where('key', $validated['service_key'])
+            ->where('is_active', true)
+            ->first();
+
+        if (!$service) {
+            return response()->json(['success' => false, 'message' => 'Service not found.'], 404);
+        }
+
+        $currency = \App\Models\Currency::find($validated['currency_id']);
+        if (!$currency) {
+            return response()->json(['success' => false, 'message' => 'Currency not found.'], 404);
+        }
+
+        // Canonical conversion — matches every other deposit-creating path
+        $amountCents = $currency->toCents((float) $validated['amount']);
+        if ($amountCents < 1) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The amount is too small to record.',
+            ], 422);
+        }
+
+        $country = strtoupper($user->country_code ?? 'UG');
+        $price   = \App\Models\Service\ServicePrice::resolve($service->key, $country);
+
+        try {
+            $result = DB::transaction(function () use (
+                $validated, $user, $service, $price, $currency, $country, $amountCents
+            ) {
+
+                // ── 1. Create the Deposit ─────────────────────────────
+                $deposit = \App\Models\Deposit::create([
+                    'deposit_ref'         => (string) Str::uuid(),
+                    'payment_method_id'   => $validated['payment_method_id'],
+                    'currency_id'         => $validated['currency_id'],
+                    'amount'              => $amountCents,
+                    'fee'                 => 0,
+                    'net_amount'          => $amountCents,
+                    'deposit_method'      => $validated['deposit_method'],
+                    'payment_channel'     => $validated['deposit_method'],
+                    'source_id'           => $validated['payment_source_id'],
+                    'source_name_manual'  => 'Manual / Offline',
+                    'purpose_type'        => $service->key,
+                    'purpose_reference'   => null, // set after subscription exists
+                    'purpose_description' => $service->name . ' — admin activated',
+                    'status'              => 'completed',
+                    'is_manual'           => true,
+                    'manual_reason'       => $validated['note'] ?? 'Admin manual deposit',
+                    'deposit_date'        => $validated['deposit_date'] ?? now(),
+                    'cleared_date'        => now(),
+                    'reference_number'    => $validated['payment_reference'] ?? null,
+                    'source_reference'    => $validated['payment_reference'] ?? null,
+                    'depositor_id'        => $user->id,
+                    'paid_by_user_id'     => $user->id,
+                    'depositor_name'      => $user->name,
+                    'depositor_email'     => $user->email,
+                    'depositor_phone'     => $user->phone,
+                    'country_code'        => $country,
+                    'verified_by'         => auth()->id(),
+                    'verified_at'         => now(),
+                    'created_by'          => auth()->id(),
+                ]);
+
+                // ── 2. Confirm it in the ledger ───────────────────────
+                app(\App\Services\Payment\PaymentTransactionService::class)
+                    ->recordDeposit($deposit->fresh());
+
+                // ── 3. Activate the subscription ──────────────────────
+                $subscription = $this->activateSubscriptionFor(
+                    $user, $service, $price, $currency, $deposit
+                );
+
+                // ── 4. Link the deposit → subscription uuid ───────────
+                $deposit->update(['purpose_reference' => $subscription->uuid]);
+
+                return ['deposit' => $deposit->fresh(), 'subscription' => $subscription];
+            });
+
+            return response()->json([
+                'success'      => true,
+                'message'      => 'Deposit recorded and subscription activated.',
+                'deposit_ref'  => $result['deposit']->deposit_ref,
+                'subscription' => [
+                    'uuid'        => $result['subscription']->uuid,
+                    'service_key' => $result['subscription']->service_key,
+                    'status'      => $result['subscription']->status,
+                    'period_end'  => $result['subscription']->current_period_end?->toISOString(),
+                ],
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::error('Manual deposit + activation failed', [
+                'user_id'     => $validated['user_id']     ?? null,
+                'service_key' => $validated['service_key'] ?? null,
+                'error'       => $e->getMessage(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+
+    /**
+     * Create or refresh a subscription for a user.
+     *
+     * A completed deposit is the ONLY gate — the subscription becomes
+     * ACTIVE immediately. No trial state. current_period_end is computed
+     * from the deposit's interval.
+     */
+    protected function activateSubscriptionFor(
+        \App\Models\User $user,
+        \App\Models\Service\Service $service,
+        ?\App\Models\Service\ServicePrice $price,
+        \App\Models\Currency $currency,
+        \App\Models\Deposit $deposit
+    ): \App\Models\Subscription\Subscription {
+
+        $interval = $price?->interval
+            ?? ($service->billing_type === 'subscription' ? 'month' : 'one_time');
+
+        // Paid period end for this interval.
+        $periodStart = now();
+        $periodEnd   = match ($interval) {
+            'year'     => $periodStart->copy()->addYear(),
+            'one_time' => null,
+            default    => $periodStart->copy()->addDays(28),
+        };
+
+        $features = $service->meta ?? [];
+
+        if (in_array($service->key, ['premium_alerts', 'auto_apply_subscription'], true)) {
+            $features = array_merge($features, [
+                'auto_apply'      => $features['auto_apply']      ?? 10,
+                'whatsapp_alerts' => $features['whatsapp_alerts'] ?? true,
+                'telegram_alerts' => $features['telegram_alerts'] ?? true,
+            ]);
+        }
+
+        $subscription = \App\Models\Subscription\Subscription::updateOrCreate(
+            [
+                'user_id'     => $user->id,
+                'service_key' => $service->key,
+            ],
+            [
+                'country_code'         => $deposit->country_code ?? $user->country_code ?? 'UG',
+                'currency'             => $currency->code,
+                'amount_cents'         => (int) $deposit->amount,
+                'interval'             => $interval,
+                'price_id'             => $price?->id,
+                'gateway'              => 'manual',
+                'status'               => 'active',
+                'starts_at'            => $periodStart,
+                'current_period_start' => $periodStart,
+                'current_period_end'   => $periodEnd,
+                'trial_ends_at'        => null,
+                'cancelled_at'         => null,
+                'ends_at'              => null,
+                'cancel_at_period_end' => false,
+                'feature_snapshot'     => $features,
+            ]
+        );
+
+        \App\Models\Subscription\SubscriptionPayment::firstOrCreate(
+            ['gateway_reference' => $deposit->deposit_ref],
+            [
+                'subscription_id'        => $subscription->id,
+                'user_id'                => $user->id,
+                'gateway'                => 'manual',
+                'gateway_transaction_id' => $deposit->source_reference ?? $deposit->deposit_ref,
+                'currency'               => $currency->code,
+                'amount_cents'           => (int) $deposit->amount,
+                'status'                 => 'paid',
+                'paid_at'                => now(),
+                'gateway_payload'        => [
+                    'deposit_ref' => $deposit->deposit_ref,
+                    'manual'      => true,
+                ],
+            ]
+        );
+
+        Log::info('[manual] Subscription activated', [
+            'user_id'         => $user->id,
+            'subscription_id' => $subscription->id,
+            'service_key'     => $service->key,
+            'interval'        => $interval,
+            'period_end'      => $subscription->current_period_end?->toISOString(),
+            'deposit_ref'     => $deposit->deposit_ref,
+        ]);
+
+        return $subscription;
+    }
+
 }

@@ -67,13 +67,34 @@ Route::prefix('admin')->middleware(['auth'])->group(function () {
 use App\Http\Controllers\JobSeeker\SeekerController;
 
 Route::prefix('admin')->middleware(['auth'])->group(function () {
-    // Job Seekers Management
-    Route::get('/seekers', [SeekerController::class, 'index'])->name('admin.seekers.index');
-    Route::get('/seekers/data', [SeekerController::class, 'getData'])->name('admin.seekers.data');
-    Route::get('/seekers/filters', [SeekerController::class, 'getFilters'])->name('admin.seekers.filters');
-    Route::get('/seekers/{id}', [SeekerController::class, 'show'])->name('admin.seekers.show');
-    Route::get('/seekers/{id}/cv', [SeekerController::class, 'viewCv'])->name('admin.seekers.cv');
-    Route::get('/seekers/{id}/applications', [SeekerController::class, 'applications'])->name('admin.seekers.applications');
+
+    // ── Listing & data ─────────────────────────────────────
+    Route::get('/seekers',                    [SeekerController::class, 'index'])            ->name('admin.seekers.index');
+    Route::get('/seekers/data',               [SeekerController::class, 'getData'])          ->name('admin.seekers.data');
+    Route::get('/seekers/filters',            [SeekerController::class, 'getFilters'])       ->name('admin.seekers.filters');
+    Route::get('/seekers/filters-by-country', [SeekerController::class, 'filtersByCountry']) ->name('admin.seekers.filters-by-country');
+
+    // ── Drawer bodies ──────────────────────────────────────
+    Route::get('/seekers/create-form',        [SeekerController::class, 'createForm'])       ->name('admin.seekers.create-form');
+    Route::get('/seekers/{id}/edit-form',     [SeekerController::class, 'editForm'])         ->name('admin.seekers.edit-form');
+
+    // ── File endpoints — MUST be above /seekers/{id} ───────
+    Route::post  ('/seekers/{id}/cv',         [SeekerController::class, 'uploadCv'])         ->name('admin.seekers.cv.upload');
+    Route::delete('/seekers/{id}/cv',         [SeekerController::class, 'deleteCv'])         ->name('admin.seekers.cv.delete');
+    Route::post  ('/seekers/{id}/academic',   [SeekerController::class, 'uploadAcademic'])   ->name('admin.seekers.academic.upload');
+    Route::delete('/seekers/{id}/academic',   [SeekerController::class, 'deleteAcademic'])   ->name('admin.seekers.academic.delete');
+    Route::post  ('/seekers/{id}/re-extract', [SeekerController::class, 'reExtractCv'])      ->name('admin.seekers.re-extract');
+    Route::get('/seekers/{id}/categories', [SeekerController::class, 'categoriesForSeeker'])
+    ->name('admin.seekers.categories');
+
+    // ── Persist (form only, no files) ──────────────────────
+    Route::post('/seekers',                   [SeekerController::class, 'store'])            ->name('admin.seekers.store');
+    Route::post('/seekers/{id}',              [SeekerController::class, 'update'])           ->name('admin.seekers.update');
+
+    // ── Read-only views ────────────────────────────────────
+    Route::get('/seekers/{id}/cv',            [SeekerController::class, 'viewCv'])           ->name('admin.seekers.cv');
+    Route::get('/seekers/{id}/applications',  [SeekerController::class, 'applications'])     ->name('admin.seekers.applications');
+    Route::get('/seekers/{id}',               [SeekerController::class, 'show'])             ->name('admin.seekers.show');
 });
 
 
@@ -241,6 +262,11 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     Route::get('/employer-subscriptions/data',         [EmployerSubscriptionController::class, 'data'])->name('employer-subscriptions.data');
     Route::get('/employer-subscriptions/payments',     [EmployerSubscriptionController::class, 'payments'])->name('employer-subscriptions.payments');  // ← ADD
     Route::get('/employer-subscriptions/{uuid}',       [EmployerSubscriptionController::class, 'show'])->name('employer-subscriptions.show');
+    // Admin: record a deposit & activate a subscription
+    Route::get   ('/subscriptions/manual-create-form', [EmployerSubscriptionController::class, 'manualCreateForm'])  ->name('employer-subscriptions.manual-create-form');
+    Route::post  ('/subscriptions/manual-deposit',     [EmployerSubscriptionController::class, 'manualDeposit'])      ->name('employer-subscriptions.manual-deposit');
+    Route::get   ('/subscriptions/service-options',    [EmployerSubscriptionController::class, 'serviceOptions'])     ->name('employer-subscriptions.service-options');
+    Route::get   ('/subscriptions/user-search',        [EmployerSubscriptionController::class, 'userSearch'])          ->name('employer-subscriptions.user-search');
 });
 
 
