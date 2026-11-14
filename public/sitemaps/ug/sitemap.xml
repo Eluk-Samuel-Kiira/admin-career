@@ -2375,6 +2375,12 @@
     <priority>0.8</priority>
   </url>
   <url>
+    <loc>http://127.0.0.1:8001/job/ebc-sales-agent-job-at-a-private-bar-in-kampala-ug</loc>
+    <lastmod>2026-11-14T02:20:14+00:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
     <loc>http://127.0.0.1:8001/job/ecd-teacher-job-at-a-private-school-in-mubende-ug</loc>
     <lastmod>2026-10-14T12:09:04+00:00</lastmod>
     <changefreq>weekly</changefreq>
@@ -5603,6 +5609,12 @@
     <priority>0.8</priority>
   </url>
   <url>
+    <loc>http://127.0.0.1:8001/job/male-receptionist-job-at-a-private-clinic-in-adjumani-ug</loc>
+    <lastmod>2026-11-14T02:20:14+00:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
     <loc>http://127.0.0.1:8001/job/male-retail-sales-personnel-job-at-a-private-shop-in-kampala-ug</loc>
     <lastmod>2026-10-28T09:55:13+00:00</lastmod>
     <changefreq>weekly</changefreq>
@@ -7159,6 +7171,12 @@
   <url>
     <loc>http://127.0.0.1:8001/job/programme-assistant-job-at-national-union-of-disabled-persons-of-uganda-in-kampala-ug</loc>
     <lastmod>2026-10-11T18:32:45+00:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>http://127.0.0.1:8001/job/programme-associate-cash-based-transfers-cbt-sc6-job-at-3d-services-ltd-in-moroto-ug</loc>
+    <lastmod>2026-11-14T02:20:14+00:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
@@ -9323,6 +9341,12 @@
   </url>
   <url>
     <loc>http://127.0.0.1:8001/jobs/category/procurement-purchasing-jobs-in-uganda-ug</loc>
+    <lastmod>2026-11-01T08:24:10+00:00</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>http://127.0.0.1:8001/jobs/category/project-programme-management-jobs-in-uganda-ug</loc>
     <lastmod>2026-11-01T08:24:10+00:00</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.8</priority>
@@ -11681,6 +11705,12 @@
   </url>
   <url>
     <loc>http://127.0.0.1:8001/jobs/location/mityana-jobs-in-ug</loc>
+    <lastmod>2026-10-08T21:02:35+00:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>http://127.0.0.1:8001/jobs/location/moroto-jobs-in-ug</loc>
     <lastmod>2026-10-08T21:02:35+00:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.7</priority>
