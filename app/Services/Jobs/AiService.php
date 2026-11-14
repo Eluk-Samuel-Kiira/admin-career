@@ -137,6 +137,32 @@ class AiService
         - company_name is written exactly as found — it is not a list.
         - Emails, phone numbers and links go ONLY in their own fields.
         - Return ONLY a single valid JSON object. No prose, no code fences.
+        EDUCATION, EXPERIENCE AND SALARY — read carefully:
+        - education_level_name: pick the HIGHEST degree the job requires from the
+        reference list, based on the "EDUCATION MENTIONS" and "QUALIFICATIONS /
+        EXPERIENCE BLOCK" snippets above.
+            * "Bachelor's degree" / "BSc" / "BA" → pick the Bachelor's / Degree entry
+            * "Master's degree" / "MBA" / "MSc" → pick the Master's / Postgraduate entry
+            * "PhD" / "Doctorate" → pick the Doctorate entry
+            * "Diploma" → pick the Diploma entry
+            * "Certificate" (only if no degree is mentioned) → pick the Certificate entry
+            * "Secondary" / "O-Level" / "A-Level" / "UCE" / "UACE" → pick the Secondary entry
+        If the job mentions a degree, do NOT default to "Certificate". Certificate is
+        the FLOOR — only choose it when no higher qualification appears anywhere.
+        - experience_level_name: pick from the reference list based on years of experience:
+            * 0-2 years, or "entry level" / "fresh graduate" → the entry-level entry
+            * 3-4 years → the mid-level / "experience level 2" entry (whichever exists)
+            * 5-7 years → the senior / "experience level 3" entry
+            * 8+ years, or "senior management" / "head of" → the highest level in the list
+        Match the "YEARS-OF-EXPERIENCE MENTIONS" above. If the JD says
+        "minimum 8 years", do NOT return entry level.
+        - salary_amount + payment_period + currency: read the "SALARY / REMUNERATION
+        MENTIONS" snippet above. If a real figure appears (e.g. "UGX 6,000,000 per
+        month", "USD 60,000 per annum"), return the number as salary_amount, the
+        period as payment_period (monthly / yearly / weekly / daily / hourly), and
+        the code as currency. If the post says "competitive", "attractive package",
+        "negotiable", or has no figure at all, return null for all three.
+        Never invent a salary.
         APPLICATION LINK (critical):
         - Look for the "APPLICATION URLS" block in the snippets below.
         - From those URLs, pick the SINGLE URL that a candidate clicks to actually submit
@@ -247,6 +273,58 @@ class AiService
             $out[] = "=== HOW TO APPLY ===\n" . trim($snippet);
         }
 
+        // 3b. Education, experience, and qualification block — the metadata prompt
+        //     needs to see this or it defaults to "Certificate / entry level".
+        $qualHeadRe = '/^(minimum (position |academic )?(qualification|requirements?)|academic (and|&) professional (qualifications?|requirements?)|qualifications?( and experience)?|key (qualifications?|requirements?)|education(al)? (level |requirements?)?|experience (required|requirements?)|minimum requirements?)\s*:?\s*$/im';
+
+        if (preg_match($qualHeadRe, $content, $m, PREG_OFFSET_CAPTURE)) {
+            $from    = $m[0][1] + strlen($m[0][0]);
+            $block   = mb_substr($content, $from, 2000);
+            $out[]   = "=== QUALIFICATIONS / EXPERIENCE BLOCK ===\n" . trim($block);
+        }
+
+        // 3c. Explicit "X years of experience" sentences anywhere in the text
+        $expMatches = [];
+        if (preg_match_all('/\b(?:minimum(?: of)?|at least|no less than|over)?\s*(\d{1,2})\s*(?:\+|plus)?\s*(?:years?|yrs?)(?:\s+of)?(?:\s+(?:progressive|relevant|similar|work|professional|hands-on|managerial|leadership))?\s+experience\b/i', $content, $mm, PREG_SET_ORDER)) {
+            foreach ($mm as $hit) {
+                $expMatches[] = trim($hit[0]);
+                if (count($expMatches) >= 5) break;
+            }
+        }
+        if ($expMatches) {
+            $out[] = "=== YEARS-OF-EXPERIENCE MENTIONS ===\n" . implode("\n", $expMatches);
+        }
+
+        // 3d. Education level keywords (bachelor's / master's / diploma / certificate / PhD)
+        $eduLines = [];
+        foreach ($lines as $l) {
+            $t = trim($l);
+            if ($t === '') continue;
+            if (preg_match('/\b(bachelor|master|ph\.?d|doctorate|diploma|certificate|higher diploma|associate)\b/i', $t)
+                && mb_strlen($t) < 200) {
+                $eduLines[] = $t;
+            }
+            if (count($eduLines) >= 10) break;
+        }
+        if ($eduLines) {
+            $out[] = "=== EDUCATION MENTIONS ===\n" . implode("\n", $eduLines);
+        }
+
+        // 3e. Salary / compensation
+        $salaryLines = [];
+        foreach ($lines as $l) {
+            $t = trim($l);
+            if ($t === '') continue;
+            if (preg_match('/\b(salary|remuneration|compensation|pay|package|gross|net|per month|per annum|monthly|annual|UGX|USD|KES|TZS|RWF)\b/i', $t)
+                && mb_strlen($t) < 200) {
+                $salaryLines[] = $t;
+            }
+            if (count($salaryLines) >= 8) break;
+        }
+        if ($salaryLines) {
+            $out[] = "=== SALARY / REMUNERATION MENTIONS ===\n" . implode("\n", $salaryLines);
+        }
+
         // 4. Application URLs — make them impossible to miss
         if (preg_match_all('#https?://[^\s<>"\']+#i', $content, $m)) {
             $urls = [];
@@ -262,7 +340,7 @@ class AiService
             if ($urls) {
                 $out[] = "=== APPLICATION URLS (in page order, " . count($urls) . " total) ===\n"
                     . implode("\n", $urls)
-                    . "\n\nThe LAST URL in this list is usually the specific apply link "
+                    . "\n\nThe LAST URL in this listbuildMetadataSnippet is usually the specific apply link "
                     . "(it is the 'share this job' / 'apply' URL at the bottom of the page). "
                     . "Pick exactly ONE specific apply URL and put it in application_links. "
                     . "Do NOT include homepages or social media.";
@@ -640,7 +718,7 @@ class AiService
                         $model
                     );
                 }
-                $result = $this->applySmartDefaults($result, $country);
+                $result = $this->applySmartDefaults($result, $country, $content);
                 $result = $this->applyApplicationLinkHandling($result, $sourceUrl);
                 return $this->applyGeorgiaFontToContentFields($result);
             }
@@ -684,7 +762,7 @@ class AiService
             }
 
             $result = $this->coerceModelOutput($result);
-            $result = $this->applySmartDefaults($result, $country);
+            $result = $this->applySmartDefaults($result, $country, $content);
             $result = $this->applyApplicationLinkHandling($result, $sourceUrl);
             return $this->applyGeorgiaFontToContentFields($result);
         }
@@ -725,7 +803,7 @@ class AiService
         }
 
         $result = $this->coerceModelOutput($result);
-        $result = $this->applySmartDefaults($result, $country);
+        $result = $this->applySmartDefaults($result, $country, $content);
         $result = $this->applyApplicationLinkHandling($result, $sourceUrl);
         return $this->applyGeorgiaFontToContentFields($result);
     }
@@ -1169,7 +1247,7 @@ class AiService
         $result = $this->coerceModelOutput($result);
 
         $result = $this->enrichThinPosting($result, $model);
-        $result = $this->applySmartDefaults($result, $country);
+        $result = $this->applySmartDefaults($result, $country, $content);
         $result = $this->applyApplicationLinkHandling($result);
         return $this->applyGeorgiaFontToContentFields($result);
     }
@@ -1572,7 +1650,7 @@ class AiService
         }
         $result['job_title'] = $result['job_title'] ?? $title;
         $result['company_name'] = $result['company_name'] ?? ($company ?? '');
-        $result = $this->applySmartDefaults($result, $country);
+        $result = $this->applySmartDefaults($result, $country, $content);
         $result = $this->applyApplicationLinkHandling($result);
         return $this->applyGeorgiaFontToContentFields($result);
     }
@@ -2442,18 +2520,188 @@ class AiService
     }
 
     /** Returns the exact name from the list that matches the value, or null. */
+    /**
+    * Resolve a raw value (often from the AI) against the exact option list,
+    * trying harder than a bare exact match. Order:
+    *   1. exact (normalised) match
+    *   2. canonical alias map      ("bachelor's degree" → "Bachelors")
+    *   3. substring match          ("Senior level" contains "senior")
+    *   4. Levenshtein similarity   ("Bachlors" → "Bachelors", distance 1)
+    * Only after all four fail do we return null, so a good-but-slightly-
+    * different AI reply is no longer thrown away in favour of "Certificate".
+    */
     protected function resolveReferenceName(?string $value, array $list): ?string
     {
         if ($value === null || trim($value) === '') {
             return null;
         }
+        if (empty($list)) {
+            return null;
+        }
 
-        $needle = $this->normaliseLabel($value);
+        $raw    = trim($value);
+        $needle = $this->normaliseLabel($raw);
+
+        // 1. Exact normalised match
         foreach ($list as $item) {
             if ($this->normaliseLabel((string) $item) === $needle) {
                 return $item;
             }
         }
+
+        // 2. Alias map — map common phrasings to a canonical word we can then
+        //    match against the list.
+        $canonical = $this->canonicalLabel($raw);
+        if ($canonical !== null) {
+            $cn = $this->normaliseLabel($canonical);
+            foreach ($list as $item) {
+                if ($this->normaliseLabel((string) $item) === $cn) {
+                    return $item;
+                }
+            }
+        }
+
+        // 3. Substring — "Senior level" contains "senior"; "Mid Level" contains "mid"
+        $tokens = preg_split('/[^a-z0-9]+/', $needle, -1, PREG_SPLIT_NO_EMPTY);
+        $tokens = array_filter($tokens, fn($t) => strlen($t) >= 3);   // ignore "the", "of", "a"
+        if (!empty($tokens)) {
+            foreach ($list as $item) {
+                $itemN = $this->normaliseLabel((string) $item);
+                foreach ($tokens as $tok) {
+                    if (str_contains($itemN, $tok)) {
+                        return $item;
+                    }
+                }
+            }
+        }
+
+        // 4. Levenshtein — "Bachlors" (1 typo) matches "Bachelors"
+        $best     = null;
+        $bestDist = PHP_INT_MAX;
+        foreach ($list as $item) {
+            $itemN = $this->normaliseLabel((string) $item);
+            $dist  = levenshtein($needle, $itemN);
+            // Cap by input length so we don't fuzzy-match "Cat" to "Certificate"
+            $limit = max(2, (int) floor(mb_strlen($needle) * 0.25));
+            if ($dist <= $limit && $dist < $bestDist) {
+                $best     = $item;
+                $bestDist = $dist;
+            }
+        }
+        if ($best !== null) {
+            return $best;
+        }
+
+        return null;
+    }
+
+    /**
+    * Parse the minimum years-of-experience requirement from a job description.
+    * Returns the number of years, or null when no figure is stated.
+    * Handles common East African / international phrasings:
+    *   "minimum 8 years", "at least 5 years", "8+ years", "8 years of experience",
+    *   "over 5 years' experience", "5-7 years", "three years", "five years"
+    */
+    protected function yearsOfExperienceFromText(string $text): ?int
+    {
+        // Numeric forms
+        if (preg_match(
+            '/\b(?:minimum(?:\s+of)?|at\s+least|no\s+less\s+than|over|above|more\s+than)?\s*'
+            . '(\d{1,2})\s*(?:\+|plus)?\s*'
+            . '(?:[-\x{2013}]\s*\d{1,2}\s*)?'
+            . '(?:years?|yrs?)\b'
+            . '(?:\s*(?:of\s+)?(?:progressive|relevant|similar|work|professional|hands-on|managerial|leadership|'
+            . 'industry|post-qualification|post.?graduate|field|banking|telecom|fintech|payments|programme))?'
+            . '(?:\s+experience)?/iu',
+            $text,
+            $m
+        )) {
+            return max(0, (int) $m[1]);
+        }
+
+        // Word-number forms — "three years", "eight years"
+        $words = [
+            'one' => 1, 'two' => 2, 'three' => 3, 'four' => 4, 'five' => 5,
+            'six' => 6, 'seven' => 7, 'eight' => 8, 'nine' => 9, 'ten' => 10,
+            'eleven' => 11, 'twelve' => 12, 'fifteen' => 15, 'twenty' => 20,
+        ];
+        foreach ($words as $w => $n) {
+            if (preg_match(
+                '/\b(?:minimum(?:\s+of)?|at\s+least|no\s+less\s+than|over)?\s*'
+                . $w . '\s*(?:\+|plus)?\s*(?:years?|yrs?)\b'
+                . '(?:\s*(?:of\s+)?(?:progressive|relevant|similar|work|professional|hands-on|managerial|'
+                . 'leadership|industry|post-qualification|field))?/iu',
+                $text
+            )) {
+                return $n;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+    * Map a years-of-experience figure to the best experience_levels option.
+    * Called only when the AI's own pick is missing or clearly too low.
+    */
+    protected function experienceForYears(int $years, array $levels): ?string
+    {
+        if (empty($levels)) {
+            return null;
+        }
+
+        // Preferred keyword for each tier
+        $want = match (true) {
+            $years >= 10 => ['expert', 'senior', 'lead'],
+            $years >= 5  => ['senior', 'lead', 'experience'],
+            $years >= 3  => ['mid', 'experience', 'intermediate'],
+            $years >= 1  => ['junior', 'entry', 'graduate'],
+            default      => ['entry', 'intern', 'junior'],
+        };
+
+        // Try each preference in order, using the fuzzy matcher so "Senior Level" matches "Senior"
+        foreach ($want as $keyword) {
+            $hit = $this->resolveReferenceName($keyword, $levels);
+            if ($hit !== null) {
+                return $hit;
+            }
+        }
+
+        // Fallback: highest level when senior+, lowest when entry
+        return $years >= 5 ? end($levels) : reset($levels);
+    }
+
+    /**
+    * Normalise the AI's phrasing to the word the list is likely to contain.
+    * Handles the education + experience + job-type families you care about.
+    * Returns a single canonical word (already lowercase) that step 2 can
+    * match against the list via normaliseLabel().
+    */
+    protected function canonicalLabel(string $raw): ?string
+    {
+        $n = ' ' . preg_replace('/[^a-z0-9]+/i', ' ', strtolower($raw)) . ' ';
+
+        // Education
+        if (preg_match('/\b(phd|ph\.d|doctorate|doctoral)\b/', $n))                return 'doctorate';
+        if (preg_match('/\b(master|masters|msc|mba|m\.sc|postgraduate)\b/', $n))   return 'masters';
+        if (preg_match('/\b(bachelor|bachelors|bsc|ba|b\.sc|undergraduate)\b/', $n)) return 'bachelors';
+        if (preg_match('/\b(higher national diploma|hnd|diploma)\b/', $n))          return 'diploma';
+        if (preg_match('/\b(certificate|cert)\b/', $n))                             return 'certificate';
+        if (preg_match('/\b(secondary|o-?level|a-?level|uce|uace)\b/', $n))        return 'secondary';
+
+        // Experience
+        if (preg_match('/\b(entry|junior|graduate|internship|intern|fresh)\b/', $n))         return 'entry';
+        if (preg_match('/\b(mid|intermediate|experienced|middle)\b/', $n))                   return 'mid';
+        if (preg_match('/\b(senior|lead|principal|head|director|manager|executive)\b/', $n)) return 'senior';
+        if (preg_match('/\b(expert|expertise|specialist|principal)\b/', $n))                 return 'expert';
+
+        // Job type
+        if (preg_match('/\b(full time|fulltime|permanent|regular)\b/', $n))    return 'full-time';
+        if (preg_match('/\b(part time|parttime)\b/', $n))                       return 'part-time';
+        if (preg_match('/\b(contract|contractor|freelance|fixed.?term)\b/', $n)) return 'contract';
+        if (preg_match('/\b(internship|intern)\b/', $n))                        return 'internship';
+        if (preg_match('/\b(volunteer|voluntary)\b/', $n))                      return 'volunteer';
+        if (preg_match('/\b(temporary|temp|casual|seasonal)\b/', $n))           return 'temporary';
 
         return null;
     }
@@ -2843,7 +3091,7 @@ class AiService
     /**
      * Apply smart defaults - only fills fields that are genuinely missing.
      */
-    protected function applySmartDefaults(array $data, ?string $country = null): array
+    protected function applySmartDefaults(array $data, ?string $country = null, string $sourceText = ''): array
     {
         $countrySettings = $country ? ($this->countrySettings[$country] ?? null) : null;
         $referenceData = $this->getReferenceData($country);
@@ -2882,8 +3130,61 @@ class AiService
                 Log::warning('Job type not found in the Job Types list', ['job_types' => $referenceData['job_types']]);
             }
         }
-        $data['experience_level_name'] = $data['experience_level_name'] ?: 'entry level';
-        $data['education_level_name'] = $data['education_level_name'] ?: 'Certificate';
+
+        // ── Experience level ────────────────────────────────────────────────
+        // 1. Respect what the AI chose, if it survives the fuzzy resolver
+        $aiExp = $this->resolveReferenceName($data['experience_level_name'] ?? null, $referenceData['experience_levels']);
+
+        // 2. If missing, or if the JD clearly states more years than the pick implies,
+        //    upgrade to the correct level from the years-of-experience hint.
+        $yearsHint = $this->yearsOfExperienceFromText($content ?? '');
+        if ($yearsHint !== null) {
+            $fromYears = $this->experienceForYears($yearsHint, $referenceData['experience_levels']);
+
+            if ($fromYears !== null) {
+                if ($aiExp === null) {
+                    $aiExp = $fromYears;
+                } elseif ($this->experienceRank($fromYears) > $this->experienceRank($aiExp)) {
+                    // AI said something junior, but the JD says 8 years — upgrade
+                    $aiExp = $fromYears;
+                }
+            }
+        }
+
+        // 3. Absolute last resort
+        $data['experience_level_name'] = $aiExp
+            ?? $this->resolveReferenceName('entry level', $referenceData['experience_levels'])
+            ?? (reset($referenceData['experience_levels']) ?: 'Entry Level');
+
+        // ── Education level ────────────────────────────────────────────────
+        // 1. Respect the AI's pick
+        $aiEdu = $this->resolveReferenceName($data['education_level_name'] ?? null, $referenceData['education_levels']);
+
+        // 2. If the JD mentions a higher degree anywhere, upgrade
+        $eduHintWord = null;
+        if      (preg_match('/\b(ph\.?d|doctorate)/i', $content ?? ''))              $eduHintWord = 'doctorate';
+        elseif  (preg_match('/\b(master|msc|mba|m\.sc|postgraduate)/i', $content ?? '')) $eduHintWord = 'masters';
+        elseif  (preg_match('/\b(bachelor|bsc|ba\b|b\.?sc)/i', $content ?? ''))      $eduHintWord = 'bachelors';
+        elseif  (preg_match('/\b(higher national diploma|hnd|diploma)\b/i', $content ?? '')) $eduHintWord = 'diploma';
+        elseif  (preg_match('/\b(certificate|secondary|o-?level|a-?level|uce|uace)\b/i', $content ?? '')) $eduHintWord = 'certificate';
+
+        if ($eduHintWord !== null) {
+            $fromText = $this->resolveReferenceName($eduHintWord, $referenceData['education_levels']);
+
+            if ($fromText !== null) {
+                if ($aiEdu === null) {
+                    $aiEdu = $fromText;
+                } elseif ($this->educationRank($fromText) > $this->educationRank($aiEdu)) {
+                    $aiEdu = $fromText;
+                }
+            }
+        }
+
+        // 3. Absolute last resort
+        $data['education_level_name'] = $aiEdu
+            ?? $this->resolveReferenceName('certificate', $referenceData['education_levels'])
+            ?? (reset($referenceData['education_levels']) ?: 'Certificate');
+
         $data['currency'] = $data['currency'] ?: ($countrySettings['currency'] ?? 'AUD');
         $data['country_code'] = $data['country_code'] ?? $country;
         $data['is_resume_required'] = $data['is_resume_required'] ?? true;
@@ -2939,6 +3240,31 @@ class AiService
         }
 
         return $data;
+    }
+
+    /** Higher = more senior. Used only to upgrade, never to downgrade. */
+    protected function experienceRank(string $label): int
+    {
+        $n = strtolower($label);
+        if (str_contains($n, 'expert'))    return 4;
+        if (str_contains($n, 'senior'))    return 3;
+        if (str_contains($n, 'mid'))       return 2;
+        if (str_contains($n, 'junior'))    return 1;
+        if (str_contains($n, 'entry'))     return 0;
+        return 0;
+    }
+
+    /** Higher = more advanced. Used only to upgrade, never to downgrade. */
+    protected function educationRank(string $label): int
+    {
+        $n = strtolower($label);
+        if (str_contains($n, 'ph') || str_contains($n, 'doctor'))     return 5;
+        if (str_contains($n, 'master'))                                return 4;
+        if (str_contains($n, 'bachelor') || str_contains($n, 'degree'))return 3;
+        if (str_contains($n, 'diploma'))                               return 2;
+        if (str_contains($n, 'certificate'))                           return 1;
+        if (str_contains($n, 'secondary'))                             return 0;
+        return 0;
     }
 
     /**
