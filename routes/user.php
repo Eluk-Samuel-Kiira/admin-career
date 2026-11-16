@@ -242,6 +242,7 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     Route::get('/alerts/log',        [AlertDispatchController::class, 'log'])->name('alerts.log');
     Route::post('/alerts/bulk-delete', [AlertDispatchController::class, 'bulkDelete'])->name('alerts.bulk-delete');
 
+
     Route::get('/cover-letters',                 [CoverLetterController::class, 'index'])->name('cover-letters.index');
     Route::get('/cover-letters/data',            [CoverLetterController::class, 'data'])->name('cover-letters.data');
     Route::get('/cover-letters/{uuid}',          [CoverLetterController::class, 'show'])->name('cover-letters.show');
@@ -249,6 +250,10 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     
     Route::get('/alerts/seekers',            [AlertDispatchController::class, 'seekers'])->name('alerts.seekers');
     Route::post('/alerts/send-to-selected',  [AlertDispatchController::class, 'sendToSelected'])->name('alerts.send-to-selected');
+
+    
+    Route::get('/alerts/queue-status',  [AlertDispatchController::class, 'queueStatus'])->name('alerts.queue-status');
+    Route::post('/alerts/retry-failed', [AlertDispatchController::class, 'retryFailed'])->name('alerts.retry-failed');
 
 });
 

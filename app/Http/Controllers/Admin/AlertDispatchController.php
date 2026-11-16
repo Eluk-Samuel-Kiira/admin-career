@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Jobs\SendSeekerAlertJob;
 use App\Models\AlertDispatch;
 use App\Models\SeekerProfile;
+use Illuminate\Support\Facades\RateLimiter; 
 use App\Services\Alerts\AlertResolver;
 use App\Services\Subscription\SubscriptionGate;
 use Illuminate\Http\Request;
@@ -176,7 +177,6 @@ class AlertDispatchController extends Controller
 
     /**
      * POST /admin/alerts/send-to-selected
-     * Queue a real alert for specific seeker IDs.
      */
     public function sendToSelected(Request $request): JsonResponse
     {
@@ -192,10 +192,10 @@ class AlertDispatchController extends Controller
             'mode'         => 'nullable|in:dry_run,real',
         ]);
 
-        $mode = $validated['mode'] ?? 'real';
-
-        $queued = 0;
-        $skipped = 0;
+        $mode      = $validated['mode'] ?? 'real';
+        $channels  = $validated['channels'];
+        $queued    = 0;
+        $skipped   = 0;
 
         foreach ($validated['seeker_ids'] as $id) {
             $seeker = SeekerProfile::with('user')->find($id);
@@ -204,18 +204,36 @@ class AlertDispatchController extends Controller
                 continue;
             }
 
-            SendSeekerAlertJob::dispatch($id, $validated['channels'], $mode)->onQueue('default');
+        foreach ($channels as $channel) {
+            $queue = match ($channel) {
+                'email'    => 'alerts-email',
+                'whatsapp' => 'alerts-whatsapp',
+                'telegram' => 'alerts-telegram',
+                default    => 'default',
+            };
+
+            SendSeekerAlertJob::dispatch($id, [$channel], $mode)
+                ->onQueue($queue);
+        }
             $queued++;
         }
 
+        $jobCount = $queued * count($channels);
+
         return response()->json([
             'success' => true,
-            'message' => "Queued {$queued} alert(s)" . ($skipped ? ", skipped {$skipped}" : '') . ".",
+            'message' => "Queued {$jobCount} job(s) for {$queued} seeker(s)"
+                    . ($skipped ? ", skipped {$skipped}" : '')
+                    . ". They will be sent respecting the rate limit.",
             'queued'  => $queued,
+            'jobs'    => $jobCount,
             'skipped' => $skipped,
         ]);
     }
 
+    /**
+     * POST /admin/alerts/dispatch
+     */
     public function dispatch(Request $request): JsonResponse
     {
         if (!auth()->user()->can('manage job alerts')) {
@@ -234,7 +252,6 @@ class AlertDispatchController extends Controller
         $country  = strtoupper($validated['country']);
 
         $query = SeekerProfile::with('user')->where('is_active', true);
-
         $query->where(function ($q) use ($country) {
             $q->where('preferred_country_code', $country)
             ->orWhere('country', $country)
@@ -247,15 +264,218 @@ class AlertDispatchController extends Controller
         foreach ($seekers as $s) {
             if (!$s->user || !$s->user->is_active) continue;
 
-            SendSeekerAlertJob::dispatch($s->id, $channels, $mode)->onQueue('default');
+            foreach ($channels as $channel) {
+                $queue = match ($channel) {
+                    'email'    => 'alerts-email',
+                    'whatsapp' => 'alerts-whatsapp',
+                    'telegram' => 'alerts-telegram',
+                    default    => 'default',
+                };
+
+                SendSeekerAlertJob::dispatch($id, [$channel], $mode)
+                    ->onQueue($queue);
+            }
+            $queued++;
+        }
+
+        $jobCount = $queued * count($channels);
+
+        return response()->json([
+            'success' => true,
+            'message' => "Queued {$jobCount} job(s) for {$queued} seeker(s) in {$country}. "
+                    . "Sending will be throttled to respect the SMTP limit.",
+            'queued'  => $queued,
+            'jobs'    => $jobCount,
+            'country' => $country,
+        ]);
+    }
+
+    public function retryStuck(Request $request): JsonResponse
+    {
+        if (!auth()->user()->can('manage job alerts')) {
+            return response()->json(['success' => false], 403);
+        }
+
+        $dispatches = AlertDispatch::where('status', 'queued')
+            ->where('created_at', '>', now()->subHours(24))
+            ->get();
+
+        $queued = 0;
+        foreach ($dispatches as $d) {
+            SendSeekerAlertJob::dispatch($d->user_id ? $d->user_id : 0, [$d->channel], 'real')
+                ->onQueue('alerts');
+            $queued++;
+        }
+
+        return response()->json(['success' => true, 'queued' => $queued]);
+    }
+
+
+    /**
+     * GET /admin/alerts/queue-status
+     * Live snapshot of the alerts queue + dispatch counters.
+     */
+    public function queueStatus(): JsonResponse
+    {
+        if (!auth()->user()->can('manage job alerts')) {
+            return response()->json(['success' => false], 403);
+        }
+
+        $queueConnection = config('queue.default');
+        $queueSize = $queueConnection === 'database'
+            ? \DB::table('jobs')->where('queue', 'alerts')->count()
+            : (function () use ($queueConnection) {
+                try {
+                    return \Queue::connection($queueConnection)->size('alerts');
+                } catch (\Throwable $e) {
+                    return 0;
+                }
+            })();
+
+        $delayedSize = 0;
+        if ($queueConnection === 'database') {
+            $delayedSize = \DB::table('jobs')
+                ->where('queue', 'alerts')
+                ->where('available_at', '>', now()->timestamp)
+                ->count();
+        }
+
+        return response()->json([
+            'success' => true,
+            'queue'   => [
+                'connection'    => $queueConnection,
+                'size'          => $queueSize,
+                'delayed'       => $delayedSize,
+            ],
+            'dispatches' => [
+                'queued'       => AlertDispatch::where('status', 'queued')->count(),
+                'sent_today'   => AlertDispatch::where('status', 'sent')
+                                    ->whereDate('sent_at', today())->count(),
+                'failed_today' => AlertDispatch::where('status', 'failed')
+                                    ->whereDate('created_at', today())->count(),
+                'failed_total' => AlertDispatch::where('status', 'failed')->count(),
+            ],
+            'limiter' => [
+                'au'      => $this->limiterHeadroom('alert-emails-au'),
+                'ug'      => $this->limiterHeadroom('alert-emails-ug'),
+                'default' => $this->limiterHeadroom('alert-emails-default'),
+            ],
+        ]);
+    }
+
+    protected function limiterHeadroom(string $name): array
+    {
+        try {
+            // Report the limiter's remaining attempts for the current window.
+            // The RateLimited middleware uses maxAttempts/totalAttempts on the cache store,
+            // but RateLimiter::attempts() gives us the count for the minute window.
+            $minuteKey = md5($name . $this->countryKey($name)) . ':minute';
+            $hourKey   = md5($name . $this->countryKey($name)) . ':hour';
+
+            return [
+                'minute_attempts' => \Illuminate\Support\Facades\RateLimiter::attempts($name . ':minute'),
+                'hour_attempts'   => \Illuminate\Support\Facades\RateLimiter::attempts($name . ':hour'),
+            ];
+        } catch (\Throwable $e) {
+            return ['minute_attempts' => 0, 'hour_attempts' => 0];
+        }
+    }
+
+    protected function countryKey(string $limiterName): string
+    {
+        return match ($limiterName) {
+            'alert-emails-au' => 'au',
+            'alert-emails-ug' => 'ug',
+            default           => 'default',
+        };
+    }
+
+    /**
+     * POST /admin/alerts/retry-failed
+     * Re-queue every failed dispatch matching the given filters.
+     * Body:
+     *   - ids       : array|null  (retry only these dispatch IDs)
+     *   - channel   : string|null (retry only this channel)
+     *   - kind      : string|null
+     *   - from      : date|null
+     *   - to        : date|null
+     *   - older_than_hours : int|null
+     */
+    public function retryFailed(Request $request): JsonResponse
+    {
+        if (!auth()->user()->can('manage job alerts')) {
+            return response()->json(['success' => false], 403);
+        }
+
+        $validated = $request->validate([
+            'ids'             => 'nullable|array',
+            'ids.*'           => 'integer|exists:alert_dispatches,id',
+            'channel'         => 'nullable|in:email,whatsapp,telegram',
+            'kind'            => 'nullable|in:jobs,preferences_prompt',
+            'from'            => 'nullable|date',
+            'to'              => 'nullable|date',
+            'older_than_hours'=> 'nullable|integer|min:1|max:720',
+        ]);
+
+        $query = AlertDispatch::where('status', 'failed');
+
+        if (!empty($validated['ids'])) {
+            $query->whereIn('id', $validated['ids']);
+        } else {
+            if (!empty($validated['channel'])) {
+                $query->where('channel', $validated['channel']);
+            }
+            if (!empty($validated['kind'])) {
+                $query->where('kind', $validated['kind']);
+            }
+            if (!empty($validated['from'])) {
+                $query->whereDate('created_at', '>=', $validated['from']);
+            }
+            if (!empty($validated['to'])) {
+                $query->whereDate('created_at', '<=', $validated['to']);
+            }
+            if (!empty($validated['older_than_hours'])) {
+                $query->where('created_at', '<=', now()->subHours($validated['older_than_hours']));
+            }
+        }
+
+        $dispatches = $query->get();
+
+        if ($dispatches->isEmpty()) {
+            return response()->json([
+                'success' => true,
+                'message' => 'No failed dispatches matched — nothing to retry.',
+                'queued'  => 0,
+            ]);
+        }
+
+        $queued = 0;
+        $skipped = 0;
+
+        foreach ($dispatches as $d) {
+            $seeker = SeekerProfile::where('user_id', $d->user_id)->first();
+            if (!$seeker) { $skipped++; continue; }
+
+            // Reset the row so the retry job starts clean
+            $d->update([
+                'status'        => 'queued',
+                'error_message' => null,
+                'sent_at'       => null,
+            ]);
+
+            SendSeekerAlertJob::dispatch($seeker->id, [$d->channel], 'real')
+                ->onQueue('alerts');
+
             $queued++;
         }
 
         return response()->json([
             'success' => true,
-            'message' => "Queued {$queued} alert jobs for {$country}.",
+            'message' => "Re-queued {$queued} failed dispatch(es)"
+                    . ($skipped ? ", skipped {$skipped} (seeker missing)" : '')
+                    . ".",
             'queued'  => $queued,
-            'country' => $country,
+            'skipped' => $skipped,
         ]);
     }
 
@@ -311,6 +531,7 @@ class AlertDispatchController extends Controller
             'sent'   => AlertDispatch::where('status', 'sent')->count(),
             'failed' => AlertDispatch::where('status', 'failed')->count(),
             'queued' => AlertDispatch::where('status', 'queued')->count(),
+            'failed_total' => AlertDispatch::where('status', 'failed')->count(),
         ];
 
         return response()->json([

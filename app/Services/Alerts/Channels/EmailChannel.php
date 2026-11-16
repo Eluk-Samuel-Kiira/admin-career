@@ -10,27 +10,29 @@ use Illuminate\Support\Str;
 
 class EmailChannel
 {
+
     public function send($seeker, array $decision, $jobs): void
     {
-        // 1. Get the country row from the seeker's own data
-        $country = $this->resolveCountry($seeker);
-
-        // 2. Use its frontend_url as the proxy base
-        $baseUrl = $country?->frontend_url ?: config('app.url');
-
-        // 3. Issue a magic login token
+        $country  = $this->resolveCountry($seeker);
+        $baseUrl  = $country?->frontend_url ?: config('app.url');
         $token    = $this->issueMagicToken($seeker);
         $magicUrl = "{$baseUrl}/login/magic-link/{$token}";
 
-        Mail::to($seeker->user->email)->send(new JobAlertMail(
-            seeker:      $seeker,
-            jobs:        $jobs,
-            decision:    $decision,
-            magicUrl:    $magicUrl,
-            countryCode: $country?->code,
-            countryName: $country?->name,
-            baseUrl:     $baseUrl,
-        ));
+        // Force the transport to throw on any failure so the job can retry
+        try {
+            Mail::to($seeker->user->email)->send(new JobAlertMail(
+                seeker:      $seeker,
+                jobs:        $jobs,
+                decision:    $decision,
+                magicUrl:    $magicUrl,
+                countryCode: $country?->code,
+                countryName: $country?->name,
+                baseUrl:     $baseUrl,
+            ));
+        } catch (\Throwable $e) {
+            // Re-throw so SendSeekerAlertJob's catch block sees it
+            throw $e;
+        }
     }
 
     protected function issueMagicToken($seeker): string

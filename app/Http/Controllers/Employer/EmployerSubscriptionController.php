@@ -299,31 +299,52 @@ class EmployerSubscriptionController extends Controller
             ], 404);
         }
 
-        // Match deposits by purpose_reference = subscription.uuid.
-        // The API does the same — a subscription's payments may carry any
-        // purpose_type (e.g. bundled cv_review), so filter by reference only.
-        $payments = Deposit::with('currency')
+        // ── 1. Fetch the raw deposit models once ─────────────────
+        $paymentModels = Deposit::with('currency')
             ->where('purpose_reference', $sub->uuid)
             ->orderByDesc('created_at')
-            ->get()
-            ->map(fn($d) => $this->formatPaymentDetail($d));
+            ->get();
 
-        $references = $payments->pluck('deposit_ref')->filter()->values()->all();
+        // ── 2. Format them for the response body ─────────────────
+        $payments = $paymentModels->map(fn($d) => $this->formatPaymentDetail($d));
 
-        $webhooks = PaymentWebhook::whereIn('gateway_reference', $references)
-            ->orderByDesc('id')
-            ->get()
-            ->map(fn($w) => [
-                'id'               => $w->id,
-                'gateway'          => $w->gateway,
-                'event_type'       => $w->event_type,
-                'gateway_reference'=> $w->gateway_reference,
-                'signature_valid'  => $w->signature_valid,
-                'status'           => $w->status,
-                'error_message'    => $w->error_message,
-                'processed_at'     => $w->processed_at?->toISOString(),
-                'created_at'       => $w->created_at?->toISOString(),
-            ]);
+        // ── 3. Build the webhook reference list from the MODELS ──
+        //     (not from the formatted arrays)
+        $references = $paymentModels
+            ->flatMap(fn($d) => [
+                $d->deposit_ref,
+                $d->gateway_transaction_uuid,
+                $d->source_reference,
+            ])
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        // Also include the subscription's own gateway_subscription_id
+        // — some gateways store the same reference there.
+        if ($sub->gateway_subscription_id) {
+            $references[] = $sub->gateway_subscription_id;
+            $references   = array_values(array_unique($references));
+        }
+
+        // ── 4. Query the webhooks ────────────────────────────────
+        $webhooks = empty($references)
+            ? collect()
+            : PaymentWebhook::whereIn('gateway_reference', $references)
+                ->orderByDesc('id')
+                ->get()
+                ->map(fn($w) => [
+                    'id'                => $w->id,
+                    'gateway'           => $w->gateway,
+                    'event_type'        => $w->event_type,
+                    'gateway_reference' => $w->gateway_reference,
+                    'signature_valid'   => $w->signature_valid,
+                    'status'            => $w->status,
+                    'error_message'     => $w->error_message,
+                    'processed_at'      => $w->processed_at?->toISOString(),
+                    'created_at'        => $w->created_at?->toISOString(),
+                ]);
 
         return response()->json([
             'success'      => true,
@@ -948,4 +969,80 @@ class EmployerSubscriptionController extends Controller
         return $subscription;
     }
 
+
+        /**
+     * POST /admin/employer-subscriptions/{uuid}/cancel
+     *
+     * Cancels a subscription immediately. Access ends now.
+     * Accepts `mode=immediate` (default) or `mode=period_end`
+     * for the classic "keep access until the paid period ends" behaviour.
+     */
+    public function cancel(Request $request, string $uuid): JsonResponse
+    {
+        if (!auth()->user()->can('edit subscriptions')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        $validated = $request->validate([
+            'mode'   => 'nullable|in:immediate,period_end',
+            'reason' => 'nullable|string|max:500',
+        ]);
+
+        $sub = Subscription::where('uuid', $uuid)->first();
+
+        if (!$sub) {
+            return response()->json(['success' => false, 'message' => 'Subscription not found.'], 404);
+        }
+
+        if (in_array($sub->status, ['cancelled', 'expired'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This subscription is already ' . $sub->status . '.',
+            ], 422);
+        }
+
+        $mode = $validated['mode'] ?? 'immediate';
+
+        if ($mode === 'period_end') {
+            $sub->update([
+                'cancel_at_period_end' => true,
+                'cancelled_at'         => now(),
+            ]);
+        } else {
+            $sub->update([
+                'status'               => 'cancelled',
+                'cancelled_at'         => now(),
+                'cancel_at_period_end' => false,
+                'current_period_end'   => now(),
+                'notes'                => trim(($sub->notes ?? '') . "\nCancelled by admin: "
+                    . ($validated['reason'] ?? 'no reason provided')),
+            ]);
+        }
+
+        // Clear the gate cache so feature checks reflect the change.
+        try {
+            app(\App\Services\Subscription\SubscriptionGate::class)
+                ->forget($sub->user);
+        } catch (\Throwable $e) {
+            // non-fatal
+        }
+
+        Log::info('[admin] Subscription cancelled', [
+            'uuid'      => $sub->uuid,
+            'user_id'   => $sub->user_id,
+            'service'   => $sub->service_key,
+            'mode'      => $mode,
+            'admin_id'  => auth()->id(),
+            'reason'    => $validated['reason'] ?? null,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => $mode === 'period_end'
+                ? 'Subscription will cancel at the end of the current period.'
+                : 'Subscription cancelled immediately.',
+            'mode'    => $mode,
+            'status'  => $sub->fresh()->status,
+        ]);
+    }
 }

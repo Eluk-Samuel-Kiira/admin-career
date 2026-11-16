@@ -309,6 +309,18 @@
                     <div class="spinner-border text-primary"></div>
                 </div>
             </div>
+            <div class="modal-footer d-none" id="subDetailFooter">
+                <button type="button" class="btn btn-light" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-danger" id="subCancelBtn">
+                    <span class="indicator-label">
+                        <i class="ki-duotone ki-cross-circle fs-4 me-1">
+                            <span class="path1"></span><span class="path2"></span>
+                        </i>
+                        Cancel subscription
+                    </span>
+                    <span class="indicator-progress">Cancelling… <span class="spinner-border spinner-border-sm ms-2"></span></span>
+                </button>
+            </div>
         </div>
     </div>
 </div>
@@ -724,9 +736,17 @@
     // ─────────────────────────────────────────────────────────
     // DETAIL MODAL
     // ─────────────────────────────────────────────────────────
+    let currentDetailUuid = null;
+
     async function openDetail(uuid) {
-        const body = document.getElementById('subDetailBody');
+        currentDetailUuid = uuid;
+
+        const body    = document.getElementById('subDetailBody');
+        const footer  = document.getElementById('subDetailFooter');
+        const cancelBtn = document.getElementById('subCancelBtn');
+
         body.innerHTML = '<div class="text-center py-10"><div class="spinner-border text-primary"></div></div>';
+        footer?.classList.add('d-none');
 
         const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('kt_subscription_modal'));
         modal.show();
@@ -743,10 +763,69 @@
             }
 
             body.innerHTML = renderDetail(data);
+
+            // ── Reveal the footer only for cancellable subscriptions ──
+            const s = data.subscription || {};
+            const cancellable = ['active', 'trialing'].includes(s.status) && !s.cancel_at_period_end;
+
+            if (cancellable) {
+                footer.classList.remove('d-none');
+                cancelBtn.disabled = false;
+            } else {
+                footer.classList.add('d-none');
+            }
         } catch (e) {
             body.innerHTML = '<div class="alert alert-danger">Network error.</div>';
         }
     }
+
+    // ── Cancel handler ────────────────────────────────────────
+    document.getElementById('subCancelBtn')?.addEventListener('click', async function () {
+        if (!currentDetailUuid) return;
+
+        if (!confirm('Cancel this subscription immediately?\n\nThe user will lose access right away. This cannot be undone.')) {
+            return;
+        }
+
+        const btn   = this;
+        const label = btn.querySelector('.indicator-label');
+        const prog  = btn.querySelector('.indicator-progress');
+
+        btn.disabled = true;
+        label.classList.add('d-none');
+        prog.classList.remove('d-none');
+
+        try {
+            const res = await fetch(`{{ url('admin/employer-subscriptions') }}/${currentDetailUuid}/cancel`, {
+                method: 'POST',
+                headers: {
+                    'X-CSRF-TOKEN': CSRF,
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ mode: 'immediate', reason: 'Cancelled by admin from detail modal' }),
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                window.showToast?.('success', data.message || 'Subscription cancelled.');
+                document.getElementById('subCancelBtn').blur();
+                bootstrap.Modal.getOrCreateInstance(document.getElementById('kt_subscription_modal')).hide();
+                loadStats();
+                loadSubs();
+                if (payState.loadedOnce) loadPayments();
+            } else {
+                window.showToast?.('error', data.message || 'Cancel failed.');
+            }
+        } catch (err) {
+            console.error(err);
+            window.showToast?.('error', 'Network error.');
+        } finally {
+            btn.disabled = false;
+            label.classList.remove('d-none');
+            prog.classList.add('d-none');
+        }
+    });
 
     function renderDetail(data) {
         const s = data.subscription;

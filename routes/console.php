@@ -6,97 +6,90 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schedule;
 use App\Models\Job\JobPost;
-use App\Models\SeekerProfile;
-use App\Models\Subscription\Subscription;
-use App\Jobs\DraftAutoApplyJob;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
 // ═══════════════════════════════════════════════════════════════════
-//  QUEUE WORKERS
-//
-//  Strategy:
-//  ────────────────────────────────────────────────────────────────
-//  · Alerts get their own dedicated queues — they are time-sensitive
-//    and must never be starved by slow AI jobs.
-//  · WhatsApp / Telegram are rate-limited by the provider, so they
-//    run at their own pace with a slower --sleep.
-//  · Letters (CV / cover letter, Gemini API) run separately so a
-//    backlog of 100 AI jobs never blocks alert delivery.
-//  · Every worker exits after 50s so the next minute's cron cycle
-//    always starts a fresh process — no long-lived zombie workers.
+//  QUEUE WORKERS (Windows / XAMPP — cron-based)
 //
 //  Queue → worker mapping:
-//    alerts-email     ┐
-//    default          ┴── worker A (fast: ~200/min)
-//    alerts-whatsapp  ─── worker B (slow: ~30/min, sleeps 3s)
-//    alerts-telegram  ─── worker C (slow: ~30/min, sleeps 3s)
+//    alerts-email     ─── Worker A  (email alerts, 20/min via limiter)
+//    alerts-whatsapp  ─── Worker B  (WhatsApp alerts)
+//    alerts-telegram  ─── Worker C  (Telegram alerts)
 //    letters, auto-apply, ai-screening, emails
-//                     ─── worker D (background: AI + support work)
+//                     ─── Worker D  (AI + support work)
 // ═══════════════════════════════════════════════════════════════════
 
-// ── Worker A — fast path: email alerts + generic default queue
+// ── Worker A — email alerts only
+//   --max-time=58 lets it run nearly the full minute
+//   --tries=50 allows many RateLimited releases without failing
+//   --max-jobs=25 caps at ~25 emails/min (safely under 20/min limiter + burst)
 Schedule::command(
     'queue:work ' .
     '--queue=alerts-email,default ' .
     '--stop-when-empty ' .
-    '--max-time=50 ' .
-    '--max-jobs=200 ' .
+    '--max-time=58 ' .
+    '--max-jobs=25 ' .
     '--timeout=90 ' .
-    '--tries=1 ' .
+    '--tries=50 ' .          // ← was 1
     '--sleep=1'
 )
     ->everyMinute()
     ->runInBackground()
+    ->withoutOverlapping(2)   // avoid duplicate workers from slow cron startup
     ->name('queue-worker-alerts-email');
 
-// ── Worker B — WhatsApp alerts (rate-limited by Meta)
+// ── Worker B — WhatsApp alerts
 Schedule::command(
     'queue:work ' .
     '--queue=alerts-whatsapp ' .
     '--stop-when-empty ' .
-    '--max-time=50 ' .
+    '--max-time=58 ' .
     '--max-jobs=30 ' .
     '--timeout=60 ' .
-    '--tries=1 ' .
+    '--tries=10 ' .          // ← WhatsApp API transient failures get retried
     '--sleep=3'
 )
     ->everyMinute()
     ->runInBackground()
+    ->withoutOverlapping(2)
     ->name('queue-worker-alerts-whatsapp');
 
-// ── Worker C — Telegram alerts (rate-limited by Telegram)
+// ── Worker C — Telegram alerts
 Schedule::command(
     'queue:work ' .
     '--queue=alerts-telegram ' .
     '--stop-when-empty ' .
-    '--max-time=50 ' .
+    '--max-time=58 ' .
     '--max-jobs=30 ' .
     '--timeout=60 ' .
-    '--tries=1 ' .
+    '--tries=10 ' .
     '--sleep=3'
 )
     ->everyMinute()
     ->runInBackground()
+    ->withoutOverlapping(2)
     ->name('queue-worker-alerts-telegram');
 
-// ── Worker D — CV / cover letter generation + AI screening + misc
-//   Gemini calls can take 30–120s each. Generous --timeout, low
-//   --max-jobs so a slow batch doesn't eat the whole minute.
+// ── Worker D — AI / letters / auto-apply
+//   --max-time=290 because Gemini jobs can take 2–5 min
+//   --max-jobs=3 to avoid running multiple slow jobs per cycle
+//   withoutOverlapping(300) prevents a second worker starting mid-run
 Schedule::command(
     'queue:work ' .
     '--queue=letters,auto-apply,ai-screening,emails ' .
     '--stop-when-empty ' .
-    '--max-time=50 ' .
-    '--max-jobs=10 ' .
+    '--max-time=290 ' .      // ← was 50; jobs take up to 5 min
+    '--max-jobs=3 ' .        // ← was 10; slow jobs, don't stack
     '--timeout=180 ' .
     '--tries=3 ' .
     '--sleep=1'
 )
     ->everyMinute()
     ->runInBackground()
+    ->withoutOverlapping(300)
     ->name('queue-worker-letters');
 
 // ═══════════════════════════════════════════════════════════════════
@@ -114,13 +107,7 @@ Schedule::command('screening:cleanup-stuck')
     ->withoutOverlapping();
 
 // ═══════════════════════════════════════════════════════════════════
-//  AUTO APPLY — AI DRAFTING (Every 3 Days)
-//
-//  Every 3 days at 03:00 AM, we find active subscribers and dispatch
-//  the DraftAutoApplyJob. This job:
-//    - Finds matching jobs (last 3 days)
-//    - Uses AI to tailor the CV and cover letter
-//    - Saves them as drafts for the admin to review and send
+//  AUTO APPLY — AI DRAFTING (Every 3 Days at 03:00)
 // ═══════════════════════════════════════════════════════════════════
 Schedule::call(function () {
     $activeSubs = \App\Models\Subscription\Subscription::whereIn('status', ['active', 'trialing'])
@@ -138,18 +125,8 @@ Schedule::call(function () {
     \Illuminate\Support\Facades\Log::info('Auto Apply: Drafting jobs dispatched for ' . $seekers->count() . ' active subscribers.');
 })
     ->cron('0 3 */3 * *')
-    ->name('auto-apply-drafts')      // <--- MUST COME BEFORE withoutOverlapping
+    ->name('auto-apply-drafts')
     ->withoutOverlapping();
-
-// ═══════════════════════════════════════════════════════════════════
-//  AUTO APPLY — LEGACY RUNNER (Keep as fallback)
-// ═══════════════════════════════════════════════════════════════════
-// Disabled by default because it sends immediately without admin review.
-// Uncomment if you ever want fully automatic sending.
-//
-// Schedule::command('auto-apply:run')
-//     ->dailyAt('03:00')
-//     ->withoutOverlapping();
 
 // ═══════════════════════════════════════════════════════════════════
 //  DATA CLEANUP
@@ -163,7 +140,7 @@ Schedule::command('letters:cleanup-temp-cvs --hours=24 --max-age-days=3')
     ->withoutOverlapping();
 
 // ═══════════════════════════════════════════════════════════════════
-//  LOCK CLEANUP — clear stuck queue-overlap + Gemini cooldown keys
+//  LOCK CLEANUP
 // ═══════════════════════════════════════════════════════════════════
 Schedule::call(function () {
     $driver = config('cache.default');
@@ -177,7 +154,6 @@ Schedule::call(function () {
             })
             ->delete();
         Log::info('Daily queue-lock cleanup', ['deleted' => $deleted, 'driver' => $driver]);
-
     } elseif ($driver === 'file') {
         $path = storage_path('framework/cache/data');
         $count = 0;

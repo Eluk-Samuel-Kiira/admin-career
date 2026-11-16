@@ -120,6 +120,15 @@ class User extends Authenticatable
         return $this->hasRole('employer');
     }
 
+
+    public function countryCodeForMail(): ?string
+    {
+        return $this->country_code
+            ?? $this->seekerProfile?->country
+            ?? $this->employerProfile?->country_code
+            ?? null;
+    }
+
     /**
      * Check if user is admin
      */

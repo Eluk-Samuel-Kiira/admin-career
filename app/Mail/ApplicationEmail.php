@@ -38,7 +38,7 @@ class ApplicationEmail extends Mailable
         );
 
         return new Envelope(
-            from: $from,
+            from: new Address(config('mail.from.address'), $this->seekerName . ' via ' . config('app.name')),
             replyTo: $this->seekerEmail ? [new Address($this->seekerEmail, $this->seekerName)] : [],
             subject: $this->emailSubject,
         );

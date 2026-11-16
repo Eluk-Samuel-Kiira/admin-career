@@ -31,10 +31,10 @@
 </ul>
 
 <div class="tab-content" id="alertsTabContent">
-    
+
     {{-- ══════════════════ TAB 1: TARGET SEEKERS ══════════════════ --}}
     <div class="tab-pane fade show active" id="tab-target" role="tabpanel">
-        
+
         {{-- Dispatch panel --}}
         <div class="card card-flush mb-6">
             <div class="card-header align-items-center py-5">
@@ -149,7 +149,7 @@
                 <div id="seekersWrap" class="text-center py-8">
                     <div class="spinner-border text-primary"></div>
                 </div>
-                
+
                 <div id="seekersPagination" class="d-none d-flex flex-wrap justify-content-between align-items-center gap-3 mt-5">
                     <div id="seekersPaginationInfo" class="text-muted fs-7"></div>
                     <nav><ul class="pagination m-0" id="seekersPaginationList"></ul></nav>
@@ -167,6 +167,12 @@
                     <button class="btn btn-sm btn-light-danger d-none" id="bulkDeleteSelectedBtn">
                         Delete Selected <span id="selectedCount">0</span>
                     </button>
+                    <button class="btn btn-sm btn-warning d-none" id="retryFailedBtn">
+                        <i class="ki-duotone ki-arrows-circle fs-4 me-1">
+                            <span class="path1"></span><span class="path2"></span>
+                        </i>
+                        Retry Failed <span id="retryFailedCount">0</span>
+                    </button>
                     <button class="btn btn-sm btn-light" id="reloadLogBtn">Reload</button>
                     <div class="dropdown">
                         <button class="btn btn-sm btn-light" data-bs-toggle="dropdown">Cleanup</button>
@@ -181,6 +187,37 @@
                 </div>
             </div>
             <div class="card-body pt-0">
+
+                {{-- LIVE QUEUE STATUS STRIP --}}
+                <div id="queueStatusStrip" class="d-flex flex-wrap align-items-center gap-3 mb-4 p-3 rounded bg-light">
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="spinner-grow spinner-grow-sm text-secondary" id="queueStatusDot" role="status"></span>
+                        <span class="fw-semibold text-gray-700 fs-7">Alerts queue</span>
+                    </div>
+                    <span class="badge badge-light-info fs-7">
+                        In queue: <span id="statQueueSize" class="fw-bold">0</span>
+                    </span>
+                    <span class="badge badge-light-info fs-7">
+                        Delayed: <span id="statDelayed" class="fw-bold">0</span>
+                    </span>
+                    <span class="badge badge-light-success fs-7">
+                        Sent today: <span id="statSentToday" class="fw-bold">0</span>
+                    </span>
+                    <span class="badge badge-light-warning fs-7">
+                        Queued dispatches: <span id="statQueued" class="fw-bold">0</span>
+                    </span>
+                    <span class="badge badge-light-danger fs-7">
+                        Failed today: <span id="statFailedToday" class="fw-bold">0</span>
+                    </span>
+                    <span class="ms-auto text-muted fs-8" id="queueStatusUpdated">—</span>
+                </div>
+
+                <div id="queueEtaHint" class="text-muted fs-8 mb-4 d-none">
+                    <i class="ki-duotone ki-time fs-7 me-1"><span class="path1"></span><span class="path2"></span></i>
+                    <span id="queueEtaText"></span>
+                </div>
+
+                {{-- Filters --}}
                 <div class="row g-3 mb-5">
                     <div class="col-md-3">
                         <input type="text" id="logSearch" class="form-control form-control-solid" placeholder="Search seeker...">
@@ -220,6 +257,7 @@
                         <span class="text-muted fs-8 ms-auto" id="logCounts">
                             <span class="badge badge-light-secondary me-1" id="countAll">0</span> total
                             <span class="badge badge-light-success ms-2 me-1" id="countSent">0</span> sent
+                            <span class="badge badge-light-info ms-2 me-1" id="countQueued">0</span> queued
                             <span class="badge badge-light-danger ms-2 me-1" id="countFailed">0</span> failed
                         </span>
                         <select id="logPerPage" class="form-select form-select-sm w-auto ms-2">
@@ -233,7 +271,7 @@
                 <div id="logWrap" class="text-center py-10">
                     <div class="spinner-border text-primary"></div>
                 </div>
-                
+
                 <div id="logPagination" class="d-none d-flex flex-wrap justify-content-between align-items-center gap-3 mt-5">
                     <div id="logPaginationInfo" class="text-muted fs-7"></div>
                     <nav><ul class="pagination m-0" id="logPaginationList"></ul></nav>
@@ -263,6 +301,129 @@
     'use strict';
 
     const CSRF = '{{ csrf_token() }}';
+    const ROUTES = {
+        preview:       '{{ route("admin.alerts.preview") }}',
+        dispatch:      '{{ route("admin.alerts.dispatch") }}',
+        seekers:       '{{ route("admin.alerts.seekers") }}',
+        sendSelected:  '{{ route("admin.alerts.send-to-selected") }}',
+        log:           '{{ route("admin.alerts.log") }}',
+        bulkDelete:    '{{ route("admin.alerts.bulk-delete") }}',
+        queueStatus:   '{{ route("admin.alerts.queue-status") }}',
+        retryFailed:   '{{ route("admin.alerts.retry-failed") }}',
+    };
+
+    // ─────────────────────────────────────────────────────────
+    // HELPERS
+    // ─────────────────────────────────────────────────────────
+    function capitalize(t) { return t ? t.charAt(0).toUpperCase() + t.slice(1) : ''; }
+    function escapeHtml(t) {
+        if (t === null || t === undefined) return '';
+        const div = document.createElement('div');
+        div.textContent = String(t);
+        return div.innerHTML;
+    }
+    function debounce(fn, wait) {
+        let timer;
+        return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), wait); };
+    }
+    async function apiJson(url, options = {}) {
+        const res = await fetch(url, {
+            headers: {
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': CSRF,
+                ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+                ...(options.headers || {}),
+            },
+            ...options,
+        });
+        return res.json();
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // QUEUE STATUS POLLING  (declared first so retry handler can call it)
+    // ─────────────────────────────────────────────────────────
+    const queuePoll = {
+        timer: null,
+        intervalMs: 15000,
+        active: false,
+    };
+
+    function setQueueDotState(busy) {
+        const dot = document.getElementById('queueStatusDot');
+        if (!dot) return;
+        dot.classList.toggle('text-primary', !!busy);
+        dot.classList.toggle('text-secondary', !busy);
+    }
+
+    async function refreshQueueStatus() {
+        try {
+            const data = await apiJson(ROUTES.queueStatus);
+            if (!data.success) return;
+
+            const q = data.queue || {};
+            const d = data.dispatches || {};
+
+            document.getElementById('statQueueSize').textContent   = q.size ?? 0;
+            document.getElementById('statDelayed').textContent     = q.delayed ?? 0;
+            document.getElementById('statSentToday').textContent   = d.sent_today ?? 0;
+            document.getElementById('statQueued').textContent      = d.queued ?? 0;
+            document.getElementById('statFailedToday').textContent = d.failed_today ?? 0;
+            document.getElementById('queueStatusUpdated').textContent =
+                'Updated ' + new Date().toLocaleTimeString();
+
+            // Mirror into the log filter row so both views stay in sync
+            const countQueuedEl = document.getElementById('countQueued');
+            if (countQueuedEl) countQueuedEl.textContent = d.queued ?? 0;
+
+            // Toggle Retry Failed button
+            const retryBtn   = document.getElementById('retryFailedBtn');
+            const retryCount = document.getElementById('retryFailedCount');
+            if (retryBtn && retryCount) {
+                if ((d.failed_total ?? 0) > 0) {
+                    retryCount.textContent = d.failed_total;
+                    retryBtn.classList.remove('d-none');
+                } else {
+                    retryBtn.classList.add('d-none');
+                }
+            }
+
+            // ETA hint
+            const eta     = document.getElementById('queueEtaHint');
+            const etaText = document.getElementById('queueEtaText');
+            const pending = (q.size ?? 0) + (q.delayed ?? 0);
+            if (eta && etaText) {
+                if (pending > 0) {
+                    const minutes = Math.ceil(pending / 20);
+                    etaText.textContent = `~${pending} email(s) remaining — about ${minutes} minute(s) at 20/min`;
+                    eta.classList.remove('d-none');
+                } else {
+                    eta.classList.add('d-none');
+                }
+            }
+
+            // Dot state
+            setQueueDotState(pending > 0 || (d.queued ?? 0) > 0);
+
+            // Stop polling once fully drained
+            if (pending === 0 && (d.queued ?? 0) === 0) {
+                stopQueuePolling();
+            }
+        } catch (e) { /* silent */ }
+    }
+
+    function startQueuePolling() {
+        if (queuePoll.active) return;
+        queuePoll.active = true;
+        refreshQueueStatus();
+        queuePoll.timer = setInterval(refreshQueueStatus, queuePoll.intervalMs);
+    }
+
+    function stopQueuePolling() {
+        if (queuePoll.timer) clearInterval(queuePoll.timer);
+        queuePoll.timer = null;
+        queuePoll.active = false;
+        setQueueDotState(false);
+    }
 
     // ─────────────────────────────────────────────────────────
     // 1. DISPATCH PREVIEW & BULK DISPATCH
@@ -271,12 +432,10 @@
         const country = document.getElementById('countrySelect')?.value || '';
         if (!country) { alert('Please select a country first.'); return; }
 
-        const res = await fetch('{{ route("admin.alerts.preview") }}', {
+        const data = await apiJson(ROUTES.preview, {
             method: 'POST',
-            headers: { 'X-CSRF-TOKEN': CSRF, 'Content-Type': 'application/json', 'Accept': 'application/json' },
             body: JSON.stringify({ country }),
         });
-        const data = await res.json();
 
         if (!data.success) { alert(data.message || 'Preview failed.'); return; }
         renderPreview(data.summary);
@@ -313,14 +472,15 @@
         const country = document.getElementById('countrySelect')?.value || '';
         if (!country) { alert('Please select a country first.'); return; }
 
-        const label = document.getElementById('countrySelect').options[document.getElementById('countrySelect').selectedIndex].text.trim();
+        const label = document.getElementById('countrySelect').options[
+            document.getElementById('countrySelect').selectedIndex
+        ].text.trim();
         if (!confirm(`Dispatch alerts to seekers in "${label}"?\n\nThis cannot be undone.`)) return;
 
         const channels = [];
-        if (document.getElementById('chEmail').checked) channels.push('email');
+        if (document.getElementById('chEmail').checked)    channels.push('email');
         if (document.getElementById('chWhatsapp').checked) channels.push('whatsapp');
         if (document.getElementById('chTelegram').checked) channels.push('telegram');
-
         if (channels.length === 0) { alert('Choose at least one channel.'); return; }
 
         const original = btn.innerHTML;
@@ -328,14 +488,13 @@
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Dispatching...';
 
         try {
-            const res = await fetch('{{ route("admin.alerts.dispatch") }}', {
+            const data = await apiJson(ROUTES.dispatch, {
                 method: 'POST',
-                headers: { 'X-CSRF-TOKEN': CSRF, 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 body: JSON.stringify({ channels, country, mode: 'real' }),
             });
-            const data = await res.json();
             if (data.success) {
                 window.showToast?.('success', data.message || 'Dispatched.');
+                startQueuePolling();
                 setTimeout(loadLog, 1200);
             } else {
                 window.showToast?.('error', data.message || 'Dispatch failed.');
@@ -376,21 +535,22 @@
     document.getElementById('reloadSeekersBtn')?.addEventListener('click', loadSeekers);
 
     async function loadSeekers() {
-        const wrap = document.getElementById('seekersWrap');
+        const wrap  = document.getElementById('seekersWrap');
         const pager = document.getElementById('seekersPagination');
         pager.classList.add('d-none');
         wrap.innerHTML = `<div class="text-center py-8"><div class="spinner-border text-primary"></div></div>`;
 
         const params = new URLSearchParams({
-            page: seekerState.page, per_page: seekerState.perPage,
-            min_jobs: seekerState.minJobs, max_jobs: seekerState.maxJobs
+            page: seekerState.page,
+            per_page: seekerState.perPage,
+            min_jobs: seekerState.minJobs,
+            max_jobs: seekerState.maxJobs,
         });
         if (seekerState.search)  params.set('search', seekerState.search);
         if (seekerState.country) params.set('country', seekerState.country);
 
         try {
-            const res = await fetch(`{{ route("admin.alerts.seekers") }}?${params}`, { headers: { 'Accept': 'application/json' } });
-            const data = await res.json();
+            const data = await apiJson(`${ROUTES.seekers}?${params}`);
 
             if (!data.success || !data.data?.length) {
                 wrap.innerHTML = `<div class="text-center py-10"><h4 class="fw-bold text-gray-800 mb-1">No seekers match</h4><p class="text-muted">Adjust the filters.</p></div>`;
@@ -435,7 +595,6 @@
             renderSeekerPagination(data.pagination);
             pager.classList.remove('d-none');
             updateSeekerSelectionUI();
-
         } catch (e) {
             wrap.innerHTML = `<div class="alert alert-danger">Failed to load seekers.</div>`;
         }
@@ -443,13 +602,15 @@
 
     function renderSeekerRow(s) {
         const decisionBadge = { jobs: 'success', preferences_prompt: 'warning', skip: 'secondary' }[s.decision] || 'secondary';
-        const jobsBadge = s.jobs_count === 0 ? 'danger' : (s.jobs_count >= 5 ? 'success' : 'primary');
-        const channelPills = [
+        const jobsBadge     = s.jobs_count === 0 ? 'danger' : (s.jobs_count >= 5 ? 'success' : 'primary');
+        const channelPills  = [
             s.prefs.email    ? '<span class="badge badge-light-primary me-1">Email</span>' : '',
-            s.prefs.whatsapp ? '<span class="badge badge-light-success me-1">WA</span>' : '',
-            s.prefs.telegram ? '<span class="badge badge-light-info">TG</span>' : '',
+            s.prefs.whatsapp ? '<span class="badge badge-light-success me-1">WA</span>'    : '',
+            s.prefs.telegram ? '<span class="badge badge-light-info">TG</span>'            : '',
         ].join('') || '<span class="text-muted fs-8">none</span>';
-        const jobTitles = s.job_titles?.length ? s.job_titles.map(t => `<div class="text-muted fs-8">• ${escapeHtml(t)}</div>`).join('') : '';
+        const jobTitles = s.job_titles?.length
+            ? s.job_titles.map(t => `<div class="text-muted fs-8">• ${escapeHtml(t)}</div>`).join('')
+            : '';
 
         return `
             <tr>
@@ -476,7 +637,7 @@
     }
 
     function renderSeekerPagination(meta) {
-        const el = document.getElementById('seekersPaginationList');
+        const el   = document.getElementById('seekersPaginationList');
         const info = document.getElementById('seekersPaginationInfo');
         if (!el || !info) return;
         el.innerHTML = '';
@@ -514,16 +675,19 @@
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Sending...';
 
         try {
-            const res = await fetch('{{ route("admin.alerts.send-to-selected") }}', {
+            const data = await apiJson(ROUTES.sendSelected, {
                 method: 'POST',
-                headers: { 'X-CSRF-TOKEN': CSRF, 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify({ seeker_ids: Array.from(selectedSeekers), channels, mode: 'real' }),
+                body: JSON.stringify({
+                    seeker_ids: Array.from(selectedSeekers),
+                    channels,
+                    mode: 'real',
+                }),
             });
-            const data = await res.json();
             if (data.success) {
                 window.showToast?.('success', data.message || 'Queued.');
                 selectedSeekers.clear();
                 updateSeekerSelectionUI();
+                startQueuePolling();
                 setTimeout(() => { loadSeekers(); loadLog(); }, 1500);
             } else {
                 window.showToast?.('error', data.message || 'Send failed.');
@@ -556,13 +720,17 @@
     });
 
     document.getElementById('clearLogFilters')?.addEventListener('click', () => {
-        ['logSearch','logChannel','logKind','logStatus','logFrom','logTo'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+        ['logSearch','logChannel','logKind','logStatus','logFrom','logTo'].forEach(id => {
+            const el = document.getElementById(id); if (el) el.value = '';
+        });
         Object.assign(logState, { search: '', channel: '', kind: '', status: '', from: '', to: '', page: 1 });
         selectedIds.clear();
         loadLog();
     });
 
-    document.getElementById('logSearch')?.addEventListener('input', debounce(() => { document.getElementById('applyLogFilters').click(); }, 400));
+    document.getElementById('logSearch')?.addEventListener('input', debounce(() => {
+        document.getElementById('applyLogFilters').click();
+    }, 400));
     document.getElementById('logPerPage')?.addEventListener('change', function () {
         logState.perPage = parseInt(this.value) || 25;
         logState.page = 1;
@@ -571,7 +739,7 @@
     document.getElementById('reloadLogBtn')?.addEventListener('click', loadLog);
 
     async function loadLog() {
-        const wrap = document.getElementById('logWrap');
+        const wrap  = document.getElementById('logWrap');
         const pager = document.getElementById('logPagination');
         pager.classList.add('d-none');
         wrap.innerHTML = `<div class="text-center py-10"><div class="spinner-border text-primary"></div></div>`;
@@ -585,13 +753,13 @@
         if (logState.to)      params.set('to', logState.to);
 
         try {
-            const res = await fetch(`{{ route("admin.alerts.log") }}?${params}`, { headers: { 'Accept': 'application/json' } });
-            const data = await res.json();
+            const data = await apiJson(`${ROUTES.log}?${params}`);
 
             if (data.counts) {
-                document.getElementById('countAll').textContent    = data.counts.all ?? 0;
-                document.getElementById('countSent').textContent   = data.counts.sent ?? 0;
-                document.getElementById('countFailed').textContent = data.counts.failed ?? 0;
+                document.getElementById('countAll').textContent     = data.counts.all ?? 0;
+                document.getElementById('countSent').textContent    = data.counts.sent ?? 0;
+                document.getElementById('countQueued').textContent  = data.counts.queued ?? 0;
+                document.getElementById('countFailed').textContent  = data.counts.failed ?? 0;
             }
 
             if (!data.success || !data.data?.data?.length) {
@@ -645,18 +813,26 @@
 
     function renderLogRow(d) {
         const channelClass = { email: 'primary', whatsapp: 'success', telegram: 'info' }[d.channel] || 'secondary';
-        const statusClass = { sent: 'success', queued: 'info', failed: 'danger' }[d.status] || 'secondary';
-        const kindLabel = { jobs: 'Job Alert', preferences_prompt: 'Prefs Prompt' }[d.kind] || d.kind;
-        
-        // Encode the job details to pass into the drawer safely
+        const statusClass  = { sent: 'success', queued: 'info', failed: 'danger' }[d.status] || 'secondary';
+        const kindLabel    = { jobs: 'Job Alert', preferences_prompt: 'Prefs Prompt' }[d.kind] || d.kind;
+
         const jobDetailsJson = encodeURIComponent(JSON.stringify(d.job_details || []));
+
+        const retryBtn = d.status === 'failed'
+            ? `<button type="button" class="btn btn-icon btn-sm btn-light-warning ms-2" title="Retry this dispatch"
+                       onclick="retryOne(event, ${d.id})">
+                   <i class="ki-duotone ki-arrows-circle fs-5">
+                       <span class="path1"></span><span class="path2"></span>
+                   </i>
+               </button>`
+            : '';
 
         return `
             <tr>
                 <td><input type="checkbox" class="form-check-input row-checkbox" value="${d.id}" ${selectedIds.has(d.id) ? 'checked' : ''}></td>
                 <td class="text-start">
-                    {{-- CLICKABLE NAME -> OPENS DRAWER --}}
-                    <a href="#" class="fw-bold text-gray-800 text-hover-primary text-decoration-none" onclick="openJobsDrawer(event, '${escapeHtml(d.user || 'Unknown')}', '${jobDetailsJson}')">
+                    <a href="#" class="fw-bold text-gray-800 text-hover-primary text-decoration-none"
+                       onclick="openJobsDrawer(event, '${escapeHtml(d.user || 'Unknown')}', '${jobDetailsJson}')">
                         ${escapeHtml(d.user || 'Unknown')}
                     </a>
                     <div class="text-muted fs-8">${escapeHtml(d.email || '')}</div>
@@ -664,19 +840,21 @@
                 <td class="text-start"><span class="badge badge-light-${channelClass}">${capitalize(d.channel)}</span></td>
                 <td class="text-start"><span class="text-gray-700 fw-semibold">${escapeHtml(kindLabel)}</span></td>
                 <td class="text-start"><span class="badge badge-light-secondary">${d.jobs_sent ?? 0}</span></td>
-                <td class="text-start"><span class="badge badge-light-${statusClass}">${capitalize(d.status)}</span></td>
+                <td class="text-start">
+                    <span class="badge badge-light-${statusClass}">${capitalize(d.status)}</span>
+                    ${retryBtn}
+                </td>
                 <td class="text-start text-muted fs-8">${d.sent_at ? new Date(d.sent_at).toLocaleString() : '-'}</td>
             </tr>`;
     }
 
-    // Expose Drawer Function globally so inline onclick works
     window.openJobsDrawer = function(event, userName, encodedJobs) {
         event.preventDefault();
         const jobs = JSON.parse(decodeURIComponent(encodedJobs));
-        
+
         document.getElementById('jobsDrawerLabel').textContent = `Jobs Sent to ${userName}`;
         const body = document.getElementById('jobsDrawerBody');
-        
+
         if (!jobs.length) {
             body.innerHTML = `<div class="alert alert-warning">No jobs were sent (this was likely a Preferences Prompt).</div>`;
         } else {
@@ -686,12 +864,14 @@
                         <div class="card bg-light-primary border border-primary border-dashed">
                             <div class="card-body p-4">
                                 <h5 class="fw-bold mb-1">${escapeHtml(j.title)}</h5>
-                                <div class="text-muted fs-7"><i class="ki-duotone ki-briefcase fs-6 me-1 text-gray-500"><span class="path1"></span><span class="path2"></span></i> ${escapeHtml(j.company)}</div>
+                                <div class="text-muted fs-7">
+                                    <i class="ki-duotone ki-briefcase fs-6 me-1 text-gray-500"><span class="path1"></span><span class="path2"></span></i>
+                                    ${escapeHtml(j.company)}
+                                </div>
                             </div>
                         </div>
                     `).join('')}
-                </div>
-            `;
+                </div>`;
         }
         jobsDrawer.show();
     };
@@ -704,7 +884,7 @@
     }
 
     function renderLogPagination(meta) {
-        const el = document.getElementById('logPaginationList');
+        const el   = document.getElementById('logPaginationList');
         const info = document.getElementById('logPaginationInfo');
         if (!el || !info) return;
         el.innerHTML = '';
@@ -730,18 +910,20 @@
     document.getElementById('bulkDeleteSelectedBtn')?.addEventListener('click', async () => {
         if (selectedIds.size === 0) return;
         if (!confirm(`Delete ${selectedIds.size} dispatch record(s)?`)) return;
+
         const btn = document.getElementById('bulkDeleteSelectedBtn');
         btn.disabled = true;
         try {
-            const res = await fetch('{{ route("admin.alerts.bulk-delete") }}', {
+            const data = await apiJson(ROUTES.bulkDelete, {
                 method: 'POST',
-                headers: { 'X-CSRF-TOKEN': CSRF, 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 body: JSON.stringify({ mode: 'selected', ids: Array.from(selectedIds) }),
             });
-            const data = await res.json();
             if (data.success) {
                 window.showToast?.('success', data.message || 'Deleted.');
-                selectedIds.clear(); updateLogSelectionUI(); loadLog();
+                selectedIds.clear();
+                updateLogSelectionUI();
+                loadLog();
+                refreshQueueStatus();
             } else {
                 window.showToast?.('error', data.message || 'Delete failed.');
             }
@@ -757,23 +939,25 @@
         el.addEventListener('click', async () => {
             const mode = el.dataset.cleanup;
             let body = { mode }, confirmMsg = '';
-            
-            if (mode === 'all') { confirmMsg = 'Delete EVERY dispatch record?'; }
+
+            if (mode === 'all')           { confirmMsg = 'Delete EVERY dispatch record?'; }
             else if (mode === 'older_30') { body = { mode: 'older_than', older_than_days: 30 }; confirmMsg = 'Delete records > 30 days?'; }
             else if (mode === 'older_90') { body = { mode: 'older_than', older_than_days: 90 }; confirmMsg = 'Delete records > 90 days?'; }
             else if (mode === 'filtered') { body = { mode: 'filtered', filters: logState }; confirmMsg = 'Delete matching current filters?'; }
-            
+
             if (!confirmMsg || !confirm(confirmMsg)) return;
+
             try {
-                const res = await fetch('{{ route("admin.alerts.bulk-delete") }}', {
+                const data = await apiJson(ROUTES.bulkDelete, {
                     method: 'POST',
-                    headers: { 'X-CSRF-TOKEN': CSRF, 'Content-Type': 'application/json', 'Accept': 'application/json' },
                     body: JSON.stringify(body),
                 });
-                const data = await res.json();
                 if (data.success) {
                     window.showToast?.('success', data.message || 'Deleted.');
-                    selectedIds.clear(); updateLogSelectionUI(); loadLog();
+                    selectedIds.clear();
+                    updateLogSelectionUI();
+                    loadLog();
+                    refreshQueueStatus();
                 } else {
                     window.showToast?.('error', data.message || 'Delete failed.');
                 }
@@ -783,19 +967,92 @@
         });
     });
 
-    // Helpers
-    function capitalize(t) { return t ? t.charAt(0).toUpperCase() + t.slice(1) : ''; }
-    function escapeHtml(t) {
-        if (t === null || t === undefined) return '';
-        const div = document.createElement('div'); div.textContent = String(t); return div.innerHTML;
-    }
-    function debounce(fn, wait) {
-        let timer; return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), wait); };
-    }
+    // ─────────────────────────────────────────────────────────
+    // 4. RETRY FAILED (bulk + single)
+    // ─────────────────────────────────────────────────────────
+    document.getElementById('retryFailedBtn')?.addEventListener('click', async () => {
+        const total = parseInt(document.getElementById('retryFailedCount')?.textContent || '0', 10);
+        if (!total) return;
+
+        const filters = {};
+        if (logState.channel) filters.channel = logState.channel;
+        if (logState.kind)    filters.kind    = logState.kind;
+        if (logState.from)    filters.from    = logState.from;
+        if (logState.to)      filters.to      = logState.to;
+
+        const hasFilters = Object.keys(filters).length > 0;
+        const msg = hasFilters
+            ? `Retry ${total} failed dispatch(es) matching the current filters?`
+            : `Retry ALL ${total} failed dispatch(es)?`;
+        if (!confirm(msg)) return;
+
+        const btn = document.getElementById('retryFailedBtn');
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Re-queueing...';
+
+        try {
+            const data = await apiJson(ROUTES.retryFailed, {
+                method: 'POST',
+                body: JSON.stringify(filters),
+            });
+            if (data.success) {
+                window.showToast?.('success', data.message || 'Retry queued.');
+                startQueuePolling();
+                setTimeout(() => { loadLog(); refreshQueueStatus(); }, 1200);
+            } else {
+                window.showToast?.('error', data.message || 'Retry failed.');
+            }
+        } catch (e) {
+            window.showToast?.('error', 'Network error. Try again.');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    });
+
+    window.retryOne = async function (event, id) {
+        event.preventDefault();
+        if (!confirm('Retry this dispatch?')) return;
+        try {
+            const data = await apiJson(ROUTES.retryFailed, {
+                method: 'POST',
+                body: JSON.stringify({ ids: [id] }),
+            });
+            if (data.success) {
+                window.showToast?.('success', data.message || 'Retry queued.');
+                startQueuePolling();
+                setTimeout(loadLog, 1000);
+            } else {
+                window.showToast?.('error', data.message || 'Retry failed.');
+            }
+        } catch (e) {
+            window.showToast?.('error', 'Network error.');
+        }
+    };
+
+    // ─────────────────────────────────────────────────────────
+    // 5. LIFECYCLE
+    // ─────────────────────────────────────────────────────────
+    // Pause polling when tab is hidden, resume when visible
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            stopQueuePolling();
+        } else if (!queuePoll.active) {
+            startQueuePolling();
+        }
+    });
+
+    // Restart polling whenever the Dispatch Logs tab is opened
+    document.querySelector('a[href="#tab-log"]')?.addEventListener('shown.bs.tab', () => {
+        startQueuePolling();
+        loadLog();
+    });
 
     // Boot
     loadSeekers();
     loadLog();
+    startQueuePolling();
 
 })();
 </script>
