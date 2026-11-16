@@ -34,7 +34,7 @@ class CoverLetterController extends Controller
             return response()->json(['success' => false], 403);
         }
 
-        $query = LetterRequest::with(['user:id,name,email', 'seekerProfile:id,first_name,last_name'])
+        $query = LetterRequest::with(['user:id,name,email,phone', 'seekerProfile:id,first_name,last_name'])
             ->orderByDesc('id');
 
         if ($search = trim((string) $request->get('search'))) {
@@ -78,6 +78,7 @@ class CoverLetterController extends Controller
                 'user_id'          => $l->user_id,
                 'user_name'        => $l->user?->name ?? 'Unknown',
                 'user_email'       => $l->user?->email,
+                'phone'      => $l->user?->phone,
                 'job_title'        => $l->job_title,
                 'company_name'     => $l->company_name,
                 'letter_type'      => $l->letter_type,
@@ -107,7 +108,7 @@ class CoverLetterController extends Controller
         }
 
         $letter = LetterRequest::with([
-            'user:id,name,email',
+            'user:id,name,email,phone',
             'seekerProfile:id,first_name,last_name,phone,country',
             'jobPost:id,job_title,slug',
         ])->where('uuid', $uuid)->first();
@@ -122,6 +123,7 @@ class CoverLetterController extends Controller
                 'uuid'              => $letter->uuid,
                 'user_name'         => $letter->user?->name ?? 'Unknown',
                 'user_email'        => $letter->user?->email,
+                'phone_number'        => $letter->user?->phone,
                 'seeker_name'       => $letter->seekerProfile
                     ? trim(($letter->seekerProfile->first_name ?? '') . ' ' . ($letter->seekerProfile->last_name ?? ''))
                     : null,

@@ -442,6 +442,7 @@
 
                 <dl class="kv mb-0">
                     <dt>Seeker</dt><dd>${escapeHtml(d.user_name)}${d.user_email ? ` &lt;${escapeHtml(d.user_email)}&gt;` : ''}</dd>
+                    <dt>Phone</dt><dd>${escapeHtml(d.phone_number)}</dd>
                     <dt>Type</dt><dd>${escapeHtml(d.letter_type_label)}</dd>
                     <dt>Price</dt><dd>${escapeHtml(d.price_label)}</dd>
                     <dt>Payment ref</dt><dd>${escapeHtml(d.payment_reference || '—')}</dd>
