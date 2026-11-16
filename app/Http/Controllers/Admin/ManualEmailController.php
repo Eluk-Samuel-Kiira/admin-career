@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use App\Mail\ApplicationEmail;
 use App\Models\Job\Country;
+use App\Services\Mail\CountryMailer;
 
 
 class ManualEmailController extends Controller
@@ -163,11 +164,16 @@ class ManualEmailController extends Controller
             'attachments.*' => 'string',
             'cc'          => 'nullable|string',
             'bcc'         => 'nullable|string',
+            'country_code' => 'nullable|string|size:2',
             'deposit_amount_cents' => 'nullable|integer|min:0',
             'deposit_method'       => 'nullable|in:cash,bank,mobile_money,card',
             'deposit_notes'        => 'nullable|string|max:500',
         ]);
 
+        // ── Resolve the country ONCE, before both blocks ────────────
+        $countryCode = strtoupper($validated['country_code'] ?? auth()->user()->country_code ?? 'UG');
+
+        // ── Deposit (uses the same resolved country) ────────────────
         $depositId = null;
         if (!empty($validated['deposit_amount_cents'])) {
             $deposit = Deposit::create([
@@ -186,17 +192,19 @@ class ManualEmailController extends Controller
                 'paid_by_user_id'     => auth()->id(),
                 'depositor_name'      => auth()->user()->name,
                 'depositor_email'     => auth()->user()->email,
-                'country_code'        => auth()->user()->country_code ?? 'UG',
+                'country_code'        => $countryCode,
                 'created_by'          => auth()->id(),
                 'notes'               => $validated['deposit_notes'] ?? null,
             ]);
             $depositId = $deposit->id;
         }
 
+        // ── Dispatch ────────────────────────────────────────────────
         $dispatch = ManualEmailDispatch::create([
             'sent_by'         => auth()->id(),
             'purpose'         => $validated['purpose'],
             'audience'        => $validated['audience'],
+            'country_code'    => $countryCode,
             'subject'         => $validated['subject'],
             'body'            => $validated['body'],
             'attachments'     => $validated['attachments'] ?? [],
@@ -217,9 +225,6 @@ class ManualEmailController extends Controller
         ]);
     }
 
-    // ═════════════════════════════════════════════════════════════
-    // SEND — SINGLE APPLICATION (job_application_help)
-    // ═════════════════════════════════════════════════════════════
 
 
     /**
@@ -295,14 +300,15 @@ class ManualEmailController extends Controller
         $bodyHtml    = $this->cleanHtml($validated['body']);
         $countryCode = strtoupper($validated['country_code'] ?? auth()->user()->country_code ?? 'UG');
         $countryName = Country::where('code', $countryCode)->value('name') ?? '';
-
+        
         $depositId = $this->recordDeposit($validated, 'manual_job_application',
-            'Application on behalf of: ' . $validated['seeker_name'] . ' → ' . ($validated['job_title'] ?? $validated['subject']));
+            'Application on behalf of: …', $countryCode);
 
         $dispatch = ManualEmailDispatch::create([
             'sent_by'         => auth()->id(),
             'purpose'         => 'job_application_help',
             'audience'        => 'custom',
+            'country_code'    => $countryCode, 
             'employer_email'  => implode(', ', $to),
             'employer_name'   => $validated['employer_name'] ?? null,
             'job_title'       => $validated['job_title'] ?? null,
@@ -321,20 +327,22 @@ class ManualEmailController extends Controller
         ]);
 
         try {
-            $pending = Mail::to($to);
-            if ($cc)  $pending->cc($cc);
-            if ($bcc) $pending->bcc($bcc);
-
-            $pending->send(new ApplicationEmail(
-                emailSubject: $validated['subject'],
-                bodyHtml:     $bodyHtml,
-                files:        $files,
-                seekerName:   $validated['seeker_name'],
-                seekerEmail:  $validated['seeker_email'] ?? null,
-                jobTitle:     $validated['job_title'] ?? null,
-                companyName:  $validated['company_name'] ?? null,
-                countryName:  $countryName,
-            ));
+            app(CountryMailer::class)
+                ->country($countryCode)
+                ->to($to)                 // array of addresses
+                ->cc($cc)
+                ->bcc($bcc)
+                ->replyTo($validated['seeker_email'] ?? null)
+                ->send(new ApplicationEmail(
+                    emailSubject: $validated['subject'],
+                    bodyHtml:     $bodyHtml,
+                    files:        $files,
+                    seekerName:   $validated['seeker_name'],
+                    seekerEmail:  $validated['seeker_email'] ?? null,
+                    jobTitle:     $validated['job_title'] ?? null,
+                    companyName:  $validated['company_name'] ?? null,
+                    countryName:  $countryName,
+                ));
 
             $dispatch->update(['status' => 'sent', 'sent_count' => count($to), 'sent_at' => now()]);
 
@@ -345,10 +353,22 @@ class ManualEmailController extends Controller
             ]);
         } catch (\Throwable $e) {
             $dispatch->update(['status' => 'failed', 'failed_count' => count($to), 'error_message' => $e->getMessage()]);
-            \Log::error('ManualEmail: application send failed', ['dispatch_id' => $dispatch->id, 'error' => $e->getMessage()]);
+            \Log::error('ManualEmail: application send failed', ['dispatch_id' => $dispatch->id, 'country' => $countryCode, 'error' => $e->getMessage()]);
 
             return response()->json(['success' => false, 'message' => 'Send failed: ' . $e->getMessage()], 500);
         }
+    }
+
+    public function to($addresses, ?string $name = null): self
+    {
+        foreach ((array) $addresses as $address) {
+            if (is_array($address)) {
+                $this->to[] = ['address' => $address['address'] ?? '', 'name' => $address['name'] ?? null];
+            } else {
+                $this->to[] = ['address' => $address, 'name' => $name];
+            }
+        }
+        return $this;
     }
 
     /** "a@x.com, b@y.com; c@z.com" → ['a@x.com', ...]; invalid entries go into $invalid. */
@@ -374,7 +394,7 @@ class ManualEmailController extends Controller
         return trim($html);
     }
 
-    private function recordDeposit(array $validated, string $purposeType, string $description): ?int
+    private function recordDeposit(array $validated, string $purposeType, string $description, ?string $countryCode = null): ?int
     {
         if (empty($validated['deposit_amount_cents'])) return null;
 
@@ -394,7 +414,7 @@ class ManualEmailController extends Controller
             'paid_by_user_id'     => auth()->id(),
             'depositor_name'      => auth()->user()->name,
             'depositor_email'     => auth()->user()->email,
-            'country_code'        => auth()->user()->country_code ?? 'UG',
+            'country_code'        => $countryCode ?? auth()->user()->country_code ?? 'UG',   // ← was just auth()->user()->country_code
             'created_by'          => auth()->id(),
             'notes'               => $validated['deposit_notes'] ?? null,
         ])->id;

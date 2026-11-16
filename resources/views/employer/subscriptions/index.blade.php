@@ -111,12 +111,16 @@
             @endif
         </h3>
         <div class="card-toolbar">
-            <button class="btn btn-sm btn-light" id="reloadBtn">
-                <i class="ki-duotone ki-arrows-circle fs-3 me-1">
-                    <span class="path1"></span><span class="path2"></span>
-                </i>
-                Reload
-            </button>
+            <div class="card-toolbar d-flex gap-2">
+                <button class="btn btn-sm btn-primary" id="manualDepositBtn">
+                    <i class="ki-duotone ki-plus fs-3 me-1"><span class="path1"></span><span class="path2"></span></i>
+                    Record Deposit &amp; Activate
+                </button>
+                <button class="btn btn-sm btn-light" id="reloadBtn">
+                    <i class="ki-duotone ki-arrows-circle fs-3 me-1"><span class="path1"></span><span class="path2"></span></i>
+                    Reload
+                </button>
+            </div>
         </div>
     </div>
 
@@ -305,10 +309,40 @@
                     <div class="spinner-border text-primary"></div>
                 </div>
             </div>
+            <div class="modal-footer d-none" id="subDetailFooter">
+                <button type="button" class="btn btn-light" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-danger" id="subCancelBtn">
+                    <span class="indicator-label">
+                        <i class="ki-duotone ki-cross-circle fs-4 me-1">
+                            <span class="path1"></span><span class="path2"></span>
+                        </i>
+                        Cancel subscription
+                    </span>
+                    <span class="indicator-progress">Cancelling… <span class="spinner-border spinner-border-sm ms-2"></span></span>
+                </button>
+            </div>
         </div>
     </div>
 </div>
 
+
+<div class="modal fade" id="kt_manual_deposit_modal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="fw-bold mb-0">Record Deposit &amp; Activate Subscription</h3>
+                <button type="button" class="btn btn-icon btn-sm btn-active-icon-primary" data-bs-dismiss="modal">
+                    <i class="ki-duotone ki-cross fs-1"><span class="path1"></span><span class="path2"></span></i>
+                </button>
+            </div>
+            <div class="modal-body" id="manualDepositBody">
+                <div class="text-center py-10">
+                    <div class="spinner-border text-primary"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 @endcan
 @endsection
 
@@ -702,9 +736,17 @@
     // ─────────────────────────────────────────────────────────
     // DETAIL MODAL
     // ─────────────────────────────────────────────────────────
+    let currentDetailUuid = null;
+
     async function openDetail(uuid) {
-        const body = document.getElementById('subDetailBody');
+        currentDetailUuid = uuid;
+
+        const body    = document.getElementById('subDetailBody');
+        const footer  = document.getElementById('subDetailFooter');
+        const cancelBtn = document.getElementById('subCancelBtn');
+
         body.innerHTML = '<div class="text-center py-10"><div class="spinner-border text-primary"></div></div>';
+        footer?.classList.add('d-none');
 
         const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('kt_subscription_modal'));
         modal.show();
@@ -721,10 +763,69 @@
             }
 
             body.innerHTML = renderDetail(data);
+
+            // ── Reveal the footer only for cancellable subscriptions ──
+            const s = data.subscription || {};
+            const cancellable = ['active', 'trialing'].includes(s.status) && !s.cancel_at_period_end;
+
+            if (cancellable) {
+                footer.classList.remove('d-none');
+                cancelBtn.disabled = false;
+            } else {
+                footer.classList.add('d-none');
+            }
         } catch (e) {
             body.innerHTML = '<div class="alert alert-danger">Network error.</div>';
         }
     }
+
+    // ── Cancel handler ────────────────────────────────────────
+    document.getElementById('subCancelBtn')?.addEventListener('click', async function () {
+        if (!currentDetailUuid) return;
+
+        if (!confirm('Cancel this subscription immediately?\n\nThe user will lose access right away. This cannot be undone.')) {
+            return;
+        }
+
+        const btn   = this;
+        const label = btn.querySelector('.indicator-label');
+        const prog  = btn.querySelector('.indicator-progress');
+
+        btn.disabled = true;
+        label.classList.add('d-none');
+        prog.classList.remove('d-none');
+
+        try {
+            const res = await fetch(`{{ url('admin/employer-subscriptions') }}/${currentDetailUuid}/cancel`, {
+                method: 'POST',
+                headers: {
+                    'X-CSRF-TOKEN': CSRF,
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ mode: 'immediate', reason: 'Cancelled by admin from detail modal' }),
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                window.showToast?.('success', data.message || 'Subscription cancelled.');
+                document.getElementById('subCancelBtn').blur();
+                bootstrap.Modal.getOrCreateInstance(document.getElementById('kt_subscription_modal')).hide();
+                loadStats();
+                loadSubs();
+                if (payState.loadedOnce) loadPayments();
+            } else {
+                window.showToast?.('error', data.message || 'Cancel failed.');
+            }
+        } catch (err) {
+            console.error(err);
+            window.showToast?.('error', 'Network error.');
+        } finally {
+            btn.disabled = false;
+            label.classList.remove('d-none');
+            prog.classList.add('d-none');
+        }
+    });
 
     function renderDetail(data) {
         const s = data.subscription;
@@ -965,6 +1066,210 @@
             }
         } catch (e) { /* ignore */ }
     })();
+
+
+
+        // ═════════════════════════════════════════════════════════
+    // MANUAL DEPOSIT + ACTIVATION
+    // ═════════════════════════════════════════════════════════
+    const manualModalEl = document.getElementById('kt_manual_deposit_modal');
+    const manualModal   = bootstrap.Modal.getOrCreateInstance(manualModalEl);
+
+    document.getElementById('manualDepositBtn')?.addEventListener('click', openManualDepositModal);
+
+    async function openManualDepositModal() {
+        const body = document.getElementById('manualDepositBody');
+        body.innerHTML = '<div class="text-center py-10"><div class="spinner-border text-primary"></div></div>';
+        manualModal.show();
+
+        try {
+            const res = await fetch('{{ route("admin.employer-subscriptions.manual-create-form") }}', {
+                headers: { 'Accept': 'text/html' },
+            });
+            body.innerHTML = await res.text();
+            wireManualForm();
+        } catch (e) {
+            body.innerHTML = '<div class="alert alert-danger">Failed to load form.</div>';
+        }
+    }
+
+    function wireManualForm() {
+        const $user     = jQuery('#md_user');
+        const $service  = jQuery('#md_service');
+        const $currency = jQuery('#md_currency_id');
+
+        // ── Select2: user picker ──
+        $user.select2({
+            dropdownParent: jQuery('#kt_manual_deposit_modal'),
+            placeholder: 'Search user by name, email or phone…',
+            minimumInputLength: 2,
+            ajax: {
+                url: '{{ route("admin.employer-subscriptions.user-search") }}',
+                dataType: 'json',
+                delay: 250,
+                headers: { 'Accept': 'application/json' },
+                data: params => ({ q: params.term || '' }),
+                processResults: data => ({
+                    results: (data.data || []).map(u => ({
+                        id: u.id,
+                        text: `${u.name} — ${u.email || 'no email'} (${u.role})`,
+                    })),
+                }),
+                cache: true,
+            },
+        });
+
+        // ── Load services ──
+        (async function loadServices() {
+            try {
+                const res = await fetch('{{ route("admin.employer-subscriptions.service-options") }}', {
+                    headers: { 'Accept': 'application/json' },
+                });
+                const data = await res.json();
+
+                $service.empty().append('<option value="">Select a service…</option>');
+
+                (data.data || []).forEach(s => {
+                    $service.append(new Option(
+                        `${s.name} — ${s.formatted}`,
+                        s.key,
+                        false,
+                        false,
+                    ));
+                });
+
+                $service.data('services', data.data || []);
+
+                $service.select2({
+                    dropdownParent: jQuery('#kt_manual_deposit_modal'),
+                    placeholder: 'Select a service…',
+                });
+            } catch (e) {
+                console.error('service load failed', e);
+            }
+        })();
+
+        // ── Helper: read decimals of the currently selected currency ──
+        function selectedCurrencyDecimals() {
+            const opt = $currency.find('option:selected')[0];
+            const dec = parseInt(opt?.dataset?.decimals ?? '0', 10);
+            return Number.isFinite(dec) ? dec : 0;
+        }
+        function selectedCurrencyCode() {
+            return ($currency.val() && $currency.find('option:selected').text().trim()) || 'UGX';
+        }
+
+        // ── Currency change: adjust step ──
+        $currency.on('change', function () {
+            const dec = selectedCurrencyDecimals();
+            const amountEl = document.getElementById('md_amount_display');
+            if (amountEl) amountEl.setAttribute('step', dec === 0 ? '1' : '0.01');
+        });
+
+        // ── Service change: auto-fill display amount in the SELECTED currency ──
+        $service.on('change', function () {
+            const key      = jQuery(this).val();
+            const services = jQuery(this).data('services') || [];
+            const chosen   = services.find(s => s.key === key);
+            const amountEl = document.getElementById('md_amount_display');
+            const hintEl   = document.getElementById('md_service_price');
+
+            if (!chosen) {
+                amountEl.value = '';
+                hintEl.textContent = '—';
+                return;
+            }
+
+            // The service's price is in ITS OWN currency (e.g. UGX). The admin
+            // may choose a different currency — in that case leave the amount
+            // empty for them to fill (there is no per-country exchange
+            // conversion done client-side).
+            const serviceCurrency = (chosen.currency || 'UGX').toUpperCase();
+            const selectedCur     = selectedCurrencyCode().toUpperCase();
+
+            if (serviceCurrency === selectedCur) {
+                // Convert cents → display (still only decimal_places-based)
+                const dec = selectedCurrencyDecimals();
+                const isZeroDec = dec === 0;
+                amountEl.value = isZeroDec
+                    ? (chosen.amount_cents ?? 0)
+                    : ((chosen.amount_cents ?? 0) / Math.pow(10, dec)).toFixed(dec);
+            } else {
+                // Different currency — clear so the admin types the correct value
+                amountEl.value = '';
+            }
+
+            hintEl.textContent = `Service price: ${chosen.formatted} (${chosen.currency || 'UGX'})${chosen.interval ? ' / ' + chosen.interval : ''}`;
+        });
+
+        // ── Submit ──
+        document.getElementById('manualDepositForm')?.addEventListener('submit', async function (e) {
+            e.preventDefault();
+
+            const btn   = document.getElementById('md_submit');
+            const label = btn.querySelector('.indicator-label');
+            const prog  = btn.querySelector('.indicator-progress');
+
+            btn.disabled = true;
+            label.classList.add('d-none');
+            prog.classList.remove('d-none');
+
+            const fd = new FormData(this);
+
+            // ── Read the display amount from the input (it has no `name`) ──
+            const amountEl = document.getElementById('md_amount_display');
+            const displayAmt = parseFloat((amountEl?.value || '').trim());
+
+            if (!Number.isFinite(displayAmt) || displayAmt <= 0) {
+                window.showToast?.('error', 'Enter an amount greater than zero.');
+                btn.disabled = false;
+                label.classList.remove('d-none');
+                prog.classList.add('d-none');
+                return;
+            }
+
+            // ── Ensure a valid currency is selected ──
+            if (!fd.get('currency_id')) {
+                window.showToast?.('error', 'Select a currency.');
+                btn.disabled = false;
+                label.classList.remove('d-none');
+                prog.classList.add('d-none');
+                return;
+            }
+
+            // ── Send DISPLAY amount. The controller converts via Currency::toCents(). ──
+            fd.set('amount', displayAmt.toFixed(2));
+
+            try {
+                const res = await fetch('{{ route("admin.employer-subscriptions.manual-deposit") }}', {
+                    method: 'POST',
+                    headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' },
+                    body: fd,
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    window.showToast?.('success', data.message || 'Deposit recorded.');
+                    manualModal.hide();
+                    loadStats();
+                    loadSubs();
+                    if (payState.loadedOnce) loadPayments();
+                } else {
+                    const errs = data.errors
+                        ? Object.values(data.errors).flat().join('\n')
+                        : (data.message || 'Failed.');
+                    window.showToast?.('error', errs);
+                }
+            } catch (err) {
+                console.error(err);
+                window.showToast?.('error', 'Network error.');
+            } finally {
+                btn.disabled = false;
+                label.classList.remove('d-none');
+                prog.classList.add('d-none');
+            }
+        });
+    }
 })();
 </script>
 @endpush

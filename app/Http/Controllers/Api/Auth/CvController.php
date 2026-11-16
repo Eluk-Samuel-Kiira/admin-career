@@ -330,16 +330,22 @@ class CvController extends Controller
      */
     private function mapToProfile(array $data): array
     {
+        // Country: accept any of the AI's shapes (name, code, phone,
+        // "Kampala, Uganda") and turn it into the DB's ISO code.
+        $countryCode = null;
+        $rawCountry  = $data['country'] ?? null;
+        if ($rawCountry !== null && trim((string) $rawCountry) !== '') {
+            $countryCode = $this->resolveCountryCodeForProfile($rawCountry);
+        }
+
         return [
-            // User table (mirrored on seeker profile fill)
             'first_name' => $data['first_name'] ?? null,
             'last_name'  => $data['last_name']  ?? null,
 
-            // Seeker scalar fields
             'phone'                => $data['phone']                ?? null,
             'address'              => $data['address']              ?? null,
             'city'                 => $data['city']                 ?? null,
-            'country'              => $data['country']              ?? null,
+            'country'              => $countryCode,   // ← ISO code, not the name
             'postal_code'          => $data['postal_code']          ?? null,
             'date_of_birth'        => $data['date_of_birth']        ?? null,
             'nationality'          => $data['nationality']          ?? null,
@@ -350,7 +356,6 @@ class CvController extends Controller
             'github_url'           => $data['github_url']           ?? null,
             'portfolio_url'        => $data['portfolio_url']        ?? null,
 
-            // Arrays
             'skills'         => $data['skills']         ?? [],
             'languages'      => $data['languages']      ?? [],
             'certifications' => $data['certifications'] ?? [],
@@ -358,7 +363,6 @@ class CvController extends Controller
             'work_experience'=> $data['work_experience']?? [],
             'projects'       => $data['projects']       ?? [],
 
-            // Filter FK IDs (optional — AI may or may not return these)
             'job_category_id'     => $data['job_category_id']     ?? null,
             'industry_id'         => $data['industry_id']         ?? null,
             'job_type_id'         => $data['job_type_id']         ?? null,

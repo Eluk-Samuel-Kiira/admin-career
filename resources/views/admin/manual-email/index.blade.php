@@ -695,6 +695,7 @@
             })),
             attachments: attachments.map(a => a.path),
             cc:  document.getElementById('cc').value.trim() || null,
+            country_code: document.getElementById('countryFilter').value || null,
             bcc: document.getElementById('bcc').value.trim() || null,
             deposit_amount_cents: parseInt(document.getElementById('depositAmount').value) || null,
             deposit_method:       document.getElementById('depositMethod').value,

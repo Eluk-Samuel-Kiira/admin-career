@@ -3439,18 +3439,18 @@ class AiService
      */
     protected array $cvFallbackOrder = ['cohere', 'gemini', 'openai', 'claude', 'grok', 'mistral'];
 
+
     /**
      * Extract structured CV data from raw resume text, trying each configured
      * AI model in order until one returns usable JSON.
-     * 
-     * Returns empty data structure instead of throwing on failure
+     *
+     * Returns empty data structure instead of throwing on failure.
      */
     public function extractCvData(string $resumeText): array
     {
-        $prompt = $this->buildCvExtractionPrompt($resumeText);
+        $prompt        = $this->buildCvExtractionPrompt($resumeText);
         $lastException = null;
-
-        $models = $this->getOrderedCvModels();
+        $models        = $this->getOrderedCvModels();
 
         foreach ($models as $model) {
             $apiKey = $this->getApiKeyFor($model);
@@ -3469,22 +3469,19 @@ class AiService
                 $data = $this->parseJsonResponse($raw);
 
                 if ($data === null || empty($data)) {
-                    Log::warning("⚠️ {$model} returned unparseable response - trying next model");
+                    Log::warning("{$model} returned unparseable response - trying next model");
                     continue;
                 }
 
                 // ────────────────────────────────────────────────────────
-                // NEW: honour the AI's validity verdict
+                // Honour the AI's validity verdict
                 // ────────────────────────────────────────────────────────
                 if (array_key_exists('_valid', $data)) {
                     if ($data['_valid'] === false) {
-                        // The AI says this isn't a CV → abort the whole loop and tell the user
                         $reason = $data['_reason']
                             ?? 'This does not look like a CV. Please upload your CV as a PDF or Word document.';
 
-                        Log::info("CV validation rejected by {$model}", [
-                            'reason' => $reason,
-                        ]);
+                        Log::info("CV validation rejected by {$model}", ['reason' => $reason]);
 
                         // Throw a dedicated exception the controller can catch
                         throw new \App\Exceptions\NotACvException($reason);
@@ -3498,25 +3495,140 @@ class AiService
                     return $data;
                 }
 
-                Log::warning("⚠️ {$model} returned empty data - trying next model");
+                Log::warning("{$model} returned empty data - trying next model");
 
             } catch (\App\Exceptions\NotACvException $e) {
                 // Non-CV verdict is authoritative — do NOT try other models.
-                // Trying another model could produce a different answer, which is
-                // confusing. One model's verdict is enough to reject the upload.
+                // Trying another model could produce a different answer, which
+                // would confuse the caller.
                 throw $e;
 
             } catch (\Throwable $e) {
                 $lastException = $e;
-                Log::warning("⚠️ CV extraction failed with {$model}: " . $e->getMessage());
+                Log::warning("CV extraction failed with {$model}: " . $e->getMessage());
             }
         }
 
         Log::error('All AI models failed to extract CV data', [
-            'last_error' => $lastException ? $lastException->getMessage() : 'Unknown error'
+            'last_error' => $lastException ? $lastException->getMessage() : 'Unknown error',
         ]);
 
         return $this->getEmptyCvData();
+    }
+
+    /**
+     * Extract CV data from an uploaded file (PDF / DOC / DOCX).
+     *
+     * The file goes through CvTextExtractionService, then the extracted
+     * text is passed into extractCvData() as if it had been pasted. Callers
+     * get the same normalised array back, or NotACvException when the file
+     * is not a CV.
+     */
+    public function extractCvDataFromFile(
+        \Illuminate\Http\UploadedFile $file,
+        ?CvTextExtractionService $textExtractor = null
+    ): array {
+        $textExtractor = $textExtractor ?? app(CvTextExtractionService::class);
+
+        $text = $textExtractor->extract($file->getRealPath(), $file->getMimeType());
+
+        if (trim($text) === '') {
+            Log::warning('CV text extraction returned empty; sending to AI anyway', [
+                'original_name' => $file->getClientOriginalName(),
+                'mime'          => $file->getMimeType(),
+                'size'          => $file->getSize(),
+            ]);
+            $text = "(No readable text could be extracted from this file. The user uploaded: {$file->getClientOriginalName()}.)";
+        }
+
+        return $this->extractCvData($text);
+    }
+
+    /**
+     * Resolve whatever the AI returns for country (name, ISO code, phone
+     * code, adjective, or "Kampala, Uganda") into a 2-letter ISO code that
+     * matches `countries.code`.
+     *
+     * Priority:
+     *   1. Already a 2-letter code that exists in the DB   → use as-is
+     *   2. Exact match on Country.name                     → code
+     *   3. Case-insensitive match on Country.name          → code
+     *   4. Substring match ("Kampala, Uganda" → "Uganda")  → code
+     *   5. Demonym ("Ugandan", "Kenyan", "British")        → code
+     *   6. Phone code ("+256", "256")                      → code
+     *   7. Fallback                                        → the passed default (or null)
+     *
+     * Cached per request so 200 extracted CVs in one import don't hammer
+     * the DB with repeated lookups.
+     */
+    protected function resolveCountryCode(?string $raw, ?string $default = null): ?string
+    {
+        if ($raw === null || trim($raw) === '') {
+            return $default;
+        }
+
+        $raw  = trim($raw);
+        $up   = strtoupper($raw);
+
+        // 1. Already looks like an ISO code
+        if (preg_match('/^[A-Z]{2}$/', $up)) {
+            $exists = \App\Models\Job\Country::where('code', $up)->exists();
+            if ($exists) return $up;
+        }
+
+        // 2. Exact match on Country.name
+        $exact = \App\Models\Job\Country::where('name', $raw)->value('code');
+        if ($exact) return strtoupper($exact);
+
+        // 3. Case-insensitive match
+        $ci = \App\Models\Job\Country::whereRaw('LOWER(name) = ?', [mb_strtolower($raw)])
+            ->value('code');
+        if ($ci) return strtoupper($ci);
+
+        // 4. Substring — the AI sometimes returns "Kampala, Uganda" or
+        //    "Uganda, East Africa". Look for any Country.name inside the string.
+        foreach (\App\Models\Job\Country::where('is_active', true)->get(['code', 'name']) as $country) {
+            if ($country->name && mb_stripos($raw, $country->name) !== false) {
+                return strtoupper($country->code);
+            }
+        }
+
+        // 5. Demonym → country. A short, high-value map for the markets
+        //    you actually operate in. Extend this if needed.
+        $demonyms = [
+            'ugandan'    => 'UG',
+            'kenyan'     => 'KE',
+            'tanzanian'  => 'TZ',
+            'rwandan'    => 'RW',
+            'south sudanese' => 'SS',
+            'nigerian'   => 'NG',
+            'ghanaian'   => 'GH',
+            'south african' => 'ZA',
+            'zambian'    => 'ZM',
+            'zimbabwean' => 'ZW',
+            'malawian'   => 'MW',
+            'british'    => 'GB',
+            'english'    => 'GB',
+            'australian' => 'AU',
+            'american'   => 'US',
+            'canadian'   => 'CA',
+            'indian'     => 'IN',
+            'pakistani'  => 'PK',
+            'filipino'   => 'PH',
+        ];
+        $lower = mb_strtolower($raw);
+        if (isset($demonyms[$lower])) return $demonyms[$lower];
+
+        // 6. Phone code ("+256", "256")
+        if (preg_match('/^\+?(\d{1,4})$/', $raw, $m)) {
+            $phone = $m[1];
+            $byPhone = \App\Models\Job\Country::where('phone_code', '+' . $phone)
+                ->orWhere('phone_code', $phone)
+                ->value('code');
+            if ($byPhone) return strtoupper($byPhone);
+        }
+
+        return $default;
     }
 
     /**

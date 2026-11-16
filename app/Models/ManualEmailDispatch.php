@@ -15,7 +15,7 @@ class ManualEmailDispatch extends Model
         'recipient_count', 'status', 'sent_count', 'failed_count',
         'error_message', 'deposit_id', 'sent_at',
         'employer_email', 'employer_name', 'job_title', 'company_name',
-        'seeker_name', 'seeker_email',
+        'seeker_name', 'seeker_email', 'country_code',
     ];
 
 

@@ -223,41 +223,88 @@
     </div>
 </div>
 
-{{-- ══════════════════ EMAIL PREVIEW MODAL ══════════════════ --}}
-<div class="modal fade" id="emailPreviewModal" tabindex="-1">
+{{-- ══════════════════ EMAIL COMPOSER (Gmail-style) ══════════════════ --}}
+<div class="modal fade" id="emailComposeModal" tabindex="-1">
     <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Email Preview — Confirm Send</h5>
+            <div class="modal-header border-bottom">
+                <h5 class="modal-title mb-0">
+                    <i class="ki-duotone ki-sms fs-3 me-2"><span class="path1"></span><span class="path2"></span></i>
+                    Review &amp; Send Application
+                </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-body">
-                <div class="mb-3">
-                    <div class="fw-bold fs-7 text-gray-800 mb-1">To:</div>
-                    <div class="text-muted" id="emailTo">—</div>
+
+            <div class="modal-body p-0">
+                <style>
+                    .gm-row2 { display:flex; align-items:center; gap:12px; padding:10px 20px; border-bottom:1px solid var(--bs-gray-200); }
+                    .gm-row2 > label { width:64px; flex:none; font-size:13px; font-weight:600; color:var(--bs-gray-600); margin:0; }
+                    .gm-row2 input { border:0 !important; box-shadow:none !important; background:transparent !important; flex:1; padding:4px 0; }
+                    .gm-row2 .gm-toggle2 { font-size:12px; color:var(--bs-primary); cursor:pointer; user-select:none; }
+                    .gm-foot2 { padding:14px 20px; background:var(--bs-gray-100); }
+                </style>
+
+                {{-- To --}}
+                <div class="gm-row2">
+                    <label>To</label>
+                    <input type="text" id="composeTo" placeholder="hr@company.com">
                 </div>
-                <div class="mb-3">
-                    <div class="fw-bold fs-7 text-gray-800 mb-1">Subject:</div>
-                    <div class="text-muted" id="emailSubject">—</div>
+
+                {{-- Cc (collapsible) --}}
+                <div class="gm-row2">
+                    <label>Cc</label>
+                    <input type="text" id="composeCc" placeholder="extra CC">
+                    <span class="gm-toggle2" id="composeToggleBcc">Bcc</span>
                 </div>
-                <div class="mb-3">
-                    <div class="fw-bold fs-7 text-gray-800 mb-1">Attachments:</div>
-                    <div class="d-flex flex-wrap gap-2" id="emailAttachments"></div>
+
+                {{-- Bcc (hidden by default) --}}
+                <div class="gm-row2 d-none" id="composeBccRow">
+                    <label>Bcc</label>
+                    <input type="text" id="composeBcc" placeholder="bcc emails">
                 </div>
-                <div class="mb-3">
-                    <div class="fw-bold fs-7 text-gray-800 mb-1">Body:</div>
-                    <div id="emailBody" class="bg-light p-3 rounded border" style="font-family: Georgia, serif; font-size: 13px; line-height: 1.6; max-height: 400px; overflow-y: auto;"></div>
+
+                {{-- Subject --}}
+                <div class="gm-row2">
+                    <label>Subject</label>
+                    <input type="text" id="composeSubject" placeholder="Application for …">
+                </div>
+
+                {{-- Body (rich editor) --}}
+                <div class="p-0">
+                    <textarea id="composeBody" rows="16"></textarea>
+                </div>
+
+                {{-- Attachments --}}
+                <div class="gm-foot2">
+                    <div class="d-flex flex-wrap align-items-center gap-3">
+                        <div class="fw-semibold fs-8 text-gray-700">Attachments:</div>
+                        <div id="composeAttachments" class="d-flex flex-wrap gap-2"></div>
+                    </div>
+                    <div class="text-muted fs-8 mt-2">
+                        The PDFs are generated from the CV and Cover Letter tabs of the drawer.
+                        Edit either tab first if you want to change what gets attached.
+                    </div>
                 </div>
             </div>
-            <div class="modal-footer">
-                <button class="btn btn-light" data-bs-dismiss="modal">Cancel</button>
-                <button class="btn btn-primary" id="confirmSendBtn">
-                    <span class="indicator-label">
-                        <i class="ki-duotone ki-send fs-4 me-1"><span class="path1"></span><span class="path2"></span></i>
-                        Confirm &amp; Send
-                    </span>
-                    <span class="indicator-progress">Sending... <span class="spinner-border spinner-border-sm ms-2"></span></span>
-                </button>
+
+            <div class="modal-footer border-top justify-content-between">
+                <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-light-info" id="composeSaveDraftBtn">
+                        <span class="indicator-label">
+                            <i class="ki-duotone ki-save fs-3 me-1"><span class="path1"></span><span class="path2"></span></i>
+                            Save Draft
+                        </span>
+                        <span class="indicator-progress">Saving… <span class="spinner-border spinner-border-sm ms-2"></span></span>
+                    </button>
+                    <button type="button" class="btn btn-primary" id="composeSendBtn">
+                        <span class="indicator-label">
+                            <i class="ki-duotone ki-send fs-3 me-1"><span class="path1"></span><span class="path2"></span></i>
+                            Send Application
+                        </span>
+                        <span class="indicator-progress">Sending… <span class="spinner-border spinner-border-sm ms-2"></span></span>
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -279,8 +326,6 @@
     // ═══════════════════════════════════════════════════════════
     const drawerEl    = document.getElementById('actionDrawer');
     const drawer      = new bootstrap.Offcanvas(drawerEl);
-    const emailModalEl = document.getElementById('emailPreviewModal');
-    const emailModal  = new bootstrap.Modal(emailModalEl);
 
     // Drawer state
     let currentDraft  = null;
@@ -570,9 +615,12 @@
             cover_html: row.cover_html || '',
             job_requirements: row.job_requirements || {},
             user_email: row.user_email,
+            employer_email: row.employer_email,
             job_title: row.job_title,
             channel: row.channel || 'manual',
             external_url: row.external_url || null,
+            qualifications: row.qualifications || '',              // ← ADD
+            application_procedure: row.application_procedure || '', // ← ADD
         };
 
         // Header
@@ -1038,65 +1086,190 @@
     }
 
     // ═══════════════════════════════════════════════════════════
-    // Send — show email preview modal first
+    // Compose modal (Gmail-style) — boot
+    // ═══════════════════════════════════════════════════════════
+    const composeModalEl = document.getElementById('emailComposeModal');
+    const composeModal   = new bootstrap.Modal(composeModalEl);
+
+    // ═══════════════════════════════════════════════════════════
+    // TinyMCE — one editor for the composer body only
+    // ═══════════════════════════════════════════════════════════
+    let composeEditor = null;
+
+    tinymce.init({
+        target: document.getElementById('composeBody'),
+        height: 340,
+        menubar: false,
+        branding: false,
+        promotion: false,
+        statusbar: false,
+        plugins: 'lists link',
+        toolbar: 'bold italic underline | bullist numlist | link | removeformat',
+        content_style: `body { font-family: Georgia, "Times New Roman", serif; font-size: 13px; line-height: 1.6; padding: 14px; color: #0F1B2D; }`,
+        setup: (ed) => ed.on('init', () => { composeEditor = ed; }),
+    });
+
+    // Bcc toggle
+    document.getElementById('composeToggleBcc')?.addEventListener('click', () => {
+        document.getElementById('composeBccRow').classList.toggle('d-none');
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // Drawer "Send Application" — opens the compose modal
     // ═══════════════════════════════════════════════════════════
     document.getElementById('drawerSendBtn')?.addEventListener('click', () => {
         if (!currentDraft || currentDraft.type === 'external') return;
 
-        // Populate email preview
-        document.getElementById('emailTo').textContent      = currentDraft.user_email || '—';
-        document.getElementById('emailSubject').textContent = `Application for ${currentDraft.job_title}`;
+        // 1. Resolve employer email (row value, or parsed from the job text)
+        let toEmail = currentDraft.employer_email || '';
+        if (!toEmail && currentDraft.qualifications) {
+            const m = currentDraft.qualifications.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+            if (m) toEmail = m[0];
+        }
+        if (!toEmail && currentDraft.application_procedure) {
+            const m = currentDraft.application_procedure.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+            if (m) toEmail = m[0];
+        }
 
-        // Attachments list — computed from job requirements
+        // 2. Populate the composer fields
+        document.getElementById('composeTo').value      = toEmail || '';
+        document.getElementById('composeCc').value      = currentDraft.user_email || '';
+        document.getElementById('composeBcc').value     = '';
+        document.getElementById('composeSubject').value = `Application for ${currentDraft.job_title || ''}`;
+        document.getElementById('composeBccRow').classList.add('d-none');
+
+        // 3. Body — pre-fill from the cover letter (fallback to a generic intro)
+        const body = currentDraft.cover_html
+            || `<p>Dear Hiring Manager,</p><p>Please find attached my CV and cover letter for the ${escapeHtml(currentDraft.job_title || 'advertised position')}.</p><p>Thank you for your consideration.</p>`;
+
+        if (composeEditor) {
+            composeEditor.setContent(body);
+        } else {
+            // TinyMCE might still be initialising — retry briefly
+            const wait = setInterval(() => {
+                if (composeEditor) {
+                    composeEditor.setContent(body);
+                    clearInterval(wait);
+                }
+            }, 100);
+        }
+
+        // 4. Attachments — badges based on the job's requirements
         const reqs = currentDraft.job_requirements || {};
         const attach = [];
         if (reqs.is_resume_required)              attach.push({ label: 'CV (PDF)',            color: 'success' });
         if (reqs.is_cover_letter_required)        attach.push({ label: 'Cover Letter (PDF)',  color: 'info' });
         if (reqs.is_academic_documents_required)  attach.push({ label: 'Academic Docs (PDF)', color: 'warning' });
-        if (attach.length === 0) attach.push({ label: 'No documents required', color: 'secondary' });
+        if (attach.length === 0)                  attach.push({ label: 'No documents required', color: 'secondary' });
 
-        document.getElementById('emailAttachments').innerHTML = attach.map(a =>
-            `<span class="badge badge-light-${a.color} fs-7">${a.label}</span>`
+        document.getElementById('composeAttachments').innerHTML = attach.map(a =>
+            `<span class="badge badge-light-${a.color} fs-7 py-2 px-3">
+                <i class="ki-duotone ki-paper-clip fs-6 me-1"><span class="path1"></span><span class="path2"></span></i>
+                ${a.label}
+            </span>`
         ).join('');
 
-        // Body — the cover letter (or CV summary fallback)
-        document.getElementById('emailBody').innerHTML =
-            currentDraft.cover_html || '<p class="text-muted">No cover letter body.</p>';
-
-        emailModal.show();
+        // 5. Show it
+        composeModal.show();
     });
 
-    // Confirm send
-    document.getElementById('confirmSendBtn')?.addEventListener('click', async function () {
+
+    // ── Save Draft (updates the relay, doesn't send) ────────────
+    document.getElementById('composeSaveDraftBtn')?.addEventListener('click', async function () {
         if (!currentDraft) return;
 
-        const label = this.querySelector('.indicator-label');
-        const prog  = this.querySelector('.indicator-progress');
-        this.disabled = true;
-        label?.classList.add('d-none');
-        prog?.classList.remove('d-none');
+        const btn   = this;
+        const label = btn.querySelector('.indicator-label');
+        const prog  = btn.querySelector('.indicator-progress');
+
+        const newBody = composeEditor ? composeEditor.getContent() : document.getElementById('composeBody').value;
+
+        btn.disabled = true;
+        label.classList.add('d-none');
+        prog.classList.remove('d-none');
 
         try {
-            const res = await fetch(`{{ url('admin/auto-apply/send') }}/${currentDraft.id}`, {
+            const res = await fetch(`{{ url('admin/auto-apply/update-draft') }}/${currentDraft.id}`, {
                 method: 'POST',
-                headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' },
+                headers: { 'X-CSRF-TOKEN': CSRF, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ type: currentDraft.type, document: 'cover', content: newBody }),
             });
             const data = await res.json();
 
             if (data.success) {
-                window.showToast?.('success', data.message || 'Sent.');
-                emailModal.hide();
+                // Update local state so reopening shows the edited version
+                currentDraft.cover_html = newBody;
+                const list = currentDraft.type === 'external' ? currentData.external : currentData.relays;
+                const row  = list.find(x => x.id === currentDraft.id);
+                if (row) row.cover_html = newBody;
+
+                // Also update the drawer's cover preview so it reflects the edit
+                renderPreview('cover', newBody);
+
+                window.showToast?.('success', 'Draft saved.');
+            } else {
+                window.showToast?.('error', data.message || 'Save failed.');
+            }
+        } catch (e) {
+            window.showToast?.('error', 'Network error.');
+        } finally {
+            btn.disabled = false;
+            label.classList.remove('d-none');
+            prog.classList.add('d-none');
+        }
+    });
+
+    // ── Send (fires the mail with the edited subject + body) ────
+    document.getElementById('composeSendBtn')?.addEventListener('click', async function () {
+        if (!currentDraft) return;
+
+        const to = document.getElementById('composeTo').value.trim();
+        if (!to) return window.showToast?.('error', 'Enter a recipient email.');
+
+        const subject = document.getElementById('composeSubject').value.trim();
+        if (!subject) return window.showToast?.('error', 'Enter a subject.');
+
+        const body = composeEditor ? composeEditor.getContent() : document.getElementById('composeBody').value;
+        if (!body || body.trim().length < 20) return window.showToast?.('error', 'Message body is too short.');
+
+        if (!confirm(`Send this application to ${to}?`)) return;
+
+        const btn   = this;
+        const label = btn.querySelector('.indicator-label');
+        const prog  = btn.querySelector('.indicator-progress');
+
+        btn.disabled = true;
+        label.classList.add('d-none');
+        prog.classList.remove('d-none');
+
+        try {
+            const res = await fetch(`{{ url('admin/auto-apply/send') }}/${currentDraft.id}`, {
+                method: 'POST',
+                headers: { 'X-CSRF-TOKEN': CSRF, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({
+                    to:      to,
+                    cc:      document.getElementById('composeCc').value.trim()  || null,
+                    bcc:     document.getElementById('composeBcc').value.trim() || null,
+                    subject: subject,
+                    body:    body,
+                }),
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                window.showToast?.('success', data.message || 'Application sent.');
+                composeModal.hide();
                 drawer.hide();
-                loadDrafts(draftsState.page);   // ← CHANGED (was: loadDrafts();)
+                loadDrafts(draftsState.page);
             } else {
                 window.showToast?.('error', data.message || 'Send failed.');
             }
         } catch (e) {
             window.showToast?.('error', 'Network error.');
         } finally {
-            this.disabled = false;
-            label?.classList.remove('d-none');
-            prog?.classList.add('d-none');
+            btn.disabled = false;
+            label.classList.remove('d-none');
+            prog.classList.add('d-none');
         }
     });
 

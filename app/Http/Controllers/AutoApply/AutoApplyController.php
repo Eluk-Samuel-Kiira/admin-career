@@ -16,12 +16,13 @@ use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
 use Barryvdh\DomPDF\Facade\Pdf;
-use App\Mail\AutoApply\EmployerApplicationMail;
+use App\Mail\ApplicationEmail;
+use Illuminate\Support\Facades\Storage;
 use App\Services\AutoApply\ShareToSeekerService;
 use Illuminate\Support\Facades\Mail;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use App\Models\Job\JobSeekerJob;
+use App\Services\Mail\CountryMailer;
 
 class AutoApplyController extends Controller
 {
@@ -91,53 +92,176 @@ class AutoApplyController extends Controller
     }
 
 
-    // ── 1. Send Email (CC Seeker, Attach Docs, Log WhatsApp) ──
+
     public function sendRelay(Request $request, $id): JsonResponse
     {
-        $relay = AutoApplyRelay::with(['user', 'jobPost'])->findOrFail($id);
+        $relay  = AutoApplyRelay::with(['user', 'jobPost.company'])->findOrFail($id);
         $seeker = SeekerProfile::where('user_id', $relay->user_id)->first();
 
         if (!$seeker) {
             return response()->json(['success' => false, 'message' => 'Seeker not found.'], 404);
         }
 
-        // 1. Resolve Employer Email
-        $toEmail = $relay->jobPost->email;
+        // ── 1. Resolve the recipient email ─────────────────────────
+        $toEmail = trim((string) $request->input('to', ''));
+        if ($toEmail === '') {
+            $toEmail = $relay->jobPost->email;
+        }
         if (!$toEmail) {
-            $text = strip_tags(($relay->jobPost->qualifications ?? '') . ' ' . ($relay->jobPost->application_procedure ?? ''));
-            if (preg_match('/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i', $text, $matches)) {
-                $toEmail = $matches[0];
+            $text = strip_tags(
+                ($relay->jobPost->qualifications ?? '') . ' ' .
+                ($relay->jobPost->application_procedure ?? '')
+            );
+            if (preg_match('/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i', $text, $m)) {
+                $toEmail = $m[0];
             }
         }
-
         if (!$toEmail) {
             return response()->json(['success' => false, 'message' => 'No employer email found in the job post.'], 422);
         }
 
-        // 2. Send Email with CC
+        // ── 2. Resolve subject + body (from composer, or fall back) ─
+        $subject = trim((string) $request->input('subject', ''));
+        if ($subject === '') {
+            $subject = 'Application for ' . ($relay->jobPost->job_title ?? 'the advertised role')
+                    . ' — ' . $seeker->full_name;
+        }
+
+        $bodyHtml = (string) $request->input('body', '');
+        if (trim(strip_tags($bodyHtml)) === '') {
+            $bodyHtml = $relay->cover_letter_html
+                ?: '<p>Please find attached my application.</p>';
+        }
+
+        // ── 3. CC / BCC: seeker is always copied, never duplicated ─
+        $cc  = [];
+        $rawCc  = trim((string) $request->input('cc', ''));
+        $rawBcc = trim((string) $request->input('bcc', ''));
+
+        if ($rawCc !== '') {
+            $cc = array_filter(array_map('trim', preg_split('/[,;]+/', $rawCc)));
+        }
+        if (!$cc && $seeker->user?->email) {
+            $cc[] = $seeker->user->email;
+        }
+        $cc = array_values(array_unique(array_diff(
+            array_map('strtolower', $cc),
+            [strtolower($toEmail)]
+        )));
+
+        $bcc = $rawBcc !== ''
+            ? array_values(array_unique(array_diff(
+                array_map('strtolower', array_filter(array_map('trim', preg_split('/[,;]+/', $rawBcc)))),
+                [strtolower($toEmail)],
+                $cc
+            )))
+            : [];
+
+        // ── 4. Build the PDF attachments ───────────────────────────
+        //   a. CV — render from the draft HTML, save to storage
+        //   b. Cover Letter — render from the (possibly edited) HTML
+        //   c. Academic Documents — copy from the seeker's uploaded file
+        //      (only when the job requires it AND the seeker uploaded one)
+        $files = [];
+        $slug  = Str::slug($seeker->full_name) ?: 'candidate';
+
+        // CV PDF
+        if (!empty($relay->tailored_cv_html)) {
+            $cvPdf = Pdf::loadView('pdf.cv-rewrite', [
+                'title'   => 'CV - ' . ($relay->jobPost->job_title ?? 'Application'),
+                'content' => $relay->tailored_cv_html,
+            ])->setPaper('a4');
+
+            $path = 'auto-apply/sent/' . now()->format('Y/m') . '/' . Str::uuid() . '.pdf';
+            Storage::disk('public')->put($path, $cvPdf->output());
+
+            $files[] = [
+                'path'          => $path,
+                'original_name' => 'CV_' . $slug . '.pdf',
+                'size'          => Storage::disk('public')->size($path),
+            ];
+        }
+
+        // Cover Letter PDF
+        if (!empty($bodyHtml) && trim(strip_tags($bodyHtml)) !== '') {
+            $coverPdf = Pdf::loadView('pdf.cv-rewrite', [
+                'title'   => 'Cover Letter - ' . ($relay->jobPost->job_title ?? 'Application'),
+                'content' => $bodyHtml,
+            ])->setPaper('a4');
+
+            $path = 'auto-apply/sent/' . now()->format('Y/m') . '/' . Str::uuid() . '.pdf';
+            Storage::disk('public')->put($path, $coverPdf->output());
+
+            $files[] = [
+                'path'          => $path,
+                'original_name' => 'Cover_Letter_' . $slug . '.pdf',
+                'size'          => Storage::disk('public')->size($path),
+            ];
+        }
+        
+        if ($relay->jobPost->is_academic_documents_required && $seeker->academic_documents_path) {
+            if (Storage::disk('public')->exists($seeker->academic_documents_path)) {
+                $files[] = [
+                    'path'          => $seeker->academic_documents_path,
+                    'original_name' => 'Academic_Documents_' . $slug . '.pdf',
+                    'size'          => Storage::disk('public')->size($seeker->academic_documents_path),
+                ];
+            }
+        }
+
+        if (empty($files)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No documents to attach. Generate drafts first.',
+            ], 422);
+        }
+
+        // ── 5. Resolve country name for the footer ─────────────────
+        $countryCode = strtoupper($relay->jobPost->country_code ?? $seeker->country ?? 'UG');
+        $countryName = \App\Models\Job\Country::where('code', $countryCode)->value('name') ?? '';
+
+        // ── 6. Persist the edited subject + body back to the relay ─
+        $relay->cover_letter_html = $bodyHtml;
+        $relay->save();
+
         try {
-            Mail::to($toEmail)
-                ->cc($seeker->user->email)
-                ->send(new EmployerApplicationMail(
-                    seeker: $seeker,
-                    job: $relay->jobPost,
-                    cvHtml: $relay->tailored_cv_html,
-                    coverHtml: $relay->cover_letter_html
+            app(CountryMailer::class)
+                ->country($relay->jobPost->country_code ?: $seeker->country)
+                ->to($toEmail)
+                ->cc($seeker->user?->email)
+                ->replyTo($seeker->user?->email)
+                ->send(new ApplicationEmail(
+                    emailSubject: $subject,
+                    bodyHtml:     $bodyHtml,
+                    files:        $files,
+                    seekerName:   $seeker->full_name,
+                    seekerEmail:  $seeker->user?->email,
+                    jobTitle:     $relay->jobPost->job_title,
+                    companyName:  $relay->jobPost->company?->name,
+                    countryName:  \App\Models\Job\Country::where('code', $relay->jobPost->country_code)->value('name') ?? '',
                 ));
 
-            // 3. Update Relay
             $relay->update([
-                'status' => 'sent',
-                'sent_at' => now(),
-                'employer_email' => $toEmail,
-                'seeker_cc_email' => $seeker->user->email,
+                'status'          => 'sent',
+                'sent_at'         => now(),
+                'employer_email'  => $toEmail,
+                'seeker_cc_email' => $seeker->user?->email,
             ]);
 
             return response()->json(['success' => true, 'message' => 'Application sent successfully.']);
 
         } catch (\Throwable $e) {
-            \Log::error('Send failed: ' . $e->getMessage());
-            return response()->json(['success' => false, 'message' => 'Failed to send: ' . $e->getMessage()], 500);
+            \Log::error('Send failed: ' . $e->getMessage(), [
+                'relay_id'    => $relay->id,
+                'to'          => $toEmail,
+                'country'     => $relay->jobPost->country_code,
+                'attachments' => array_column($files, 'original_name'),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to send: ' . $e->getMessage(),
+            ], 500);
         }
     }
 
