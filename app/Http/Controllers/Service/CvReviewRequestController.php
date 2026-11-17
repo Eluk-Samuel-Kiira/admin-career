@@ -15,7 +15,11 @@ use Illuminate\Validation\ValidationException;
 use App\Services\Jobs\AiService;
 use App\Services\Jobs\CvTextExtractionService;
 use App\Services\Delivery\ReviewDeliveryService;
-
+use Illuminate\Support\Facades\DB;
+use App\Jobs\RunAiReviewJob;
+use App\Jobs\GenerateCvRewriteJob;
+use App\Jobs\GenerateCoverLetterJob;
+use App\Services\Jobs\CvHtmlSanitizer;
 
 
 class CvReviewRequestController extends Controller
@@ -345,6 +349,17 @@ class CvReviewRequestController extends Controller
             }
         }
 
+        if ($origin = $request->get('origin')) {
+            if ($origin === 'seeker') {
+                $query->whereNull('created_by_admin_id');
+            } elseif ($origin === 'subscriber') {
+                $query->where(function ($q) {
+                    $q->whereNotNull('created_by_admin_id')
+                    ->orWhere('covered_by_subscription', true);
+                });
+            }
+        }
+
         if (!empty($countryCode)) {
             $query->where('country_code', strtoupper($countryCode));
         }
@@ -438,6 +453,167 @@ class CvReviewRequestController extends Controller
             return response()->json(['success' => false, 'message' => 'Not found'], 404);
         }
     }
+
+    /**
+     * Download the AI-rewritten CV as a PDF — by request ID (admin).
+     * Falls back to the cover letter if the request has no rewrite content
+     * but a cover letter exists.
+     */
+    public function downloadRewritePdf($id)
+    {
+        if (!auth()->user()->can('view cv review requests')) {
+            abort(403);
+        }
+
+        $req = CvReviewRequest::findOrFail($id);
+
+        // Read the CURRENT stored content — this is what you edited
+        $html = $req->rewrite_content['html'] ?? null;
+
+        if (empty($html)) {
+            abort(404, 'No CV content has been generated or edited for this request yet.');
+        }
+
+        // Soft sanitize: strip <script>, <style>, <iframe>, and on* handlers only.
+        // Preserves layout, inline styles, tags you added.
+        $html = $this->pdfSafeHtml($html);
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.cv-rewrite', [
+            'title'   => $req->target_job_title ?: 'Curriculum Vitae',
+            'content' => $html,
+        ])->setPaper('a4');
+
+        $slug  = \Illuminate\Support\Str::slug($req->user->name ?? 'candidate');
+        $title = \Illuminate\Support\Str::slug($req->target_job_title ?: 'cv');
+
+        return $pdf->download("{$slug}_{$title}_cv.pdf");
+    }
+
+    /**
+     * Only strips things that would break PDF rendering or execute scripts.
+     * Leaves your edited formatting, inline styles, and layout intact.
+     */
+    protected function pdfSafeHtml(string $html): string
+    {
+        // Remove script/style/iframe blocks entirely
+        $html = preg_replace('#<script\b[^>]*>.*?</script>#is', '', $html);
+        $html = preg_replace('#<style\b[^>]*>.*?</style>#is',   '', $html);
+        $html = preg_replace('#<iframe\b[^>]*>.*?</iframe>#is', '', $html);
+
+        // Strip inline event handlers (onclick="...", onload="...", etc.)
+        $html = preg_replace('#\son\w+\s*=\s*"[^"]*"#i', '', $html);
+        $html = preg_replace("#\son\w+\s*=\s*'[^']*'#i", '', $html);
+
+        // Strip javascript: URLs
+        $html = preg_replace('#href\s*=\s*"javascript:[^"]*"#i', 'href="#"', $html);
+
+        return $html;
+    }
+
+    public function downloadCoverLetterPdf($id)
+    {
+        if (!auth()->user()->can('view cv review requests')) {
+            abort(403);
+        }
+
+        $req = CvReviewRequest::findOrFail($id);
+
+        if (empty($req->cover_letter_uuid)) {
+            abort(404, 'No cover letter for this request.');
+        }
+
+        $letter = \App\Models\Service\LetterRequest::where('uuid', $req->cover_letter_uuid)->first();
+        if (!$letter) {
+            abort(404, 'Cover letter record not found.');
+        }
+
+        // Read the CURRENT stored content
+        $html = (string) $letter->content;
+
+        if (trim(strip_tags($html)) === '') {
+            abort(404, 'The cover letter has no content yet.');
+        }
+
+        $html = $this->pdfSafeHtml($html);
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.cv-rewrite', [
+            'title'   => 'Cover Letter',
+            'content' => $html,
+        ])->setPaper('a4');
+
+        $slug  = \Illuminate\Support\Str::slug($req->user->name ?? 'candidate');
+        $title = \Illuminate\Support\Str::slug($req->target_job_title ?: 'cover-letter');
+
+        return $pdf->download("{$slug}_{$title}_cover-letter.pdf");
+    }
+
+    /**
+     * Save admin edits to either the CV rewrite or the cover letter.
+     * Body: { content: string, doc: 'cv' | 'cover' }
+     */
+    public function saveDocument(Request $request, $id)
+    {
+        if (!auth()->user()->can('edit cv review requests')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        $data = $request->validate([
+            'doc'     => ['required', Rule::in(['cv', 'cover'])],
+            'content' => ['required', 'string', 'max:200000'],
+        ]);
+
+        if (mb_strlen(trim(strip_tags($data['content']))) < 20) {
+            return response()->json(['success' => false, 'message' => 'The document is too short to save.'], 422);
+        }
+
+        try {
+            $req   = CvReviewRequest::findOrFail($id);
+            $entry = [
+                'at'      => now()->toISOString(),
+                'type'    => 'document_edited',
+                'doc'     => $data['doc'],
+                'by'      => auth()->id(),
+                'by_name' => auth()->user()->name,
+            ];
+            $log = $req->delivery_log ?? [];
+
+                        if ($data['doc'] === 'cv') {
+                if ($req->rewrite_mode !== 'ai') {
+                    return response()->json(['success' => false, 'message' => 'Only AI rewrites can be edited here.'], 422);
+                }
+
+                // Saved exactly as the admin edited it. No sanitising.
+                $html = $data['content'];
+
+                $req->update([
+                    'rewrite_content'      => ['html' => $html],
+                    'rewrite_is_user_edited' => false,   // admin edit, not seeker edit
+                    'delivery_log'         => [...$log, $entry],
+                ]);
+            } else {
+                $letter = $req->coverLetter;
+                if (!$letter) {
+                    return response()->json(['success' => false, 'message' => 'There is no cover letter to edit yet.'], 422);
+                }
+
+                $html = $data['content'];
+
+                $letter->update(['content' => $html]);
+                $req->update(['delivery_log' => [...$log, $entry]]);
+            }
+
+            return response()->json(['success' => true, 'message' => 'Saved.', 'html' => $html]);
+
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json(['success' => false, 'message' => 'Request not found.'], 404);
+        } catch (\Throwable $e) {
+            \Log::error('Save document failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Save failed: ' . $e->getMessage()], 500);
+        }
+    }
+
+
+
 
     /**
      * Return the full detail HTML used by the "View" drawer/modal.
@@ -711,12 +887,20 @@ class CvReviewRequestController extends Controller
                     'deposit_ref' => $deposit->deposit_ref,
                 ];
 
+                $isAi = $req->rewrite_mode === 'ai';
+
                 $req->update([
-                    'status'             => 'paid',
+                    'status'             => $isAi ? 'paid_ai' : 'paid',
                     'payment_reference'  => $request->input('payment_reference'),
                     'payment_method_id'  => $paymentMethod->id,
                     'delivery_log'       => $log,
                 ]);
+
+                // Kick off generation if we're on the AI path
+                if ($isAi) {
+                    \App\Jobs\GenerateCvRewriteJob::dispatch($req->id)->onQueue('default');
+                    \App\Jobs\GenerateCoverLetterJob::dispatch($req->id)->onQueue('default');
+                }
 
                 return $deposit;
             });
@@ -782,6 +966,7 @@ class CvReviewRequestController extends Controller
             ], 500);
         }
     }
+
 
     /**
      * Delete a request (soft guard: only if not paid).
@@ -885,4 +1070,556 @@ class CvReviewRequestController extends Controller
             'cancelled'          => 'Cancelled',
         ];
     }
+
+
+    // ═════════════════════════════════════════════════════════════
+    // ADMIN CREATE — subscriber or non-subscriber, payment differs
+    // ═════════════════════════════════════════════════════════════
+
+    public function createForUser(Request $request)
+    {
+        if (!auth()->user()->can('edit cv review requests')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        $validated = $request->validate([
+            'user_id'                => 'nullable|integer|exists:users,id',
+            'new_user'               => 'nullable|array',
+            'new_user.name'          => 'required_with:new_user|string|max:255',
+            'new_user.email'         => 'required_with:new_user|email|max:255|unique:users,email',
+            'new_user.phone'         => 'nullable|string|max:30',
+            'new_user.country_code'  => 'nullable|string|size:2',
+
+            'cv_source'              => ['required', Rule::in(['existing', 'uploaded'])],
+            'cv_path'                => 'required_if:cv_source,existing|nullable|string',
+            'cv_file'                => 'required_if:cv_source,uploaded|nullable|file|mimes:pdf,doc,docx|max:10240',
+
+            'job_source'             => ['required', Rule::in(['db', 'manual', 'paste', 'none'])],
+            'job_post_id'            => 'required_if:job_source,db|nullable|integer|exists:job_posts,id',
+            'target_job_title'       => 'required_unless:job_source,db,none|nullable|string|max:255',
+            'target_company_name'    => 'required_unless:job_source,db,none|nullable|string|max:255',
+            'target_job_description' => 'required_if:job_source,paste|nullable|string|max:20000',
+        ]);
+
+        // Files are not part of the database transaction, so track the stored file
+        // and delete it manually if anything fails.
+        $storedCvPath = null;
+
+        try {
+            [$req, $isSubscriber] = DB::transaction(function () use ($request, $validated, &$storedCvPath) {
+
+                // ── 1. User ───────────────────────────────────────
+                if (!empty($validated['user_id'])) {
+                    $user = \App\Models\User::findOrFail($validated['user_id']);
+                } else {
+                    $user = \App\Models\User::create([
+                        'name'         => $validated['new_user']['name'],
+                        'email'        => $validated['new_user']['email'],
+                        'phone'        => $validated['new_user']['phone'] ?? null,
+                        'country_code' => strtoupper($validated['new_user']['country_code'] ?? 'UG'),
+                        'password'     => bcrypt(\Illuminate\Support\Str::random(32)),
+                    ]);
+                    $user->assignRole('job_seeker');
+                }
+
+                // ── 2. CV ─────────────────────────────────────────
+                if ($validated['cv_source'] === 'existing') {
+                    $cvPath = $this->normalizeCvPath($validated['cv_path']);
+
+                    if (!Storage::disk('public')->exists($cvPath)) {
+                        throw ValidationException::withMessages([
+                            'cv_path' => ['The selected CV was not found on disk.'],
+                        ]);
+                    }
+
+                    $cvName = basename($cvPath);
+                } else {
+                    $file    = $request->file('cv_file');
+                    $cvName  = $file->getClientOriginalName();
+                    $cvPath  = $file->store("cv-review/{$user->id}/original", 'public');
+                    $storedCvPath = $cvPath;   // remember it so a failure can clean it up
+
+                    $text = app(\App\Services\Jobs\CvTextExtractionService::class)->extract(
+                        Storage::disk('public')->path($cvPath),
+                        Storage::disk('public')->mimeType($cvPath) ?? 'application/pdf'
+                    );
+
+                    if (trim($text) === '' || mb_strlen($text) < 100) {
+                        throw ValidationException::withMessages([
+                            'cv_file' => ['That file does not look like a readable CV. Upload a PDF or Word CV.'],
+                        ]);
+                    }
+                }
+
+                // ── 3. Job context ────────────────────────────────
+                $jobPostId      = null;
+                $jobTitle       = $validated['target_job_title']       ?? null;
+                $companyName    = $validated['target_company_name']    ?? null;
+                $jobDescription = $validated['target_job_description'] ?? null;
+
+                if ($validated['job_source'] === 'db') {
+                    $job = \App\Models\Job\JobPost::with('company:id,name')->find($validated['job_post_id']);
+
+                    if ($job) {
+                        $jobPostId   = $job->id;
+                        $jobTitle    = $job->job_title;
+                        $companyName = $job->company?->name ?? 'Company';
+
+                        // Merge every useful field so the AI gets the full picture —
+                        // same composition the seeker flow uses.
+                        $sections = array_filter([
+                            !empty($job->job_description)
+                                ? trim(strip_tags((string) $job->job_description))
+                                : null,
+                            !empty($job->responsibilities)
+                                ? "Key Responsibilities:\n" . trim(strip_tags((string) $job->responsibilities))
+                                : null,
+                            !empty($job->qualifications)
+                                ? "Qualifications & Requirements:\n" . trim(strip_tags((string) $job->qualifications))
+                                : null,
+                            !empty($job->skills)
+                                ? "Required Skills:\n" . trim(strip_tags((string) $job->skills))
+                                : null,
+                        ]);
+
+                        $jobDescription = implode("\n\n", $sections) ?: null;
+                    }
+                } elseif ($validated['job_source'] === 'paste') {
+                    // Also strip tags on the pasted description so the prompt stays clean.
+                    $jobDescription = !empty($validated['target_job_description'])
+                        ? trim(strip_tags((string) $validated['target_job_description']))
+                        : null;
+                }
+
+                // ── 4. Service and price ──────────────────────────
+                $countryCode = strtoupper($user->country_code ?? config('app.country_code', 'UG'));
+                $service     = \App\Models\Service\Service::where('key', 'cv_review')->firstOrFail();
+                $price       = \App\Models\Service\ServicePrice::resolve('cv_rewrite', $countryCode);
+                $isSubscriber = $this->isSubscriber($user);
+
+                // ── 5. Request ────────────────────────────────────
+                $req = CvReviewRequest::create([
+                    'user_id'                 => $user->id,
+                    'created_by_admin_id'     => auth()->id(),
+                    'service_id'              => $service->id,
+                    'country_code'            => $countryCode,
+                    'currency_id'             => $price?->currency_id ?? 2,
+                    'amount_cents'            => $isSubscriber ? 0 : ($price?->amount_cents ?? 0),
+                    'covered_by_subscription' => $isSubscriber,
+                    'target_job_title'        => $jobTitle,
+                    'target_company_name'     => $companyName,
+                    'target_job_description'  => $jobDescription,
+                    'job_post_id'             => $jobPostId,
+                    'original_cv_path'        => $cvPath,
+                    'original_cv_name'        => $cvName,
+                    'status'                  => 'submitted',
+                    'rewrite_mode'            => 'ai',
+                ]);
+
+                $req->update(['delivery_log' => [[
+                    'at'         => now()->toISOString(),
+                    'type'       => 'created_by_admin',
+                    'by'         => auth()->id(),
+                    'by_name'    => auth()->user()->name,
+                    'subscriber' => $isSubscriber,
+                ]]]);
+
+                return [$req, $isSubscriber];
+            });
+
+            // Dispatch only after the transaction has committed
+            \App\Jobs\RunAiReviewJob::dispatch($req->id)->onQueue('default');
+
+            return response()->json([
+                'success'       => true,
+                'message'       => 'CV review created. AI review is running…',
+                'data'          => $this->shapeForAdmin($req->fresh(['user', 'service', 'currency', 'country'])),
+                'is_subscriber' => $isSubscriber,
+            ]);
+
+        } catch (ValidationException $e) {
+            $this->deleteStoredCv($storedCvPath);
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors'  => $e->errors(),
+            ], 422);
+
+        } catch (\Throwable $e) {
+            $this->deleteStoredCv($storedCvPath);
+            \Log::error('Admin create CV review failed', ['error' => $e->getMessage()]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    private function deleteStoredCv(?string $path): void
+    {
+        if ($path && Storage::disk('public')->exists($path)) {
+            Storage::disk('public')->delete($path);
+        }
+    }
+
+    /**
+     * Accept a storage path, a /storage/ URL, or a full URL and reduce it
+     * to the canonical path inside the public disk.
+     */
+    protected function normalizeCvPath(?string $raw): string
+    {
+        $raw = trim((string) $raw);
+
+        // Full URL: https://site/storage/cvs/xyz.pdf  →  cvs/xyz.pdf
+        if (preg_match('#/storage/(.+)$#i', $raw, $m)) {
+            return ltrim($m[1], '/');
+        }
+
+        // Leading slash: /cvs/xyz.pdf  →  cvs/xyz.pdf
+        return ltrim($raw, '/');
+    }
+
+    private function isSubscriber(\App\Models\User $user): bool
+    {
+        return \App\Models\Subscription\Subscription::query()
+            ->where('user_id', $user->id)
+            ->whereIn('status', ['trialing', 'active'])
+            ->where('current_period_end', '>', now())
+            ->exists();
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // ADMIN ANSWER SUBMIT — after AI review
+    // Mirrors proxy logic, but the payment step differs:
+    //   subscriber → skip payment, go straight to paid_ai
+    //   non-subscriber → status = awaiting_payment, admin confirms later
+    // ═════════════════════════════════════════════════════════════
+
+    public function submitAnswers(Request $request, $id)
+    {
+        if (!auth()->user()->can('edit cv review requests')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        $validated = $request->validate([
+            'answers'   => 'required|array|min:1',
+            'answers.*' => 'string|max:5000',
+        ]);
+
+        try {
+            [$req, $isSubscriber] = DB::transaction(function () use ($id, $validated) {
+
+                // Lock the row so two admins can't submit answers at the same time
+                $req = CvReviewRequest::lockForUpdate()->findOrFail($id);
+
+                if (!in_array($req->status, ['submitted', 'ai_reviewed'], true)) {
+                    throw ValidationException::withMessages([
+                        'status' => ["Cannot submit answers from status '{$req->status}'."],
+                    ]);
+                }
+
+                $isSubscriber = $this->isSubscriber($req->user);
+
+                $updates = [
+                    'seeker_gap_answers' => $validated['answers'],
+                ];
+
+                if ($isSubscriber) {
+                    // Subscriber: no payment needed, go straight to generation
+                    $updates['status']                  = 'paid_ai';
+                    $updates['covered_by_subscription'] = true;
+                    $updates['payment_reference']       = 'SUB-' . $req->uuid;
+                } else {
+                    // Non-subscriber: wait for manual payment confirmation
+                    $updates['status'] = 'awaiting_payment';
+                }
+
+                $log   = $req->delivery_log ?? [];
+                $log[] = [
+                    'at'         => now()->toISOString(),
+                    'type'       => 'answers_submitted',
+                    'by'         => auth()->id(),
+                    'by_name'    => auth()->user()->name,
+                    'subscriber' => $isSubscriber,
+                    'count'      => count($validated['answers']),
+                ];
+                $updates['delivery_log'] = $log;
+
+                $req->update($updates);
+
+                return [$req->fresh(), $isSubscriber];
+            });
+
+            // Dispatch after the commit, so a rolled-back save never starts generation
+            if ($isSubscriber) {
+                GenerateCvRewriteJob::dispatch($req->id)->onQueue('default');
+                GenerateCoverLetterJob::dispatch($req->id)->onQueue('default');
+            }
+
+            return response()->json([
+                'success'       => true,
+                'message'       => $isSubscriber
+                    ? 'Answers saved. Generating your CV and cover letter now…'
+                    : 'Answers saved. Confirm payment to start generation.',
+                'data'          => $this->shapeForAdmin($req->fresh(['user', 'service', 'currency', 'country'])),
+                'is_subscriber' => $isSubscriber,
+            ]);
+
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => collect($e->errors())->flatten()->first(),
+                'errors'  => $e->errors(),
+            ], 422);
+
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json(['success' => false, 'message' => 'Request not found.'], 404);
+
+        } catch (\Throwable $e) {
+            \Log::error('Submit answers failed', ['id' => $id, 'error' => $e->getMessage()]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save answers: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Runs the CV rewrite first, then the cover letter. The letter starts only
+     * after the CV job succeeds, because a chain stops when a job fails.
+     */
+    private function dispatchGeneration(CvReviewRequest $req): void
+    {
+        \Illuminate\Support\Facades\Bus::chain([
+            new \App\Jobs\GenerateCvRewriteJob($req->id),
+            new \App\Jobs\GenerateCoverLetterJob($req->id),
+        ])->onQueue('default')->dispatch();
+    }
+
+    public function generateMissing(Request $request, $id)
+    {
+        if (!auth()->user()->can('edit cv review requests')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        try {
+            $req = CvReviewRequest::findOrFail($id);
+
+            if ($req->rewrite_mode !== 'ai') {
+                return response()->json(['success' => false, 'message' => 'Only AI rewrites can be generated here.'], 422);
+            }
+
+            if (in_array($req->status, ['cancelled', 'completed'], true)) {
+                return response()->json(['success' => false, 'message' => "Cannot generate when the status is '{$req->status}'."], 422);
+            }
+
+            // A status of paid_ai or generating only means "running" if it changed recently.
+            // Older than 15 minutes, the worker has stopped without recording a failure.
+            $isBusy = in_array($req->status, ['paid_ai', 'generating'], true);
+
+            if ($isBusy) {
+                $recent = $req->updated_at && $req->updated_at->gt(now()->subMinutes(15));
+
+                if ($recent) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Generation started a few minutes ago and is still running. Try again shortly.',
+                    ], 422);
+                }
+
+                // Stale: mark it so the attempt below is allowed to start
+                $req->update([
+                    'status'           => 'failed',
+                    'generation_error' => 'The previous attempt stopped without finishing. Starting a new attempt.',
+                ]);
+                $req->refresh();
+            }
+
+            $cvMissing    = empty($req->rewrite_content['html'] ?? null);
+            $coverMissing = empty($req->cover_letter_uuid);
+
+            if (!$cvMissing && !$coverMissing) {
+                return response()->json(['success' => false, 'message' => 'Both the CV and the cover letter already exist.'], 422);
+            }
+
+            $log   = $req->delivery_log ?? [];
+            $log[] = [
+                'at'            => now()->toISOString(),
+                'type'          => 'generate_missing_requested',
+                'by'            => auth()->id(),
+                'by_name'       => auth()->user()->name,
+                'cv_missing'    => $cvMissing,
+                'cover_missing' => $coverMissing,
+            ];
+
+            if ($cvMissing) {
+                // The CV is generated first. The chain then runs the cover letter,
+                // which skips itself if the letter already exists.
+                $req->update([
+                    'status'                => 'paid_ai',
+                    'rewrite_error_message' => null,
+                    'generation_error'      => null,
+                    'generation_attempts'   => 0,
+                    'delivery_log'          => $log,
+                ]);
+
+                $this->dispatchGeneration($req->fresh());
+            } else {
+                // Only the letter is missing and the CV exists
+                $req->update(['delivery_log' => $log]);
+
+                \App\Jobs\GenerateCoverLetterJob::dispatch($req->id)->onQueue('default');
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => $cvMissing
+                    ? 'Generating the CV and cover letter…'
+                    : 'Generating the cover letter…',
+                'data'    => $this->shapeForAdmin($req->fresh(['user', 'service', 'currency', 'country'])),
+            ]);
+
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json(['success' => false, 'message' => 'Request not found.'], 404);
+        } catch (\Throwable $e) {
+            \Log::error('Generate missing failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed: ' . $e->getMessage()], 500);
+        }
+    }
+
+    public function coverLetterDownload($id)
+    {
+        if (!auth()->user()->can('view cv review requests')) {
+            abort(403);
+        }
+        $req = CvReviewRequest::findOrFail($id);
+        if (!$req->cover_letter_uuid) {
+            abort(404, 'No cover letter has been generated for this request.');
+        }
+        return redirect()->route('api.cv-review.rewrite.download', ['uuid' => $req->cover_letter_uuid]);
+    }
+
+    public function searchSeekers(Request $request)
+    {
+        if (!auth()->user()->can('view cv review requests')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        $q = trim($request->get('q', ''));
+        if (mb_strlen($q) < 2) {
+            return response()->json(['data' => []]);
+        }
+
+        $gate = app(\App\Services\Subscription\SubscriptionGate::class);
+
+        $users = \App\Models\User::query()
+            ->with('seekerProfile:id,user_id,first_name,last_name')
+            ->where(function ($query) use ($q) {
+                $query->where('name', 'like', "%{$q}%")
+                    ->orWhere('email', 'like', "%{$q}%")
+                    ->orWhere('phone', 'like', "%{$q}%")
+                    ->orWhereHas('seekerProfile', fn ($s) => $s
+                        ->where('first_name', 'like', "%{$q}%")
+                        ->orWhere('last_name', 'like', "%{$q}%"));
+            })
+            ->limit(30)
+            ->get(['id', 'name', 'email', 'phone']);
+
+        $rows = $users->map(function ($u) use ($gate) {
+            $sub    = $gate->activeSubscription($u);
+            $plan   = $sub?->service?->name ?? $sub?->service_key;
+            $name   = $u->name ?: trim(($u->seekerProfile?->first_name ?? '') . ' ' . ($u->seekerProfile?->last_name ?? ''));
+
+            return [
+                'id'            => $u->id,
+                'label'         => $name . ($u->email ? " — {$u->email}" : ''),
+                'email'         => $u->email,
+                'is_subscriber' => (bool) $sub,
+                'plan'          => $plan,
+            ];
+        });
+
+        // Subscribers first, then everyone else, each group sorted by name
+        $sorted = $rows->sortBy([
+            ['is_subscriber', 'desc'],
+            ['label', 'asc'],
+        ])->values();
+
+        return response()->json(['data' => $sorted]);
+    }
+
+    public function cvSearch(Request $request)
+    {
+        if (!auth()->user()->can('view cv review requests')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        $userId = (int) $request->query('user_id');
+        if (!$userId) {
+            return response()->json(['data' => []]);
+        }
+
+        $seeker = \App\Models\SeekerProfile::where('user_id', $userId)->first();
+        if (!$seeker) {
+            return response()->json(['data' => []]);
+        }
+
+        $items = [];
+
+        // 1. Primary CV (cv_file_path)
+        if (!empty($seeker->cv_file_path)) {
+            $items[] = [
+                'id'    => $seeker->cv_file_path,
+                'label' => $seeker->cv_original_name ?: basename($seeker->cv_file_path),
+                'path'  => $seeker->cv_file_path,
+                'kind'  => 'primary',
+            ];
+        }
+
+        // 2. Additional CVs (cv_files JSON array)
+        $files = is_array($seeker->cv_files) ? $seeker->cv_files : [];
+        foreach ($files as $cv) {
+            $path = $cv['path'] ?? null;
+            if (!$path) continue;
+            $items[] = [
+                'id'    => $path,
+                'label' => $cv['original_name'] ?? basename($path),
+                'path'  => $path,
+                'kind'  => 'library',
+            ];
+        }
+
+        return response()->json(['data' => $items]);
+    }
+
+    public function searchJobs(Request $request)
+    {
+        if (!auth()->user()->can('view cv review requests')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        $q = trim($request->get('q', ''));
+        if (mb_strlen($q) < 2) {
+            return response()->json(['data' => []]);
+        }
+
+        $jobs = \App\Models\Job\JobPost::with('company:id,name')
+            ->where(function ($query) use ($q) {
+                $query->where('job_title', 'like', "%{$q}%")
+                    ->orWhereHas('company', fn ($c) => $c->where('name', 'like', "%{$q}%"));
+            })
+            ->orderByDesc('id')
+            ->limit(20)
+            ->get(['id', 'job_title', 'company_id']);
+
+        return response()->json([
+            'data' => $jobs->map(fn ($j) => [
+                'id'    => $j->id,
+                'label' => $j->job_title . ($j->company?->name ? " — {$j->company->name}" : ''),
+            ]),
+        ]);
+    }
+
 }

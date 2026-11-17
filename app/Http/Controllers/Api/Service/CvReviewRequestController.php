@@ -831,7 +831,7 @@ class CvReviewRequestController extends Controller
         $baseCents    = (int) $basePrice->amount_cents;
 
         // HR expert = base price × 3 (i.e. +200%)
-        $humanCents   = $baseCents * 3;
+        $humanCents   = $baseCents * 4;
 
         return [
             'next_service_key'   => 'cv_rewrite',

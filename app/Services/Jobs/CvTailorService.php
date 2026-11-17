@@ -24,7 +24,7 @@ class CvTailorService
         string $jobTitle, 
         string $companyName, 
         string $jobDescription = '',
-        array $dbProfile = [] // <--- New parameter
+        array $dbProfile = [] 
     ): array {
         $start = microtime(true);
 

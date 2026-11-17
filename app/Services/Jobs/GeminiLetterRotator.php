@@ -24,6 +24,19 @@ class GeminiLetterRotator
         $attempts = [];
         $lastErr  = null;
 
+        Log::info('CvRewriteService: about to call AI', [
+            'uuid'             => $request->uuid,
+            'cv_text_len'      => strlen($cvText),
+            'cv_text_preview'  => substr($cvText, 0, 500),
+            'answers_len'      => strlen($gaps),
+            'job_title'        => $request->target_job_title,
+            'job_desc_len'     => strlen((string) $request->target_job_description),
+            'job_desc_preview' => substr((string) $request->target_job_description, 0, 300),
+            'prompt_len'       => strlen($prompt),
+            'prompt_preview'   => substr($prompt, 0, 1000),
+            'prompt_tail'      => substr($prompt, -300),
+        ]);
+
         // ── 1. Try each Gemini key ────────────────────────────────
         foreach ($this->geminiKeys() as $index => $apiKey) {
             $slot = 'gemini#' . ($index + 1)
@@ -65,6 +78,13 @@ class GeminiLetterRotator
                     'slot'  => $slot,
                     'error' => $e->getMessage(),
                 ]);
+            } catch (\Illuminate\Http\Client\ConnectionException $e) {
+                Log::error('GeminiLetterRotator: connection failed', [
+                    'model' => $model,
+                    'error' => $e->getMessage(),
+                    'url'   => preg_replace('/key=[^&]+/', 'key=***', $url),
+                ]);
+                throw $e;
             }
         }
 
@@ -167,6 +187,13 @@ class GeminiLetterRotator
         $endpoint = rtrim((string) config('ai.letter_gemini_endpoint'), '/');
         $model    = (string) config('ai.letter_gemini_model', 'gemini-3.5-flash');
 
+        Log::info('GeminiLetterRotator: sending request', [
+            'model'       => $model,
+            'url'         => preg_replace('/key=[^&]+/', 'key=***', $url),
+            'body_bytes'  => strlen(json_encode($body)),
+            'timeout'     => 90,
+        ]);
+
         $body = [
             'contents' => [[
                 'parts' => [['text' => $prompt]],
@@ -186,6 +213,8 @@ class GeminiLetterRotator
         if (!$response->successful()) {
             throw new ProviderHttpException($response->status(), $response->body());
         }
+
+ 
 
         return $response->json('candidates.0.content.parts.0.text');
     }

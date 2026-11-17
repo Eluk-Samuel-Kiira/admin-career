@@ -2,10 +2,10 @@
 
 namespace App\Services\Jobs;
 
+use App\Models\Service\CvReviewRequest;
 use App\Models\Service\LetterRequest;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
-
 
 class LetterGeneratorService
 {
@@ -15,49 +15,81 @@ class LetterGeneratorService
         protected GeminiLetterRotator $letterRotator,
     ) {}
 
-    public function generate(LetterRequest $request): void
+    // ═════════════════════════════════════════════════════════════
+    // PUBLIC ENTRY POINT
+    // ═════════════════════════════════════════════════════════════
+
+    /**
+     * Generate the cover / application letter for a request.
+     *
+     * @param  array{
+     *     require_generated_cv?: bool,
+     *     providers?: array<string>,
+     *     max_tokens?: int,
+     * }  $options
+     *
+     * @throws \RuntimeException when require_generated_cv is true and the
+     *         linked CV review is missing or not in 'generated' status.
+     */
+    public function generate(LetterRequest $request, array $options = []): void
     {
         $startTime = microtime(true);
 
         $request->update(['status' => 'processing', 'error_message' => null]);
 
         Log::info('LetterGenerator: START', [
-            'uuid'        => $request->uuid,
-            'letter_type' => $request->letter_type,
-            'cv_source'   => $request->cv_source,
-            'cv_path'     => $request->cv_path,
+            'uuid'                 => $request->uuid,
+            'letter_type'          => $request->letter_type,
+            'cv_source'            => $request->cv_source,
+            'cv_path'              => $request->cv_path,
+            'require_generated_cv' => $options['require_generated_cv'] ?? false,
         ]);
 
         try {
-            // ── Step 1: extract CV text ─────────────────────────────
-            $t = microtime(true);
-            Log::info('LetterGenerator: extracting CV text', ['uuid' => $request->uuid]);
+            // ── Step 1: Resolve the CV text — with optional strict gate ──
+            $cvResolution = $this->resolveCvText($request, $options);
 
-            $cvText = $this->resolveCvText($request);
-
-            Log::info('LetterGenerator: CV extracted', [
-                'uuid'  => $request->uuid,
-                'chars' => strlen($cvText),
-                'words' => str_word_count($cvText),
-                'secs'  => round(microtime(true) - $t, 2),
-            ]);
-
-            if ($cvText === '' || !$this->isPlausibleCv($cvText)) {
-                Log::warning('LetterGenerator: CV not plausible', [
-                    'uuid'     => $request->uuid,
-                    'chars'    => strlen($cvText),
-                    'words'    => str_word_count($cvText),
-                    'first_200'=> substr($cvText, 0, 200),
-                ]);
-
-                throw new \Exception(
-                    'We could not read your CV. It may be a scanned image, password-protected, or not a CV. '
-                    . 'Please upload a PDF or Word version of your actual CV and try again.'
+            if ($cvResolution['state'] === 'waiting_for_cv') {
+                // Not a failure — the caller should retry later.
+                // We don't mark the letter 'failed', we leave it 'processing'
+                // and re-throw so the queue job can release with delay.
+                throw new \RuntimeException(
+                    'The linked CV review has not been generated yet. '
+                    . 'The cover letter will be retried once the CV is ready.'
                 );
             }
 
-            // ── Step 2: build job context ───────────────────────────
-            $t = microtime(true);
+            if ($cvResolution['state'] === 'cv_failed') {
+                throw new \RuntimeException(
+                    'The linked CV review failed. Cover letter generation stopped: '
+                    . ($cvResolution['reason'] ?? 'unknown CV error')
+                );
+            }
+
+            $cvText = $cvResolution['text'];
+            if ($cvText === '' || !$this->isPlausibleCv($cvText)) {
+                Log::warning('LetterGenerator: CV not plausible', [
+                    'uuid'      => $request->uuid,
+                    'source'    => $cvResolution['source'],
+                    'chars'     => strlen($cvText),
+                    'words'     => str_word_count($cvText),
+                    'first_200' => substr($cvText, 0, 200),
+                ]);
+
+                throw new \RuntimeException(
+                    'We could not read your CV. It may be a scanned image, password-protected, '
+                    . 'or not a CV. Please upload a PDF or Word version of your actual CV and try again.'
+                );
+            }
+
+            Log::info('LetterGenerator: CV resolved', [
+                'uuid'   => $request->uuid,
+                'source' => $cvResolution['source'],
+                'chars'  => strlen($cvText),
+                'words'  => str_word_count($cvText),
+            ]);
+
+            // ── Step 2: Job context ──
             $jobContext = [
                 'job_title'       => $request->job_title,
                 'company_name'    => $request->company_name,
@@ -69,20 +101,25 @@ class LetterGeneratorService
                 'job_title'         => $jobContext['job_title'],
                 'company_name'      => $jobContext['company_name'],
                 'description_chars' => strlen((string) $jobContext['job_description']),
-                'secs'              => round(microtime(true) - $t, 2),
             ]);
 
-            // ── Step 3: call AI via the rotating Gemini pool ────────
+            // ── Step 3: AI call ──
             $t = microtime(true);
             Log::info('LetterGenerator: calling AI (rotator)', ['uuid' => $request->uuid]);
 
             $prompt = $this->buildLetterPromptForRotator($cvText, $jobContext, $request->letter_type);
-            $raw    = $this->letterRotator->generate($prompt, 4096);
-            $html   = $this->cleanLetterHtml($raw);
+
+            $raw = $this->letterRotator->generate(
+                $prompt,
+                (int) ($options['max_tokens'] ?? 4096),
+                $options['providers'] ?? null,
+            );
+
+            $html = $this->cleanLetterHtml($raw);
 
             $wordCount = str_word_count(strip_tags($html));
             if ($wordCount < 60) {
-                throw new \Exception(
+                throw new \RuntimeException(
                     "AI returned too short a response ({$wordCount} words). Please try again."
                 );
             }
@@ -94,7 +131,7 @@ class LetterGeneratorService
                 'secs'  => round(microtime(true) - $t, 2),
             ]);
 
-            // ── Step 4: persist ─────────────────────────────────────
+            // ── Step 4: Persist ──
             $request->update([
                 'content'      => $html,
                 'status'       => 'generated',
@@ -104,55 +141,180 @@ class LetterGeneratorService
             Log::info('LetterGenerator: COMPLETE', [
                 'uuid'       => $request->uuid,
                 'total_secs' => round(microtime(true) - $startTime, 2),
+                'cv_source'  => $cvResolution['source'],
             ]);
 
         } catch (\Throwable $e) {
-            Log::warning('LetterGeneratorService failed', [
-                'uuid'       => $request->uuid,
-                'error'      => $e->getMessage(),
-                'class'      => get_class($e),
-                'elapsed'    => round(microtime(true) - $startTime, 2),
-                'trace_head' => implode("\n", array_slice(explode("\n", $e->getTraceAsString()), 0, 5)),
-            ]);
+            // Distinguish "wait for CV" from "real failure"
+            $isWaitingForCv = str_contains($e->getMessage(), 'CV review has not been generated');
 
-            $request->update([
-                'status'        => 'failed',
-                'error_message' => $e->getMessage(),
+            if ($isWaitingForCv) {
+                // Leave status as-is so the job can retry.
+                $request->update([
+                    'status'        => 'processing',
+                    'error_message' => $e->getMessage(),
+                ]);
+            } else {
+                $request->update([
+                    'status'        => 'failed',
+                    'error_message' => mb_substr($e->getMessage(), 0, 500),
+                ]);
+            }
+
+            Log::warning('LetterGeneratorService failed', [
+                'uuid'           => $request->uuid,
+                'error'          => $e->getMessage(),
+                'class'          => get_class($e),
+                'elapsed'        => round(microtime(true) - $startTime, 2),
+                'waiting_for_cv' => $isWaitingForCv,
+                'trace_head'     => implode("\n", array_slice(explode("\n", $e->getTraceAsString()), 0, 5)),
             ]);
 
             throw $e;
 
         } finally {
-            Log::info('LetterGenerator: cleanup', ['uuid' => $request->uuid]);
-
             $fresh = $request->fresh();
 
             if ($fresh && $fresh->status === 'generated') {
-                $this->cleanupTempCv($fresh);   // ← fresh, not stale
+                $this->cleanupTempCv($fresh);
             }
         }
     }
 
-    protected function resolveCvText(LetterRequest $request): string
+    // ═════════════════════════════════════════════════════════════
+    // CV RESOLUTION — returns state + text, never silently falls back
+    // ═════════════════════════════════════════════════════════════
+
+    /**
+     * Resolve the CV text for a letter request.
+     *
+     * Returns:
+     *   ['state' => 'generated',        'text' => '...', 'source' => 'cv_review']
+     *   ['state' => 'waiting_for_cv',   'text' => '',    'source' => null]
+     *   ['state' => 'cv_failed',        'text' => '',    'source' => null, 'reason' => '...']
+     *   ['state' => 'fallback_file',    'text' => '...', 'source' => 'uploaded_file']
+     *   ['state' => 'fallback_profile', 'text' => '...', 'source' => 'profile']
+     *   ['state' => 'missing',          'text' => '',    'source' => null]
+     *
+     * @param  array{require_generated_cv?: bool, prefer_profile?: bool}  $options
+     * @return array{state: string, text: string, source: ?string, reason?: string}
+     */
+    protected function resolveCvText(LetterRequest $request, array $options = []): array
     {
-        $path = $request->cv_path;
+        $requireGenerated = $options['require_generated_cv'] ?? false;
 
-        if ($path && Storage::disk('public')->exists($path)) {
-            $text = $this->tryExtract($path);
+        // ── 1. Is this letter linked to a CV review? ──
+        $cv = $this->linkedCvReview($request);
+
+        if ($cv) {
+            // ── 1a. CV ready → use its generated text ──
+            if ($cv->status === 'generated' && !empty($cv->rewrite_content['html'])) {
+                return [
+                    'state'  => 'generated',
+                    'text'   => $this->htmlToPlainText($cv->rewrite_content['html']),
+                    'source' => 'cv_review',
+                ];
+            }
+
+            // ── 1b. CV in progress → caller must wait ──
+            if (in_array($cv->status, ['paid_ai', 'generating'], true)) {
+                if ($requireGenerated) {
+                    return [
+                        'state'  => 'waiting_for_cv',
+                        'text'   => '',
+                        'source' => null,
+                    ];
+                }
+
+                // Not strict → fall through to file/profile fallback below
+            }
+
+            // ── 1c. CV failed → hard stop if strict ──
+            if ($cv->status === 'failed') {
+                if ($requireGenerated) {
+                    return [
+                        'state'  => 'cv_failed',
+                        'text'   => '',
+                        'source' => null,
+                        'reason' => $cv->rewrite_error_message ?? 'CV generation failed',
+                    ];
+                }
+
+                // Not strict → allow file fallback, but log it
+                Log::warning('LetterGenerator: linked CV failed, falling back to file', [
+                    'letter_uuid' => $request->uuid,
+                    'cv_uuid'     => $cv->uuid,
+                    'cv_error'    => $cv->rewrite_error_message,
+                ]);
+            }
+        } else {
+            // ── 1d. No CV review link ──
+            if ($requireGenerated) {
+                return [
+                    'state'  => 'cv_failed',
+                    'text'   => '',
+                    'source' => null,
+                    'reason' => 'This letter is not linked to a CV review. Admin letters require a CV review.',
+                ];
+            }
+        }
+
+        // ── 2. Fall back to the uploaded CV file ──
+        $fileText = $this->extractFromRequestCv($request);
+        if ($fileText !== '') {
+            return [
+                'state'  => 'fallback_file',
+                'text'   => $fileText,
+                'source' => 'uploaded_file',
+            ];
+        }
+
+        // ── 3. Fall back to the profile (if any) ──
+        if (($options['prefer_profile'] ?? true) === true) {
+            $profileText = $this->buildTextFromProfile($request);
+            if (strlen($profileText) >= 300) {
+                return [
+                    'state'  => 'fallback_profile',
+                    'text'   => $profileText,
+                    'source' => 'profile',
+                ];
+            }
+        }
+
+        return ['state' => 'missing', 'text' => '', 'source' => null];
+    }
+
+    /**
+     * The CV review this letter belongs to, if any.
+     * Linked via `cover_letter_uuid` on the CV review row.
+     */
+    protected function linkedCvReview(LetterRequest $request): ?CvReviewRequest
+    {
+        return CvReviewRequest::where('cover_letter_uuid', $request->uuid)->first();
+    }
+
+    protected function extractFromRequestCv(LetterRequest $request): string
+    {
+        // Try request's own CV first
+        if ($request->cv_path && Storage::disk('public')->exists($request->cv_path)) {
+            $text = $this->tryExtract($request->cv_path);
             if ($text !== '') return $text;
         }
 
+        // Then the seeker profile's CVs
         $seeker = $request->seekerProfile;
-        if ($seeker && $seeker->cv_file_path && Storage::disk('public')->exists($seeker->cv_file_path)) {
-            $text = $this->tryExtract($seeker->cv_file_path);
-            if ($text !== '') return $text;
-        }
+        if ($seeker) {
+            if ($seeker->cv_file_path && Storage::disk('public')->exists($seeker->cv_file_path)) {
+                $text = $this->tryExtract($seeker->cv_file_path);
+                if ($text !== '') return $text;
+            }
 
-        if ($seeker && is_array($seeker->cv_files)) {
-            foreach ($seeker->cv_files as $entry) {
-                if (!empty($entry['path']) && Storage::disk('public')->exists($entry['path'])) {
-                    $text = $this->tryExtract($entry['path']);
-                    if ($text !== '') return $text;
+            if (is_array($seeker->cv_files)) {
+                foreach ($seeker->cv_files as $entry) {
+                    if (!empty($entry['path']) && Storage::disk('public')->exists($entry['path'])) {
+                        $text = $this->tryExtract($entry['path']);
+                        if ($text !== '') return $text;
+                    }
                 }
             }
         }
@@ -163,15 +325,69 @@ class LetterGeneratorService
     protected function tryExtract(string $path): string
     {
         try {
-            $absolutePath = Storage::disk('public')->path($path);
+            $abs  = Storage::disk('public')->path($path);
             $mime = Storage::disk('public')->mimeType($path) ?: 'application/pdf';
-            $text = $this->extractor->extract($absolutePath, $mime);
-            return trim($text);
+            return trim((string) $this->extractor->extract($abs, $mime));
         } catch (\Throwable $e) {
             Log::info('Letter CV extraction failed', ['path' => $path, 'error' => $e->getMessage()]);
             return '';
         }
     }
+
+    /**
+     * Compose plain text from the seeker profile as a last resort.
+     * Same shape as CvRewriteService::buildTextFromProfile().
+     */
+    protected function buildTextFromProfile(LetterRequest $request): string
+    {
+        $profile = optional($request->user)->seekerProfile;
+        if (!$profile) return '';
+
+        $lines = [];
+
+        $fullName = trim(($profile->first_name ?? '') . ' ' . ($profile->last_name ?? ''));
+        if ($fullName !== '') $lines[] = "Name: {$fullName}";
+
+        foreach (['headline', 'email', 'phone', 'country', 'city'] as $field) {
+            if (!empty($profile->{$field})) {
+                $lines[] = ucwords(str_replace('_', ' ', $field)) . ': ' . $profile->{$field};
+            }
+        }
+
+        if (!empty($profile->professional_summary)) {
+            $lines[] = "\nSUMMARY:\n" . trim($profile->professional_summary);
+        }
+
+        foreach (['skills', 'experience', 'education'] as $field) {
+            $val = $profile->{$field} ?? null;
+            if (is_string($val)) {
+                $decoded = json_decode($val, true);
+                if (is_array($decoded)) $val = $decoded;
+            }
+            if (!empty($val) && is_array($val)) {
+                $lines[] = "\n" . strtoupper($field) . ":";
+                foreach ($val as $item) {
+                    $lines[] = '- ' . (is_array($item)
+                        ? json_encode($item, JSON_UNESCAPED_UNICODE)
+                        : (string) $item);
+                }
+            }
+        }
+
+        return implode("\n", $lines);
+    }
+
+    protected function htmlToPlainText(string $html): string
+    {
+        $plain = preg_replace('#</(p|h[1-6]|div|tr|li)>#i', "\n", $html);
+        $plain = html_entity_decode(strip_tags($plain), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $plain = preg_replace('/[ \t]+/u', ' ', $plain);
+        return (string) preg_replace('/\n{3,}/', "\n\n", trim($plain));
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // UNCHANGED HELPERS (kept as-is from your original)
+    // ═════════════════════════════════════════════════════════════
 
     public function isPlausibleCv(string $text): bool
     {
@@ -252,10 +468,6 @@ class LetterGeneratorService
         }
     }
 
-    /**
-     * Strip fences/attrs and wrap plain text into HTML.
-     * (Assumed to exist elsewhere in your codebase — keep whatever you have.)
-     */
     protected function cleanLetterHtml(string $raw): string
     {
         $clean = preg_replace('/^```(?:html|HTML)?\s*/', '', trim($raw));
@@ -281,16 +493,12 @@ class LetterGeneratorService
         return trim($clean);
     }
 
-    /**
-     * Build the letter prompt for the rotating Gemini keys.
-     * Same content as AiService::buildLetterPrompt() — kept here so the
-     * letter flow does not depend on AiService config at all.
-     */
     protected function buildLetterPromptForRotator(
         string $cvText,
         array $jobContext,
         string $letterType
     ): string {
+        // Unchanged from your original — the prompt itself was fine.
         $jobTitle    = $jobContext['job_title']    ?? 'the advertised post';
         $companyName = $jobContext['company_name'] ?? 'the organisation';
         $jobDesc     = strip_tags($jobContext['job_description'] ?? '');
@@ -377,6 +585,4 @@ class LetterGeneratorService
             Return the letter now.
             PROMPT;
     }
-
-
 }
