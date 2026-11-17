@@ -91,32 +91,32 @@ class ServicePrice extends Model
      * @param  string  $countryCode  e.g. 'UG' or 'KE'
      * @return ServicePrice|null
      */
-    public static function resolve(string $serviceKey, string $countryCode): ?self
+    public static function resolve(string $serviceKey, ?string $countryCode): ?self
     {
         $service = Service::where('key', $serviceKey)->where('is_active', true)->first();
         if (!$service) {
             return null;
         }
 
-        $countryCode = strtoupper($countryCode);
+        $countryCode = $countryCode ? strtoupper($countryCode) : null;
 
-        // Country-specific first
-        $price = self::with(['currency'])
-            ->active()
-            ->where('service_id', $service->id)
-            ->where('country_code', $countryCode)
-            ->first();
-
-        // Fall back to GLOBAL
-        if (!$price) {
+        if ($countryCode) {
             $price = self::with(['currency'])
                 ->active()
                 ->where('service_id', $service->id)
-                ->where('country_code', self::GLOBAL_CODE)
+                ->where('country_code', $countryCode)
                 ->first();
+
+            if ($price) {
+                return $price;
+            }
         }
 
-        return $price;
+        return self::with(['currency'])
+            ->active()
+            ->where('service_id', $service->id)
+            ->where('country_code', self::GLOBAL_CODE)
+            ->first();
     }
 
     /**
