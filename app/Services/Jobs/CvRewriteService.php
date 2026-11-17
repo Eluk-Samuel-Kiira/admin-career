@@ -5,18 +5,29 @@ namespace App\Services\Jobs;
 use App\Models\Service\CvReviewRequest;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
-use App\Services\Jobs\CvHtmlSanitizer;
 
 class CvRewriteService
 {
-    
-    
     public function __construct(
         protected GeminiLetterRotator $rotator,
         protected CvTextExtractionService $extractor,
     ) {}
 
-    public function generate(CvReviewRequest $request): void
+    // ═════════════════════════════════════════════════════════════
+    // PUBLIC ENTRY POINTS
+    // ═════════════════════════════════════════════════════════════
+
+    /**
+     * Generate a rewrite for a persisted CvReviewRequest.
+     * Used by the API layer (seeker flow + admin flow). Saves content on the row.
+     *
+     * @param  array{
+     *     prefer_profile?: bool,
+     *     max_tokens?: int,
+     *     providers?: array<string>,
+     * }  $options
+     */
+    public function generate(CvReviewRequest $request, array $options = []): void
     {
         $start = microtime(true);
 
@@ -26,54 +37,27 @@ class CvRewriteService
         ]);
 
         try {
-            $cvText = $this->resolveCvText($request);
+            $cvText = $this->resolveCvText($request, $options);
 
             if ($cvText === '') {
-                throw new \Exception('Could not read the CV file for rewrite.');
+                throw new \RuntimeException('Could not read the CV file for rewrite.');
             }
 
-            $gaps = $this->formatAnswers($request);
-
-            $prompt = $this->buildRewritePrompt(
-                $cvText,
-                $gaps,
-                $request->target_job_title,
-                $request->target_job_description
-            );
-
-            Log::info('CvRewriteService: calling AI', ['uuid' => $request->uuid]);
-            $raw  = $this->rotator->generate($prompt, 6144);
-            $html = CvHtmlSanitizer::clean($raw);
-
-            $words = str_word_count(strip_tags($html));
-            if ($words < 150) {
-                throw new \Exception("The CV Rewriter returned too short a response ({$words} words).");
-            }
-
-            // ── Fact check: every year in the output must come from the CV or the candidate's answers
-            preg_match_all('/\b(?:19|20)\d{2}\b/', $cvText, $sourceMatches);
-            preg_match_all('/\b(?:19|20)\d{2}\b/', $gaps, $answerMatches);
-            $allowedYears = array_merge($sourceMatches[0], $answerMatches[0]);
-
-            preg_match_all('/\b(?:19|20)\d{2}\b/', strip_tags($html), $outputMatches);
-            foreach (array_unique($outputMatches[0]) as $year) {
-                if (!in_array($year, $allowedYears, true)) {
-                    throw new \Exception("Generated CV contains year {$year} that is not in the source CV.");
-                }
-            }
+            $result = $this->runRewrite($cvText, $request, $options);
 
             $request->update([
-                'rewrite_content'          => ['html' => $html],
-                'rewrite_content_original' => ['html' => $html],
+                'rewrite_content'          => ['html' => $result['html']],
+                'rewrite_content_original' => ['html' => $result['html']],
                 'rewrite_generated_at'     => now(),
                 'status'                   => 'generated',
                 'rewrite_error_message'    => null,
             ]);
 
             Log::info('CvRewriteService: complete', [
-                'uuid' => $request->uuid,
-                'secs' => round(microtime(true) - $start, 2),
-                'words' => $words,
+                'uuid'   => $request->uuid,
+                'secs'   => round(microtime(true) - $start, 2),
+                'words'  => $result['words'],
+                'source' => $result['source'],
             ]);
         } catch (\Throwable $e) {
             Log::warning('CvRewriteService: failed', [
@@ -82,8 +66,8 @@ class CvRewriteService
             ]);
 
             $request->update([
-                'status'                => 'failed',  
-                'rewrite_content'       => null,       
+                'status'                => 'failed',
+                'rewrite_content'       => null,
                 'rewrite_generated_at'  => null,
                 'rewrite_error_message' => mb_substr($e->getMessage(), 0, 500),
             ]);
@@ -92,35 +76,334 @@ class CvRewriteService
         }
     }
 
-    public function resolveCvText(CvReviewRequest $request): string
+    /**
+     * Generate a rewrite from a raw text CV — no DB, no file extraction.
+     * For the proxy or any caller that already has the CV assembled.
+     *
+     * Returns ['html' => string, 'words' => int, 'source' => string]
+     * Does NOT persist anything.
+     *
+     * @param  array{max_tokens?: int, providers?: array<string>}  $options
+     * @return array{html: string, words: int, source: string}
+     */
+    public function generateFromText(string $cvText, array $jobContext = [], array $options = []): array
     {
+        $cvText = trim($cvText);
+        if ($cvText === '') {
+            throw new \InvalidArgumentException('CV text cannot be empty.');
+        }
+
+        $gaps = $this->formatAnswersFromArray($jobContext['answers'] ?? []);
+
+        $prompt = $this->buildRewritePrompt(
+            $cvText,
+            $gaps,
+            $jobContext['job_title'] ?? null,
+            $jobContext['job_description'] ?? null
+        );
+
+        Log::info('CvRewriteService::generateFromText', [
+            'cv_len'      => strlen($cvText),
+            'prompt_len'  => strlen($prompt),
+            'job_title'   => $jobContext['job_title'] ?? null,
+            'job_desc_len'=> strlen((string) ($jobContext['job_description'] ?? '')),
+        ]);
+
+        $raw = $this->rotator->generate(
+            $prompt,
+            (int) ($options['max_tokens'] ?? 6144),
+            $options['providers'] ?? null,
+        );
+
+        $html  = \App\Services\Jobs\CvHtmlSanitizer::clean($raw);
+        $words = str_word_count(strip_tags($html));
+
+        if ($words < 150) {
+            throw new \RuntimeException("The CV Rewriter returned too short a response ({$words} words).");
+        }
+
+        $this->enforceYearFacts($html, $cvText, $gaps);
+
+        return ['html' => $html, 'words' => $words, 'source' => 'caller_text'];
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // CV TEXT RESOLUTION
+    // ═════════════════════════════════════════════════════════════
+
+    /**
+     * Resolve the CV text for a request, respecting the caller's preference.
+     * Order of preference:
+     *   1. Explicit cv_text on the request row (if the proxy pre-filled it)
+     *   2. Structured profile (if prefer_profile is true and it's rich enough)
+     *   3. Extracted file (original_cv_path, then seeker_cv_path)
+     *   4. Whatever profile data we could scrape together
+     */
+    public function resolveCvText(CvReviewRequest $request, array $options = []): string
+    {
+        $preferProfile = $options['prefer_profile'] ?? true;
+
+        // ── 1. Pre-built text on the row (proxy-friendly) ──
+        $explicit = $request->cv_text ?? null;
+        if (is_string($explicit) && trim($explicit) !== '') {
+            Log::info('CvRewrite: using explicit cv_text from request', [
+                'uuid' => $request->uuid,
+                'len'  => strlen($explicit),
+            ]);
+            return trim($explicit);
+        }
+
+        // ── 2. Structured profile ──
+        $profileText = $this->buildTextFromProfile($request);
+        if ($preferProfile && strlen($profileText) >= 300) {
+            Log::info('CvRewrite: using structured profile as source', [
+                'uuid' => $request->uuid,
+                'len'  => strlen($profileText),
+            ]);
+            return $profileText;
+        }
+
+        // ── 3. Extract from the uploaded file ──
         foreach ([$request->original_cv_path, $request->seeker_cv_path] as $path) {
-            if ($path && Storage::disk('public')->exists($path)) {
-                try {
-                    $abs  = Storage::disk('public')->path($path);
-                    $mime = Storage::disk('public')->mimeType($path) ?: 'application/pdf';
-                    $text = trim($this->extractor->extract($abs, $mime));
-                    if ($text !== '') return $text;
-                } catch (\Throwable $e) {
-                    Log::info('CvRewrite: extract failed', ['path' => $path]);
+            if (!$path || !Storage::disk('public')->exists($path)) {
+                continue;
+            }
+
+            try {
+                $abs  = Storage::disk('public')->path($path);
+                $mime = Storage::disk('public')->mimeType($path) ?: 'application/pdf';
+                $text = trim($this->extractor->extract($abs, $mime));
+
+                if ($text !== '') {
+                    Log::info('CvRewrite: extracted CV file', [
+                        'uuid' => $request->uuid,
+                        'path' => $path,
+                        'len'  => strlen($text),
+                    ]);
+                    return $text;
                 }
+            } catch (\Throwable $e) {
+                Log::warning('CvRewrite: extract failed', [
+                    'uuid' => $request->uuid,
+                    'path' => $path,
+                    'err'  => $e->getMessage(),
+                ]);
             }
         }
+
+        // ── 4. Profile fallback (short) ──
+        if ($profileText !== '') {
+            Log::info('CvRewrite: profile fallback (short)', [
+                'uuid' => $request->uuid,
+                'len'  => strlen($profileText),
+            ]);
+            return $profileText;
+        }
+
         return '';
     }
 
+    /**
+     * Compose a plain-text CV from the seeker's structured profile.
+     * Tolerant of missing columns and multiple storage shapes (array / JSON string).
+     */
+    protected function buildTextFromProfile(CvReviewRequest $request): string
+    {
+        $profile = optional($request->user)->seekerProfile;
+        if (!$profile) {
+            return '';
+        }
+
+        $lines = [];
+
+        $add = function (string $label, $value) use (&$lines) {
+            $value = is_array($value) ? implode(', ', $value) : (string) $value;
+            $value = trim($value);
+            if ($value !== '') {
+                $lines[] = "{$label}: {$value}";
+            }
+        };
+
+        // ── Contact ──
+        $fullName = trim(($profile->first_name ?? '') . ' ' . ($profile->last_name ?? ''));
+        if ($fullName !== '') $lines[] = "Name: {$fullName}";
+
+        foreach (['headline', 'email', 'phone', 'country', 'city', 'linkedin_url'] as $field) {
+            if (!empty($profile->{$field})) {
+                $add(ucwords(str_replace('_', ' ', $field)), $profile->{$field});
+            }
+        }
+
+        // ── Summary / bio ──
+        if (!empty($profile->professional_summary)) {
+            $lines[] = "\nPROFESSIONAL SUMMARY:\n" . trim($profile->professional_summary);
+        }
+        if (!empty($profile->bio)) {
+            $lines[] = "\nBIO:\n" . trim($profile->bio);
+        }
+
+        // ── Skills ──
+        $skills = $this->decodeIfJson($profile->skills ?? []);
+        if (!empty($skills) && is_array($skills)) {
+            $skillNames = array_values(array_filter(array_map(
+                fn ($s) => is_array($s) ? ($s['name'] ?? '') : (string) $s,
+                $skills
+            )));
+            if (!empty($skillNames)) {
+                $lines[] = "\nSKILLS:\n- " . implode("\n- ", $skillNames);
+            }
+        }
+
+        // ── Experience ──
+        $experience = $this->decodeIfJson($profile->experience ?? []);
+        if (!empty($experience) && is_array($experience)) {
+            $lines[] = "\nEXPERIENCE:";
+            foreach ($experience as $job) {
+                if (!is_array($job)) continue;
+
+                $title   = $job['title']       ?? $job['job_title'] ?? '';
+                $company = $job['company']     ?? $job['employer']  ?? '';
+                $start   = $job['start_date']  ?? $job['start']     ?? '';
+                $end     = $job['end_date']    ?? $job['end']       ?? 'Present';
+                $desc    = $job['description'] ?? $job['summary']   ?? '';
+
+                $line = "\n- {$title}";
+                if ($company !== '') $line .= " at {$company}";
+                if ($start !== '' || $end !== '') $line .= " ({$start} – {$end})";
+                $lines[] = $line;
+
+                if ($desc !== '') $lines[] = "  {$desc}";
+            }
+        }
+
+        // ── Education ──
+        $education = $this->decodeIfJson($profile->education ?? []);
+        if (!empty($education) && is_array($education)) {
+            $lines[] = "\nEDUCATION:";
+            foreach ($education as $edu) {
+                if (!is_array($edu)) continue;
+
+                $degree      = $edu['degree']      ?? $edu['qualification'] ?? '';
+                $institution = $edu['institution'] ?? $edu['school']        ?? '';
+                $year        = $edu['year']        ?? $edu['end_year']      ?? '';
+
+                $line = "- {$degree}";
+                if ($institution !== '') $line .= ", {$institution}";
+                if ($year !== '')        $line .= " ({$year})";
+                $lines[] = $line;
+            }
+        }
+
+        // ── Certifications / languages ──
+        foreach (['certifications', 'languages'] as $field) {
+            $val = $this->decodeIfJson($profile->{$field} ?? null);
+            if (empty($val) || !is_array($val)) continue;
+
+            $lines[] = "\n" . strtoupper($field) . ":";
+            foreach ($val as $item) {
+                $lines[] = '- ' . (is_array($item) ? ($item['name'] ?? '') : (string) $item);
+            }
+        }
+
+        return implode("\n", $lines);
+    }
+
+    protected function decodeIfJson($value)
+    {
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            if (is_array($decoded)) return $decoded;
+        }
+        return $value;
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // REWRITE PIPELINE (shared by both entry points)
+    // ═════════════════════════════════════════════════════════════
+
+    /**
+     * Build the prompt, call the rotator, sanitize, validate.
+     * Does not persist.
+     *
+     * @return array{html: string, words: int, source: string}
+     */
+    protected function runRewrite(string $cvText, CvReviewRequest $request, array $options = []): array
+    {
+        $gaps = $this->formatAnswers($request);
+
+        $prompt = $this->buildRewritePrompt(
+            $cvText,
+            $gaps,
+            $request->target_job_title,
+            $request->target_job_description
+        );
+
+        Log::info('CvRewriteService: calling AI', [
+            'uuid'       => $request->uuid,
+            'cv_len'     => strlen($cvText),
+            'prompt_len' => strlen($prompt),
+        ]);
+
+        $raw = $this->rotator->generate(
+            $prompt,
+            (int) ($options['max_tokens'] ?? 6144),
+            $options['providers'] ?? null,
+        );
+
+        $html  = \App\Services\Jobs\CvHtmlSanitizer::clean($raw);
+        $words = str_word_count(strip_tags($html));
+
+        if ($words < 150) {
+            throw new \RuntimeException("The CV Rewriter returned too short a response ({$words} words).");
+        }
+
+        $this->enforceYearFacts($html, $cvText, $gaps);
+
+        return ['html' => $html, 'words' => $words, 'source' => 'request'];
+    }
+
+    /**
+     * Reject if the output contains a year the source CV did not provide.
+     */
+    protected function enforceYearFacts(string $html, string $cvText, string $gaps): void
+    {
+        preg_match_all('/\b(?:19|20)\d{2}\b/', $cvText, $src);
+        preg_match_all('/\b(?:19|20)\d{2}\b/', $gaps, $ans);
+
+        $allowed = array_unique(array_merge($src[0], $ans[0]));
+
+        preg_match_all('/\b(?:19|20)\d{2}\b/', strip_tags($html), $out);
+        foreach (array_unique($out[0]) as $year) {
+            if (!in_array($year, $allowed, true)) {
+                throw new \RuntimeException("Generated CV contains year {$year} that is not in the source CV.");
+            }
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // ANSWERS FORMATTERS
+    // ═════════════════════════════════════════════════════════════
+
     protected function formatAnswers(CvReviewRequest $r): string
     {
-        $answers = $r->seeker_gap_answers ?? [];
+        return $this->formatAnswersFromArray($r->seeker_gap_answers ?? []);
+    }
+
+    protected function formatAnswersFromArray(array $answers): string
+    {
         if (empty($answers)) return '';
 
         $lines = [];
         foreach ($answers as $field => $answer) {
             $label = ucwords(str_replace('_', ' ', (string) $field));
-            $lines[] = "Q: {$label}\nA: {$answer}";
+            $lines[] = "Q: {$label}\nA: " . (is_array($answer) ? implode(', ', $answer) : (string) $answer);
         }
         return implode("\n\n", $lines);
     }
+
+    // ═════════════════════════════════════════════════════════════
+    // PROMPT BUILDER (unchanged — this was already good)
+    // ═════════════════════════════════════════════════════════════
 
     protected function buildRewritePrompt(
         string $cvText,
@@ -132,9 +415,6 @@ class CvRewriteService
         $answerWords = str_word_count(strip_tags($answers));
         $combined    = max(1, $sourceWords + $answerWords);
 
-        // Realistic output-length target derived from what the source supports.
-        // Gemini can comfortably expand a CV to 1.2x–2x its source length using
-        // natural prose, but any more becomes padding or invention.
         $targetMin = max(80,  min(400, (int) round($combined * 1.2)));
         $targetMax = max($targetMin + 100, min(800, (int) round($combined * 2.0)));
 
@@ -238,8 +518,4 @@ class CvRewriteService
             Begin now. Output only the HTML.
             PROMPT;
     }
-
-
-
-
 }

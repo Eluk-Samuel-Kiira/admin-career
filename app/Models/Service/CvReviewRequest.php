@@ -41,6 +41,12 @@ class CvReviewRequest extends Model
         'seeker_gap_answers',
         'revision_history',
 
+        'created_by_admin_id',
+        'job_post_id',
+        'target_company_name',
+        'cover_letter_uuid',
+        'covered_by_subscription',
+
         'status',
         'payment_reference',
         'assigned_admin_id',
@@ -77,6 +83,8 @@ class CvReviewRequest extends Model
         'sla_due_at'           => 'datetime',
         'delivered_at'         => 'datetime',
         'review_delivered_at'  => 'datetime',
+
+        'covered_by_subscription' => 'boolean',
 
         'rewrite_content'           => 'array',
         'rewrite_content_original'  => 'array',
@@ -125,6 +133,37 @@ class CvReviewRequest extends Model
     public function assignedAdmin()
     {
         return $this->belongsTo(User::class, 'assigned_admin_id');
+    }
+
+    public function createdByAdmin()
+    {
+        return $this->belongsTo(User::class, 'created_by_admin_id');
+    }
+
+    public function coverLetter()
+    {
+        return $this->belongsTo(\App\Models\Service\LetterRequest::class, 'cover_letter_uuid', 'uuid');
+    }
+
+    public function jobPost()
+    {
+        return $this->belongsTo(\App\Models\Job\JobPost::class, 'job_post_id');
+    }
+
+    public function getIsSubscriberCreatedAttribute(): bool
+    {
+        return (bool) $this->covered_by_subscription;
+    }
+
+    public function getHasCoverLetterAttribute(): bool
+    {
+        return $this->cover_letter_uuid !== null;
+    }
+
+    public function getCoverLetterDownloadUrlAttribute(): ?string
+    {
+        if (!$this->cover_letter_uuid) return null;
+        return route('api.cv-review.cover-letter.download', ['uuid' => $this->uuid]);
     }
 
     /**

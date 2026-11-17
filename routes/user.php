@@ -149,42 +149,97 @@ Route::prefix('admin')->middleware(['auth'])->group(function () {
 });
 
 
+
 use App\Http\Controllers\Service\CvReviewRequestController;
 
 Route::prefix('admin')->middleware(['auth'])->group(function () {
 
+    // ═════════════════════════════════════════════════════════════
     // CV Review Requests
+    // ═════════════════════════════════════════════════════════════
+
+    // ── 1. Page ────────────────────────────────────────────────
     Route::get('/cv-review-requests', [CvReviewRequestController::class, 'index'])
         ->name('admin.cv-review-requests');
-    Route::get('/cv-review-requests/data', [CvReviewRequestController::class, 'getData'])
+
+    // ── 2. Static endpoints (must come before {id}) ────────────
+    Route::get('/cv-review-requests/data',         [CvReviewRequestController::class, 'getData'])
         ->name('admin.cv-review-requests.data');
-    Route::get('/cv-review-requests/stats', [CvReviewRequestController::class, 'stats'])
+    Route::get('/cv-review-requests/stats',        [CvReviewRequestController::class, 'stats'])
         ->name('admin.cv-review-requests.stats');
-    Route::get('/cv-review-requests/filters', [CvReviewRequestController::class, 'filters'])
+    Route::get('/cv-review-requests/filters',      [CvReviewRequestController::class, 'filters'])
         ->name('admin.cv-review-requests.filters');
-    Route::get('/cv-review-requests/{id}/detail', [CvReviewRequestController::class, 'detail'])
+    Route::get('/cv-review-requests/search-seekers', [CvReviewRequestController::class, 'searchSeekers']);
+    Route::get('/cv-review-requests/cv-search',      [CvReviewRequestController::class, 'cvSearch']);
+    Route::get('/cv-review-requests/search-jobs',    [CvReviewRequestController::class, 'searchJobs']);
+
+    // ── 3. POST: create (no {id}) ──────────────────────────────
+    Route::post('/cv-review-requests/create-for-user',
+        [CvReviewRequestController::class, 'createForUser'])
+        ->name('admin.cv-review-requests.create-for-user');
+
+    Route::post('/cv-review-requests/{id}/generate-missing',
+    [CvReviewRequestController::class, 'generateMissing'])
+    ->name('admin.cv-review-requests.generate-missing');
+    
+
+    // ── 4. POST/DELETE: static action endpoints on {id} ───────
+    //     (declared before the wildcard GET /{id})
+    Route::post('/cv-review-requests/{id}/submit-answers',
+        [CvReviewRequestController::class, 'submitAnswers'])
+        ->name('admin.cv-review-requests.submit-answers');
+
+    Route::get('/cv-review-requests/{id}/cover-letter',
+        [CvReviewRequestController::class, 'coverLetterDownload'])
+        ->name('admin.cv-review-requests.cover-letter');
+
+    Route::get('/cv-review-requests/{id}/detail',
+        [CvReviewRequestController::class, 'detail'])
         ->name('admin.cv-review-requests.detail');
-    Route::get('/cv-review-requests/{id}', [CvReviewRequestController::class, 'show'])
-        ->name('admin.cv-review-requests.show');
-    Route::put('/cv-review-requests/{id}', [CvReviewRequestController::class, 'update'])
-        ->name('admin.cv-review-requests.update');
-    Route::post('/cv-review-requests/{id}/status', [CvReviewRequestController::class, 'updateStatus'])
+
+    Route::post('/cv-review-requests/{id}/status',
+        [CvReviewRequestController::class, 'updateStatus'])
         ->name('admin.cv-review-requests.status');
-    Route::post('/cv-review-requests/{id}/confirm-payment', [CvReviewRequestController::class, 'confirmPayment'])
+
+    Route::post('/cv-review-requests/{id}/confirm-payment',
+        [CvReviewRequestController::class, 'confirmPayment'])
         ->name('admin.cv-review-requests.confirm-payment');
-    Route::post('/cv-review-requests/{id}/upload-delivered', [CvReviewRequestController::class, 'uploadDelivered'])
+
+    Route::post('/cv-review-requests/{id}/upload-delivered',
+        [CvReviewRequestController::class, 'uploadDelivered'])
         ->name('admin.cv-review-requests.upload-delivered');
-    Route::delete('/cv-review-requests/{id}', [CvReviewRequestController::class, 'destroy'])
-        ->name('admin.cv-review-requests.destroy');
 
-    Route::post('/cv-review-requests/{id}/run-ai-review', [CvReviewRequestController::class, 'runAiReview'])
+    Route::post('/cv-review-requests/{id}/run-ai-review',
+        [CvReviewRequestController::class, 'runAiReview'])
         ->name('admin.cv-review-requests.run-ai-review');
-    Route::post('/cv-review-requests/{id}/save-edited-review', [CvReviewRequestController::class, 'saveEditedReview'])
-        ->name('admin.cv-review-requests.save-edited-review');
-    Route::post('/cv-review-requests/{id}/deliver', [CvReviewRequestController::class, 'deliver'])
-        ->name('admin.cv-review-requests.deliver');
-});
 
+    Route::post('/cv-review-requests/{id}/save-edited-review',
+        [CvReviewRequestController::class, 'saveEditedReview'])
+        ->name('admin.cv-review-requests.save-edited-review');
+
+    Route::post('/cv-review-requests/{id}/deliver',
+        [CvReviewRequestController::class, 'deliver'])
+        ->name('admin.cv-review-requests.deliver');
+
+    // ── 5. Bare {id} routes (LAST — wildcard) ──────────────────
+
+    
+    Route::get('/cv-review-requests/{id}/rewrite/download', [CvReviewRequestController::class, 'downloadRewritePdf'])
+        ->name('admin.cv-review.rewrite.download');
+
+    Route::get('/cv-review-requests/{id}/cover-letter/download', [CvReviewRequestController::class, 'downloadCoverLetterPdf'])
+        ->name('admin.cv-review.cover-letter.download');
+
+    Route::post('/cv-review-requests/{id}/save-document', [CvReviewRequestController::class, 'saveDocument'])
+        ->name('admin.cv-review-requests.save-document');
+
+    Route::get('/cv-review-requests/{id}',      [CvReviewRequestController::class, 'show'])
+        ->name('admin.cv-review-requests.show');
+    Route::put('/cv-review-requests/{id}',      [CvReviewRequestController::class, 'update'])
+        ->name('admin.cv-review-requests.update');
+    Route::delete('/cv-review-requests/{id}',   [CvReviewRequestController::class, 'destroy'])
+        ->name('admin.cv-review-requests.destroy');
+});
 
 
 
