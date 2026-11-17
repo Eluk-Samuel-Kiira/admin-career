@@ -283,6 +283,7 @@ Route::middleware(['verifycountry'])->group(function () {
     });
 
     Route::get('/services/pricing/auto-apply', [\App\Http\Controllers\Api\Service\PricingController::class, 'autoApply']);
+    Route::get('/services/pricing/cover-letter', [\App\Http\Controllers\Api\Service\PricingController::class, 'coverLetter']);
 
     
     Route::get('/unsubscribe', [\App\Http\Controllers\Api\UnsubscribeController::class, 'handle'])
