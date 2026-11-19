@@ -175,6 +175,16 @@ class AlertDispatchController extends Controller
         ]);
     }
 
+    protected function queueFor(string $channel): string
+    {
+        return match ($channel) {
+            'email'    => 'alerts-email',
+            'whatsapp' => 'alerts-whatsapp',
+            'telegram' => 'alerts-telegram',
+            default    => 'default',
+        };
+    }
+
     /**
      * POST /admin/alerts/send-to-selected
      */
@@ -255,7 +265,7 @@ class AlertDispatchController extends Controller
         $query->where(function ($q) use ($country) {
             $q->where('preferred_country_code', $country)
             ->orWhere('country', $country)
-            ->orWhereHas('user', fn($uq) => $uq->where('country_code', $country));
+            ->orWhereHas('user', fn ($uq) => $uq->where('country_code', $country));
         });
 
         $seekers = $query->get();
@@ -272,7 +282,7 @@ class AlertDispatchController extends Controller
                     default    => 'default',
                 };
 
-                SendSeekerAlertJob::dispatch($id, [$channel], $mode)
+                SendSeekerAlertJob::dispatch($s->id, [$channel], $mode)
                     ->onQueue($queue);
             }
             $queued++;
@@ -300,14 +310,20 @@ class AlertDispatchController extends Controller
             ->where('created_at', '>', now()->subHours(24))
             ->get();
 
-        $queued = 0;
+        $queued  = 0;
+        $skipped = 0;
+
         foreach ($dispatches as $d) {
-            SendSeekerAlertJob::dispatch($d->user_id ? $d->user_id : 0, [$d->channel], 'real')
-                ->onQueue('alerts');
+            $seeker = SeekerProfile::where('user_id', $d->user_id)->first();
+            if (!$seeker) { $skipped++; continue; }
+
+            SendSeekerAlertJob::dispatch($seeker->id, [$d->channel], 'real')
+                ->onQueue($this->queueFor($d->channel));
+
             $queued++;
         }
 
-        return response()->json(['success' => true, 'queued' => $queued]);
+        return response()->json(['success' => true, 'queued' => $queued, 'skipped' => $skipped]);
     }
 
 
@@ -321,23 +337,26 @@ class AlertDispatchController extends Controller
             return response()->json(['success' => false], 403);
         }
 
+        $queues          = ['alerts-email', 'alerts-whatsapp', 'alerts-telegram', 'alerts', 'default'];
         $queueConnection = config('queue.default');
-        $queueSize = $queueConnection === 'database'
-            ? \DB::table('jobs')->where('queue', 'alerts')->count()
-            : (function () use ($queueConnection) {
-                try {
-                    return \Queue::connection($queueConnection)->size('alerts');
-                } catch (\Throwable $e) {
-                    return 0;
-                }
-            })();
 
-        $delayedSize = 0;
         if ($queueConnection === 'database') {
+            $queueSize = \DB::table('jobs')->whereIn('queue', $queues)->count();
+
             $delayedSize = \DB::table('jobs')
-                ->where('queue', 'alerts')
+                ->whereIn('queue', $queues)
                 ->where('available_at', '>', now()->timestamp)
                 ->count();
+        } else {
+            $queueSize = 0;
+            foreach ($queues as $q) {
+                try {
+                    $queueSize += \Queue::connection($queueConnection)->size($q);
+                } catch (\Throwable $e) {
+                    // ignore unreachable queue
+                }
+            }
+            $delayedSize = 0;
         }
 
         return response()->json([
@@ -464,7 +483,7 @@ class AlertDispatchController extends Controller
             ]);
 
             SendSeekerAlertJob::dispatch($seeker->id, [$d->channel], 'real')
-                ->onQueue('alerts');
+                ->onQueue($this->queueFor($d->channel));
 
             $queued++;
         }
