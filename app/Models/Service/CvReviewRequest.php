@@ -8,6 +8,8 @@ use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Str;
+use App\Models\Subscription\Subscription;
+
 
 class CvReviewRequest extends Model
 {
@@ -67,6 +69,7 @@ class CvReviewRequest extends Model
         'rewrite_is_user_edited',
         'rewrite_user_edited_at',
         'rewrite_error_message',
+        'delivery_counted_at',
 
     ];
 
@@ -85,6 +88,7 @@ class CvReviewRequest extends Model
         'review_delivered_at'  => 'datetime',
 
         'covered_by_subscription' => 'boolean',
+        'delivery_counted_at' => 'datetime',
 
         'rewrite_content'           => 'array',
         'rewrite_content_original'  => 'array',
@@ -105,7 +109,112 @@ class CvReviewRequest extends Model
                 $model->uuid = (string) Str::uuid();
             }
         });
+
+        static::updated(function (self $req) {
+            if ($req->wasChanged('status') && $req->status === 'delivered') {
+                $req->countDeliveryForSubscriber();
+            }
+        });
     }
+
+    public function countDeliveryForSubscriber(): void
+    {
+        if ($this->delivery_counted_at) {
+            return;
+        }
+
+        $isSubscriber = $this->covered_by_subscription
+            || \App\Models\Subscription\Subscription::query()
+                ->where('user_id', $this->user_id)
+                ->whereIn('status', ['trialing', 'active'])
+                ->where('current_period_end', '>', now())
+                ->exists();
+
+        if (!$isSubscriber) {
+            return;
+        }
+
+        \Illuminate\Support\Facades\DB::transaction(function () {
+            $fresh = static::lockForUpdate()->find($this->id);
+            if (!$fresh || $fresh->delivery_counted_at) {
+                return;
+            }
+
+            $stat    = \App\Models\AutoApplyStat::firstOrCreate(['user_id' => $fresh->user_id]);
+            $channel = $this->resolveDeliveryChannel($fresh);
+
+            // CV delivery counter
+            $stat->increment('cv_reviews_delivered', 1, [
+                'last_cv_delivered_at' => now(),
+            ]);
+
+            // Channel-specific CV counter
+            $channelColumn = match ($channel) {
+                'whatsapp' => 'cv_delivered_via_whatsapp',
+                'external' => 'cv_delivered_via_external',
+                'email'    => 'cv_delivered_via_email',
+                'manual'   => 'cv_delivered_via_manual',
+                default    => null,
+            };
+
+            $stat->increment('cv_reviews_delivered', 1, ['last_cv_delivered_at' => now()]);
+            if ($channelColumn) {
+                $stat->increment($channelColumn);
+            }
+
+            $stat->refresh();
+            $total = (int) $stat->cv_reviews_delivered;
+
+            $log   = $fresh->delivery_log ?? [];
+            $log[] = [
+                'at'      => now()->toISOString(),
+                'type'    => 'delivery_counted',
+                'by'      => auth()->id(),
+                'total'   => $total,
+                'channel' => $channel,
+                'cv_uuid' => $fresh->uuid,
+            ];
+
+            $fresh->forceFill([
+                'delivery_counted_at' => now(),
+                'delivery_log'        => $log,
+            ])->saveQuietly();
+        });
+    }
+
+    protected function resolveDeliveryChannel(self $req): string
+    {
+        // 1. Explicit draft type
+        $draftType = $req->auto_apply_draft_type ?? null;
+        if ($draftType === 'external') return 'external';
+        if ($draftType === 'relay')    return 'relay';
+
+        // 2. Explicit channels_attempted
+        if (!empty($req->channels_attempted) && is_array($req->channels_attempted)) {
+            if (in_array('whatsapp', $req->channels_attempted, true)) return 'whatsapp';
+            if (in_array('email',    $req->channels_attempted, true)) return 'email';
+        }
+
+        // 3. If the CV has an uploaded delivered_cv_path but no explicit channel,
+        //    it was delivered manually by admin.
+        if (!empty($req->delivered_cv_path)) {
+            return 'manual';
+        }
+
+        // 4. Fall back to subscription plan heuristic
+        $serviceKey = Subscription::query()
+            ->where('user_id', $req->user_id)
+            ->whereIn('status', ['trialing', 'active'])
+            ->where('current_period_end', '>', now())
+            ->value('service_key');
+
+        if ($serviceKey === 'auto_apply_subscription') return 'whatsapp';
+        if ($serviceKey === 'premium_alerts')          return 'email';
+
+        // 5. No signal at all — the CV was marked delivered without any file or channel
+        return 'manual';
+    }
+
 
     // ---------------------------------------------------------------
     // Relationships

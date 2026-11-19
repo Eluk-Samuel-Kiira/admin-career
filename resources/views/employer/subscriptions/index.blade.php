@@ -311,6 +311,15 @@
             </div>
             <div class="modal-footer d-none" id="subDetailFooter">
                 <button type="button" class="btn btn-light" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-warning" id="subExtendBtn">
+                    <span class="indicator-label">
+                        <i class="ki-duotone ki-time fs-4 me-1">
+                            <span class="path1"></span><span class="path2"></span>
+                        </i>
+                        Extend
+                    </span>
+                    <span class="indicator-progress">Extending… <span class="spinner-border spinner-border-sm ms-2"></span></span>
+                </button>
                 <button type="button" class="btn btn-danger" id="subCancelBtn">
                     <span class="indicator-label">
                         <i class="ki-duotone ki-cross-circle fs-4 me-1">
@@ -571,6 +580,81 @@
         }
     }
 
+    // ═════════════════════════════════════════════════════════════
+    // EXTEND SUBSCRIPTION — one listener for all rows
+    // ═════════════════════════════════════════════════════════════
+    document.addEventListener('click', function (e) {
+        const btn = e.target.closest('[data-extend]');
+        if (!btn || btn.disabled) return;
+
+        const uuid    = btn.dataset.extend;
+        const userName= btn.dataset.user || 'this subscriber';
+        const oldEnd  = btn.dataset.end ? new Date(btn.dataset.end) : null;
+
+        // Show the current end date so admin knows what they're extending
+        const currentEndText = oldEnd && !isNaN(oldEnd)
+            ? oldEnd.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+            : 'not set';
+
+        // Simple prompt for days. Could be a Metronic modal, but a prompt is
+        // the fastest way to ship and enough for one field.
+        const input = prompt(`Extend subscription for "${userName}" by how many days?\n\nCurrent period ends: ${currentEndText}`);
+        if (input === null) return;   // user cancelled the prompt — silent
+
+        const days = parseInt(input, 10);
+        if (isNaN(days) || days < 1 || days > 365) {
+            window.showToast?.('error', 'Enter a number between 1 and 365.');
+            return;
+        }
+
+        if (!days || days < 1 || days > 365) {
+            if (days !== null) {
+                // Only alert if the user actually typed something wrong
+                if (days !== 0 && days !== null && !isNaN(days)) {
+                    window.showToast?.('error', 'Enter a number between 1 and 365.');
+                }
+            }
+            return;
+        }
+
+        if (!confirm(`Extend "${userName}" by ${days} day(s)?\n\nCurrent period end: ${currentEndText}\nNew period end: ${new Date((oldEnd && !isNaN(oldEnd) ? oldEnd : new Date()).getTime() + days * 86400000).toLocaleDateString()}`)) {
+            return;
+        }
+
+        // Spinner on the button
+        const originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+        fetch(`{{ url('admin/employer-subscriptions') }}/${uuid}/extend`, {
+            method: 'POST',
+            headers: {
+                'X-CSRF-TOKEN': CSRF,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify({ days }),
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                window.showToast?.('success', data.message || `Extended by ${days} day(s).`);
+                loadStats();
+                loadSubs();
+            } else {
+                window.showToast?.('error', data.message || 'Extend failed.');
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+            }
+        })
+        .catch(err => {
+            console.error(err);
+            window.showToast?.('error', 'Network error.');
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        });
+    });
+
     function subscriptionRow(s) {
         return `
             <tr>
@@ -598,11 +682,22 @@
                 <td class="text-start">${s.status_badge}</td>
                 <td class="text-start text-muted fs-8">${formatDate(s.created_at)}</td>
                 <td class="text-end">
-                    <button class="btn btn-sm btn-icon btn-light" data-view="${esc(s.uuid)}" title="View">
-                        <i class="ki-duotone ki-eye fs-3">
-                            <span class="path1"></span><span class="path2"></span><span class="path3"></span>
-                        </i>
-                    </button>
+                    <div class="d-flex justify-content-end gap-1">
+                        <button class="btn btn-sm btn-icon btn-light-warning"
+                                data-extend="${esc(s.uuid)}"
+                                data-user="${esc(s.user)}"
+                                data-end="${esc(s.current_period_end || '')}"
+                                title="Extend by days">
+                            <i class="ki-duotone ki-time fs-3">
+                                <span class="path1"></span><span class="path2"></span>
+                            </i>
+                        </button>
+                        <button class="btn btn-sm btn-icon btn-light" data-view="${esc(s.uuid)}" title="View">
+                            <i class="ki-duotone ki-eye fs-3">
+                                <span class="path1"></span><span class="path2"></span><span class="path3"></span>
+                            </i>
+                        </button>
+                    </div>
                 </td>
             </tr>`;
     }
@@ -768,6 +863,19 @@
             const s = data.subscription || {};
             const cancellable = ['active', 'trialing'].includes(s.status) && !s.cancel_at_period_end;
 
+            // Extend button is available for active/trialing too (not for cancelled/expired)
+            const extendBtn = document.getElementById('subExtendBtn');
+            if (extendBtn) {
+                extendBtn.classList.toggle('d-none', !cancellable);
+            }
+
+            if (cancellable) {
+                footer.classList.remove('d-none');
+                cancelBtn.disabled = false;
+            } else {
+                footer.classList.add('d-none');
+            }
+
             if (cancellable) {
                 footer.classList.remove('d-none');
                 cancelBtn.disabled = false;
@@ -824,6 +932,62 @@
             btn.disabled = false;
             label.classList.remove('d-none');
             prog.classList.add('d-none');
+        }
+    });
+
+    // ── Extend handler (modal) ────────────────────────────────
+    document.getElementById('subExtendBtn')?.addEventListener('click', async function () {
+        if (!currentDetailUuid) return;
+
+        const days = parseInt(
+            prompt('Extend this subscription by how many days?\n\nEnter a number between 1 and 365.') || '',
+            10
+        );
+
+        if (!days || days < 1 || days > 365) {
+            if (days !== null) {
+                window.showToast?.('error', 'Enter a number between 1 and 365.');
+            }
+            return;
+        }
+
+        const btn   = this;
+        const label = btn.querySelector('.indicator-label');
+        const prog  = btn.querySelector('.indicator-progress');
+
+        btn.disabled = true;
+        label?.classList.add('d-none');
+        prog?.classList.remove('d-none');
+
+        try {
+            const res = await fetch(`{{ url('admin/employer-subscriptions') }}/${currentDetailUuid}/extend`, {
+                method: 'POST',
+                headers: {
+                    'X-CSRF-TOKEN': CSRF,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify({ days }),
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                window.showToast?.('success', data.message || `Extended by ${days} day(s).`);
+                // Re-render the modal in place so the new period end shows
+                openDetail(currentDetailUuid);
+                loadStats();
+                loadSubs();
+                if (payState.loadedOnce) loadPayments();
+            } else {
+                window.showToast?.('error', data.message || 'Extend failed.');
+            }
+        } catch (err) {
+            console.error(err);
+            window.showToast?.('error', 'Network error.');
+        } finally {
+            btn.disabled = false;
+            label?.classList.remove('d-none');
+            prog?.classList.add('d-none');
         }
     });
 
@@ -941,6 +1105,8 @@
                 ` : ''}
             </div>
 
+            ${renderAutoApplyStats(data.auto_apply)}
+
             <h5 class="fw-bold mt-6 mb-3">Payments</h5>
             <div class="table-responsive mb-6">
                 <table class="table align-middle table-row-dashed table-row-gray-300 fs-7 gy-3">
@@ -973,6 +1139,212 @@
                     <tbody>${webhookRows}</tbody>
                 </table>
             </div>`;
+    }
+
+    function renderAutoApplyStats(auto) {
+        if (!auto) return '';
+
+        const noSeekerProfile = !auto.has_seeker;
+        const cvLog           = (auto.cv_delivery && auto.cv_delivery.log) ? auto.cv_delivery.log : [];
+        const hasApplications = auto.lifetime.total > 0 || auto.windows.last_30 > 0;
+        const hasDeliveries   = auto.cv_delivery && (auto.cv_delivery.total > 0 || cvLog.length > 0);
+
+        if (!hasApplications && !hasDeliveries) {
+            return `
+                <h5 class="fw-bold mt-6 mb-3">
+                    <i class="ki-duotone ki-rocket fs-4 me-2 text-primary">
+                        <span class="path1"></span><span class="path2"></span>
+                    </i>
+                    Service Usage
+                </h5>
+                <div class="alert alert-light-info fs-7 mb-5">
+                    ${noSeekerProfile
+                        ? 'This user does not have a seeker profile yet.'
+                        : 'No jobs applied or CVs delivered yet for this subscriber.'}
+                </div>`;
+        }
+
+        // ── Section 1: Auto-apply applications ────────────────
+        const applicationsBlock = hasApplications ? `
+            <h6 class="fw-bold mt-5 mb-3 text-uppercase fs-8 text-muted">
+                <i class="ki-duotone ki-briefcase fs-5 me-1"><span class="path1"></span><span class="path2"></span></i>
+                Auto-Apply Job Applications
+            </h6>
+            <div class="row g-3 mb-4">
+                <div class="col-6 col-md-3">
+                    <div class="card bg-light-primary border-0 h-100">
+                        <div class="card-body py-3 px-3 text-center">
+                            <div class="fs-2 fw-bold text-primary lh-1">${auto.lifetime.total}</div>
+                            <div class="text-muted fs-8 mt-1">Total Applied</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="card bg-light-info border-0 h-100">
+                        <div class="card-body py-3 px-3 text-center">
+                            <div class="fs-2 fw-bold text-info lh-1">${auto.lifetime.email}</div>
+                            <div class="text-muted fs-8 mt-1">
+                                <i class="ki-duotone ki-sms fs-7 me-1"><span class="path1"></span><span class="path2"></span></i>
+                                Via Email
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="card bg-light-success border-0 h-100">
+                        <div class="card-body py-3 px-3 text-center">
+                            <div class="fs-2 fw-bold text-success lh-1">${auto.lifetime.whatsapp}</div>
+                            <div class="text-muted fs-8 mt-1">
+                                <i class="ki-duotone ki-whatsapp fs-7 me-1"></i>
+                                Via WhatsApp
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="card bg-light-warning border-0 h-100">
+                        <div class="card-body py-3 px-3 text-center">
+                            <div class="fs-2 fw-bold text-warning lh-1">${auto.lifetime.external}</div>
+                            <div class="text-muted fs-8 mt-1">
+                                <i class="ki-duotone ki-exit-right-corner fs-7 me-1"><span class="path1"></span><span class="path2"></span></i>
+                                Via External Links
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-flex flex-wrap gap-2 mb-4">
+                <span class="badge badge-light-secondary fs-7 py-2 px-3"><strong>${auto.windows.today}</strong>-today</span>
+                <span class="badge badge-light-primary fs-7 py-2 px-3"><strong>${auto.windows.last_7}</strong>-last 7 days</span>
+                <span class="badge badge-light-info fs-7 py-2 px-3"><strong>${auto.windows.last_30}</strong>-last 30 days</span>
+                <span class="badge badge-light-success fs-7 py-2 px-3"><strong>${auto.windows.last_90}</strong>-last 90 days</span>
+                ${auto.last_applied_at ? `<span class="ms-auto text-muted fs-8">Last applied: <strong>${formatDate(auto.last_applied_at)}</strong></span>` : ''}
+            </div>
+
+            ${(auto.recent && auto.recent.length) ? `
+                <div class="table-responsive mb-2">
+                    <table class="table align-middle table-row-dashed table-row-gray-300 fs-7 gy-2">
+                        <thead>
+                            <tr class="text-start text-gray-500 fw-bold fs-8 text-uppercase">
+                                <th class="text-start">Job</th>
+                                <th class="text-start">Company</th>
+                                <th class="text-center">Source</th>
+                                <th class="text-end">Applied</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${auto.recent.map(r => `
+                                <tr>
+                                    <td class="text-start fw-semibold">${esc(r.job_title)}</td>
+                                    <td class="text-start text-muted">${esc(r.company)}</td>
+                                    <td class="text-center">
+                                        <span class="badge badge-light-${
+                                            r.source === 'relay' ? 'primary' :
+                                            r.source === 'external' ? 'warning' : 'secondary'
+                                        } fs-8">${esc(r.source)}</span>
+                                    </td>
+                                    <td class="text-end text-muted fs-8">${formatDate(r.applied_at)}</td>
+                                </tr>`).join('')}
+                        </tbody>
+                    </table>
+                </div>` : ''}
+        ` : '';
+
+        // ── Section 2: CV deliveries (paid service) ───────────
+        const deliveriesBlock = hasDeliveries ? `
+            <h6 class="fw-bold mt-5 mb-3 text-uppercase fs-8 text-muted">
+                <i class="ki-duotone ki-document fs-5 me-1"><span class="path1"></span><span class="path2"></span><span class="path3"></span></i>
+                CV Rewrite Deliveries (paid service)
+            </h6>
+            <div class="row g-3 mb-4">
+                <div class="col-6 col-md-3">
+                    <div class="card bg-light-secondary border-0 h-100">
+                        <div class="card-body py-3 px-3 text-center">
+                            <div class="fs-2 fw-bold text-secondary lh-1">${auto.cv_delivery.total}</div>
+                            <div class="text-muted fs-8 mt-1">Total Delivered</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="card bg-light-info border-0 h-100">
+                        <div class="card-body py-3 px-3 text-center">
+                            <div class="fs-2 fw-bold text-info lh-1">${auto.cv_delivery.email}</div>
+                            <div class="text-muted fs-8 mt-1">Via Email</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="card bg-light-success border-0 h-100">
+                        <div class="card-body py-3 px-3 text-center">
+                            <div class="fs-2 fw-bold text-success lh-1">${auto.cv_delivery.whatsapp}</div>
+                            <div class="text-muted fs-8 mt-1">Via WhatsApp</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="card bg-light-warning border-0 h-100">
+                        <div class="card-body py-3 px-3 text-center">
+                            <div class="fs-2 fw-bold text-warning lh-1">${auto.cv_delivery.external}</div>
+                            <div class="text-muted fs-8 mt-1">Via External</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="card bg-light-secondary border-0 h-100">
+                        <div class="card-body py-3 px-3 text-center">
+                            <div class="fs-2 fw-bold text-secondary lh-1">${auto.cv_delivery.manual}</div>
+                            <div class="text-muted fs-8 mt-1">Via Manual</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            ${auto.last_cv_delivered_at ? `
+                <div class="text-muted fs-8 mb-4">
+                    Last CV delivered: <strong>${formatDate(auto.last_cv_delivered_at)}</strong>
+                </div>` : ''}
+
+            ${cvLog.length ? `
+                <div class="table-responsive mb-2">
+                    <table class="table align-middle table-row-dashed table-row-gray-300 fs-7 gy-2">
+                        <thead>
+                            <tr class="text-start text-gray-500 fw-bold fs-8 text-uppercase">
+                                <th class="text-start">Reference</th>
+                                <th class="text-center">Channel</th>
+                                <th class="text-center">Status</th>
+                                <th class="text-end">Delivered</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${cvLog.map(r => `
+                                <tr>
+                                    <td class="text-start fw-semibold">${esc(String(r.reference))}</td>
+                                    <td class="text-center">
+                                        <span class="badge badge-light-${
+                                            r.channel === 'email'    ? 'info' :
+                                            r.channel === 'whatsapp' ? 'success' :
+                                            r.channel === 'external' ? 'warning' : 'secondary'
+                                        } fs-8">${esc(r.channel)}</span>
+                                    </td>
+                                    <td class="text-center text-muted fs-8">${esc(r.status || '—')}</td>
+                                    <td class="text-end text-muted fs-8">${formatDate(r.delivered_at)}</td>
+                                </tr>`).join('')}
+                        </tbody>
+                    </table>
+                </div>` : ''}
+        ` : '';
+
+        return `
+            <h5 class="fw-bold mt-6 mb-3">
+                <i class="ki-duotone ki-chart fs-4 me-2 text-primary">
+                    <span class="path1"></span><span class="path2"></span>
+                </i>
+                Service Usage
+            </h5>
+            ${applicationsBlock}
+            ${deliveriesBlock}
+        `;
     }
 
     // ─────────────────────────────────────────────────────────

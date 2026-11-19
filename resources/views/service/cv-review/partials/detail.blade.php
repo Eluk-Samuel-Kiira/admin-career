@@ -19,6 +19,13 @@
 
     $canSubmitAnswers = in_array($status, ['submitted', 'ai_reviewed'], true) && !$hasAnswers && !empty($missingFields);
 
+    $canEditAnswers = $hasAnswers && !in_array($status, ['cancelled', 'completed'], true);
+    $answerFields   = array_values(array_diff(
+        array_unique(array_merge($missingFields, array_keys($existingAnswers))),
+        ['_skipped']
+    ));
+    $editAnswers    = array_diff_key($existingAnswers, ['_skipped' => 1]);
+
     // Cover letter
     $coverLetter = $request->coverLetter ?? null;
     $hasCover    = !empty($request->cover_letter_uuid) && $coverLetter;
@@ -36,7 +43,15 @@
     $coverMissing = empty($request->cover_letter_uuid);
     $genBusy      = in_array($status, ['generating'], true);
     $genClosed    = in_array($status, ['cancelled', 'completed'], true);
-    $canGenerate  = $isAi && !$genBusy && !$genClosed && ($cvMissing || $coverMissing);
+    
+    // Answers are only required when the AI review actually asked questions
+    $answersRequired = !empty($missingFields);
+    $answersReady    = !$answersRequired || $hasAnswers;
+
+    $needsGeneration = $isAi && !$genBusy && !$genClosed && ($cvMissing || $coverMissing);
+    $canGenerate     = $needsGeneration && $answersReady;
+    $waitingOnAnswers = $needsGeneration && !$answersReady;
+
     $genError     = $request->generation_error ?: $request->rewrite_error_message;
 
     $genLabel = $cvMissing && $coverMissing ? 'Generate CV & letter'
@@ -148,6 +163,16 @@
                             @endif
                         </div>
                     </div>
+
+                    @if($waitingOnAnswers)
+                        <div class="alert alert-light-warning py-2 mt-3 mb-0 fs-8">
+                            <i class="ki-duotone ki-information-5 fs-6 me-1">
+                                <span class="path1"></span><span class="path2"></span><span class="path3"></span>
+                            </i>
+                            You can only generate once answers to the gap questions have been provided.
+                            Fill them in below, or choose <strong>User already answered — skip</strong>.
+                        </div>
+                    @endif
 
                     @if($status === 'failed' && $genError)
                         <div class="alert alert-light-danger py-2 mt-3 mb-0 fs-8">
@@ -410,40 +435,32 @@
             <h6 class="fw-bold mb-2 text-uppercase fs-8 text-muted letter-spacing-1">
                 Gap Questions ({{ count($missingFields) }})
             </h6>
-
             <div class="alert alert-light-info py-2 mb-2 fs-8">
                 Fill in what you know, or skip if the user has provided these details elsewhere.
             </div>
-
-            <form id="adminAnswersForm" data-id="{{ $request->id }}">
-                @csrf
-                @foreach($missingFields as $field)
-                    <div class="mb-2">
-                        <label class="fw-semibold fs-8 mb-1">{{ ucwords(str_replace('_', ' ', $field)) }}</label>
-                        <textarea name="answers[{{ $field }}]" rows="2" class="form-control form-control-sm"
-                                  placeholder="Enter the answer...">{{ $existingAnswers[$field] ?? '' }}</textarea>
-                    </div>
-                @endforeach
-
-                <div class="d-flex justify-content-between gap-2 mt-3">
-                    <button type="button" class="btn btn-sm btn-light-warning"
-                            data-action="skip-answers" data-id="{{ $request->id }}">
-                        User already answered — skip
-                    </button>
-                    <button type="submit" class="btn btn-sm btn-primary" id="submitAnswersBtn">
-                        <span class="indicator-label">Save Answers</span>
-                        <span class="indicator-progress">Saving… <span class="spinner-border spinner-border-sm ms-2"></span></span>
-                    </button>
-                </div>
-            </form>
+            @include('service.cv-review.partials.answers-form', [
+                'formId'  => 'adminAnswersForm',
+                'mode'    => 'create',
+                'fields'  => $missingFields,
+                'answers' => $existingAnswers,
+            ])
         </div>
     @endif
 
     @if($hasAnswers && !$canSubmitAnswers)
-        <div>
-            <h6 class="fw-bold mb-2 text-uppercase fs-8 text-muted letter-spacing-1">
-                Submitted Answers ({{ count($existingAnswers) }})
-            </h6>
+        {{-- READ-ONLY VIEW --}}
+        <div id="answersViewWrap">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h6 class="fw-bold mb-0 text-uppercase fs-8 text-muted letter-spacing-1">
+                    Submitted Answers ({{ count($existingAnswers) }})
+                </h6>
+                @if($canEditAnswers)
+                    <button type="button" class="btn btn-xs btn-light-primary" data-action="edit-answers">
+                        <i class="ki-duotone ki-pencil fs-6 me-1"><span class="path1"></span><span class="path2"></span></i>
+                        Edit answers
+                    </button>
+                @endif
+            </div>
             <div class="card bg-light-success">
                 <div class="card-body py-2">
                     @foreach($existingAnswers as $q => $a)
@@ -455,6 +472,22 @@
                 </div>
             </div>
         </div>
+
+        {{-- PREFILLED EDIT FORM (hidden until "Edit answers" is clicked) --}}
+        @if($canEditAnswers)
+            <div id="answersEditWrap" class="d-none">
+                <h6 class="fw-bold mb-2 text-uppercase fs-8 text-muted letter-spacing-1">Edit Answers</h6>
+                <div class="alert alert-light-warning py-2 mb-2 fs-8">
+                    Saving updates the answers only. It does not regenerate the CV or cover letter.
+                </div>
+                @include('service.cv-review.partials.answers-form', [
+                    'formId'  => 'adminAnswersEditForm',
+                    'mode'    => 'edit',
+                    'fields'  => $answerFields,
+                    'answers' => $editAnswers,
+                ])
+            </div>
+        @endif
     @endif
 
     {{-- ═══════════════════════════════════════════════════════════ --}}

@@ -305,6 +305,8 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     Route::post('/auto-apply/update-draft/{id}', [AutoApplyController::class, 'updateDraftContent'])->name('auto-apply.update-draft');
     Route::post('/auto-apply/retry-user/{userId}', [AutoApplyController::class, 'retryUserRun'])->name('auto-apply.retry-user');
     Route::get('/auto-apply/history', [AutoApplyController::class, 'history'])->name('auto-apply.history');
+    Route::delete('/auto-apply/run/{id}',     [AutoApplyController::class, 'deleteRun'])->name('admin.auto-apply.run.delete');
+    Route::delete('/auto-apply/history/{id}', [AutoApplyController::class, 'deleteHistory'])->name('admin.auto-apply.history.delete');
 });
 
 

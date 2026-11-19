@@ -8,41 +8,127 @@
 
 <div class="container py-6">
 
-    {{-- ── Stats ── --}}
-    <div class="row g-4 mb-6">
-        <div class="col-md-3">
-            <div class="card bg-light-primary h-100">
-                <div class="card-body">
-                    <div class="fs-2 fw-bold text-primary">{{ $stats['drafts_ready'] }}</div>
-                    <div class="text-muted">Drafts Ready</div>
+    {{-- ── Compact Stats Strip ── --}}
+    <div class="row g-3 mb-5">
+        <div class="col-6 col-md-3">
+            <div class="card bg-light-primary border-0 h-100">
+                <div class="card-body py-3 px-4">
+                    <div class="d-flex align-items-center gap-2">
+                        <div class="symbol symbol-40px">
+                            <span class="symbol-label bg-primary bg-opacity-10">
+                                <i class="ki-duotone ki-document fs-2x text-primary">
+                                    <span class="path1"></span><span class="path2"></span><span class="path3"></span>
+                                </i>
+                            </span>
+                        </div>
+                        <div>
+                            <div class="fs-2 fw-bold text-primary lh-1">{{ $stats['drafts_ready'] }}</div>
+                            <div class="text-muted fs-8">Drafts Ready</div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
-            <div class="card bg-light-success h-100">
-                <div class="card-body">
-                    <div class="fs-2 fw-bold text-success">{{ $stats['sent_today'] }}</div>
-                    <div class="text-muted">Sent Today</div>
+
+        <div class="col-6 col-md-3">
+            <div class="card bg-light-success border-0 h-100">
+                <div class="card-body py-3 px-4">
+                    <div class="d-flex align-items-center gap-2">
+                        <div class="symbol symbol-40px">
+                            <span class="symbol-label bg-success bg-opacity-10">
+                                <i class="ki-duotone ki-send fs-2x text-success">
+                                    <span class="path1"></span><span class="path2"></span>
+                                </i>
+                            </span>
+                        </div>
+                        <div>
+                            <div class="fs-2 fw-bold text-success lh-1">{{ $stats['sent_today'] }}</div>
+                            <div class="text-muted fs-8">Sent Today</div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
-            <div class="card bg-light-warning h-100">
-                <div class="card-body">
-                    <div class="fs-2 fw-bold text-warning">{{ $stats['external_pending'] }}</div>
-                    <div class="text-muted">External Links Pending</div>
+
+        <div class="col-6 col-md-3">
+            <div class="card bg-light-warning border-0 h-100">
+                <div class="card-body py-3 px-4">
+                    <div class="d-flex align-items-center gap-2">
+                        <div class="symbol symbol-40px">
+                            <span class="symbol-label bg-warning bg-opacity-10">
+                                <i class="ki-duotone ki-exit-right-corner fs-2x text-warning">
+                                    <span class="path1"></span><span class="path2"></span>
+                                </i>
+                            </span>
+                        </div>
+                        <div>
+                            <div class="fs-2 fw-bold text-warning lh-1">{{ $stats['external_pending'] }}</div>
+                            <div class="text-muted fs-8">External Pending</div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
-            <div class="card bg-light-danger h-100">
-                <div class="card-body">
-                    <div class="fs-2 fw-bold text-danger">{{ $stats['failed_today'] }}</div>
-                    <div class="text-muted">Failed Today</div>
+
+        <div class="col-6 col-md-3">
+            <div class="card bg-light-danger border-0 h-100">
+                <div class="card-body py-3 px-4">
+                    <div class="d-flex align-items-center gap-2">
+                        <div class="symbol symbol-40px">
+                            <span class="symbol-label bg-danger bg-opacity-10">
+                                <i class="ki-duotone ki-information-5 fs-2x text-danger">
+                                    <span class="path1"></span><span class="path2"></span><span class="path3"></span>
+                                </i>
+                            </span>
+                        </div>
+                        <div>
+                            <div class="fs-2 fw-bold text-danger lh-1">{{ $stats['failed_today'] }}</div>
+                            <div class="text-muted fs-8">Failed Today</div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
+
+    @if($topSubs->isNotEmpty())
+    <div class="card card-flush mb-6">
+        <div class="card-header py-3">
+            <h5 class="fw-bold mb-0">Top Applied-For Subscribers</h5>
+        </div>
+        <div class="card-body pt-0">
+            <div class="table-responsive">
+                <table class="table table-sm align-middle fs-7">
+                    <thead>
+                        <tr class="text-muted fw-bold fs-8 text-uppercase">
+                            <th>Subscriber</th>
+                            <th class="text-center">Email</th>
+                            <th class="text-center">WhatsApp</th>
+                            <th class="text-center">External</th>
+                            <th class="text-end">Total</th>
+                            <th class="text-end">Last Applied</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach($topSubs as $s)
+                            <tr>
+                                <td>
+                                    <div class="fw-bold">{{ $s->user?->name ?? '—' }}</div>
+                                    <div class="text-muted fs-8">{{ $s->user?->email }}</div>
+                                </td>
+                                <td class="text-center"><span class="badge badge-light-primary">{{ $s->applied_via_email }}</span></td>
+                                <td class="text-center"><span class="badge badge-light-success">{{ $s->applied_via_whatsapp }}</span></td>
+                                <td class="text-center"><span class="badge badge-light-info">{{ $s->applied_via_external }}</span></td>
+                                <td class="text-end"><span class="badge badge-light-secondary fs-6">{{ $s->applied_total }}</span></td>
+                                <td class="text-end text-muted">{{ $s->last_applied_at?->diffForHumans() ?? '—' }}</td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    @endif
 
     {{-- ── Trigger Button ── --}}
     <div class="card card-flush mb-6 border-primary border-2">
@@ -91,8 +177,7 @@
                         <div class="spinner-border text-primary"></div>
                     </div>
                 </div>
-                
-                {{-- NEW HISTORY TAB --}}
+
                 <div class="tab-pane fade" id="tab_history">
                     <div id="historyWrap" class="text-center py-10">
                         <div class="spinner-border text-primary"></div>
@@ -321,6 +406,10 @@
 
     const CSRF = '{{ csrf_token() }}';
 
+    
+    // Retry buttons
+    let retryInFlight = false;
+
     // ═══════════════════════════════════════════════════════════
     // Bootstraps
     // ═══════════════════════════════════════════════════════════
@@ -471,10 +560,19 @@
                                                 <span class="badge badge-light-primary">${capitalize(r.channel)}</span>
                                             </td>
                                             <td class="text-end">
-                                                <button class="btn btn-sm btn-primary open-drawer-btn" data-id="${r.id}" data-type="relay">
-                                                    <i class="ki-duotone ki-eye fs-4 me-1"><span class="path1"></span><span class="path2"></span><span class="path3"></span></i>
-                                                    Open
-                                                </button>
+                                                <div class="d-flex justify-content-end gap-1">
+                                                    <button class="btn btn-sm btn-primary open-drawer-btn" data-id="${r.id}" data-type="relay">
+                                                        <i class="ki-duotone ki-eye fs-4 me-1"><span class="path1"></span><span class="path2"></span><span class="path3"></span></i>
+                                                        Open
+                                                    </button>
+                                                    <button class="btn btn-sm btn-icon btn-light-danger delete-draft-btn"
+                                                            data-id="${r.id}" data-type="relay" title="Delete draft">
+                                                        <i class="ki-duotone ki-trash fs-4">
+                                                            <span class="path1"></span><span class="path2"></span>
+                                                            <span class="path3"></span><span class="path4"></span>
+                                                        </i>
+                                                    </button>
+                                                </div>
                                             </td>
                                         </tr>
                                     `).join('')}
@@ -509,10 +607,19 @@
                                                 <div class="fw-semibold text-gray-800">${escapeHtml(e.job_title)}</div>
                                             </td>
                                             <td class="text-end">
-                                                <button class="btn btn-sm btn-primary open-drawer-btn" data-id="${e.id}" data-type="external">
-                                                    <i class="ki-duotone ki-eye fs-4 me-1"><span class="path1"></span><span class="path2"></span><span class="path3"></span></i>
-                                                    Open
-                                                </button>
+                                                <div class="d-flex justify-content-end gap-1">
+                                                    <button class="btn btn-sm btn-primary open-drawer-btn" data-id="${e.id}" data-type="external">
+                                                        <i class="ki-duotone ki-eye fs-4 me-1"><span class="path1"></span><span class="path2"></span><span class="path3"></span></i>
+                                                        Open
+                                                    </button>
+                                                    <button class="btn btn-sm btn-icon btn-light-danger delete-draft-btn"
+                                                            data-id="${e.id}" data-type="external" title="Delete draft">
+                                                        <i class="ki-duotone ki-trash fs-4">
+                                                            <span class="path1"></span><span class="path2"></span>
+                                                            <span class="path3"></span><span class="path4"></span>
+                                                        </i>
+                                                    </button>
+                                                </div>
                                             </td>
                                         </tr>
                                     `).join('')}
@@ -605,8 +712,8 @@
         if (!row) return;
 
         // ← Reset buttons (in case previous drawer was history)
-        document.getElementById('editCvBtn').style.display = 'inline-flex';
-        document.getElementById('editCoverBtn').style.display = 'inline-flex';
+        document.getElementById('downloadCvBtn').style.display    = 'inline-flex';
+        document.getElementById('downloadCoverBtn').style.display = 'inline-flex';
 
         currentDraft = {
             id: row.id,
@@ -831,10 +938,19 @@
                                         <span class="badge badge-light-success fs-8">${escapeHtml(h.source || 'Applied')}</span>
                                     </td>
                                     <td class="text-end">
-                                        <button class="btn btn-sm btn-primary" onclick="openHistoryDrawer(${h.id})">
-                                            <i class="ki-duotone ki-eye fs-4 me-1"><span class="path1"></span><span class="path2"></span><span class="path3"></span></i>
-                                            Details
-                                        </button>
+                                        <div class="d-flex justify-content-end gap-1">
+                                            <button class="btn btn-sm btn-primary" onclick="openHistoryDrawer(${h.id})">
+                                                <i class="ki-duotone ki-eye fs-4 me-1"><span class="path1"></span><span class="path2"></span><span class="path3"></span></i>
+                                                Details
+                                            </button>
+                                            <button class="btn btn-sm btn-icon btn-light-danger delete-history-btn"
+                                                    data-id="${h.id}" title="Remove from applied history">
+                                                <i class="ki-duotone ki-trash fs-4">
+                                                    <span class="path1"></span><span class="path2"></span>
+                                                    <span class="path3"></span><span class="path4"></span>
+                                                </i>
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
                             `).join('')}
@@ -895,6 +1011,9 @@
     window.openHistoryDrawer = function(id) {
         const row = currentHistoryData.find(x => x.id === id);
         if (!row) return;
+
+        document.getElementById('downloadCvBtn').style.display    = 'none';
+        document.getElementById('downloadCoverBtn').style.display = 'none';
 
         // Setup drawer as read-only
         document.getElementById('drawerTitle').textContent = 'Applied History (Read-Only)';
@@ -959,38 +1078,23 @@
         initEditor(kind, html || '');
     }
 
-    function initEditor(kind, content) {
-        const targetId = kind === 'cv' ? 'cvEditor' : 'coverEditor';
-        const instance = kind === 'cv' ? cvEditorInstance : coverEditorInstance;
+    let cvInitPending = false, coverInitPending = false;
 
-        if (instance) {
-            instance.setContent(content);
-            instance.focus();
-            return;
-        }
+    function initEditor(kind, content) {
+        const instance = kind === 'cv' ? cvEditorInstance : coverEditorInstance;
+        const pending  = kind === 'cv' ? cvInitPending    : coverInitPending;
+
+        if (instance) { instance.setContent(content); instance.focus(); return; }
+        if (pending) return;
+
+        if (kind === 'cv') cvInitPending = true; else coverInitPending = true;
 
         tinymce.init({
-            target: document.getElementById(targetId),
-            height: 420,
-            menubar: false,
-            statusbar: true,
-            branding: false,
-            promotion: false,
-            plugins: 'lists link code wordcount',
-            toolbar: 'undo redo | blocks | bold italic underline | bullist numlist | link | alignleft aligncenter alignright | removeformat | code',
-            content_style: `
-                body { font-family: 'Georgia', serif; font-size: 13px; line-height: 1.6; padding: 16px; color: #0F1B2D; }
-                p { margin: 0 0 1em; }
-                h1, h2, h3 { margin: 0.8em 0 0.4em; font-weight: bold; }
-                ul, ol { margin: 0.4em 0 0.6em 1.4em; }
-                li { margin: 0.2em 0; }
-                table { border-collapse: collapse; width: 100%; }
-                td, th { border: 1px solid #eee; padding: 4px 8px; }
-            `,
+            // …same options as before…
             setup: (editor) => {
                 editor.on('init', () => {
-                    if (kind === 'cv') cvEditorInstance = editor;
-                    else coverEditorInstance = editor;
+                    if (kind === 'cv') { cvEditorInstance = editor; cvInitPending = false; }
+                    else               { coverEditorInstance = editor; coverInitPending = false; }
                     editor.setContent(content);
                     editor.focus();
                 });
@@ -1376,13 +1480,24 @@
                                         ${l.error_message ? `<div class="text-danger fs-8 mt-1" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(l.error_message)}">${escapeHtml(l.error_message)}</div>` : ''}
                                     </td>
                                     <td class="text-end">
-                                        <button class="btn btn-sm btn-light-warning retry-run-btn" data-user-id="${l.user_id}">
-                                            <span class="indicator-label">
-                                                <i class="ki-duotone ki-arrows-circle fs-4 me-1"><span class="path1"></span><span class="path2"></span></i>
-                                                Retry
-                                            </span>
-                                            <span class="indicator-progress">Retrying... <span class="spinner-border spinner-border-sm ms-2"></span></span>
-                                        </button>
+                                        <div class="d-flex justify-content-end gap-1">
+                                            <button class="btn btn-sm btn-light-warning retry-run-btn" data-user-id="${l.user_id}">
+                                                <span class="indicator-label">
+                                                    <i class="ki-duotone ki-arrows-circle fs-4 me-1"><span class="path1"></span><span class="path2"></span></i>
+                                                    Retry
+                                                </span>
+                                                <span class="indicator-progress d-none">
+                                                    Retrying... <span class="spinner-border spinner-border-sm ms-2"></span>
+                                                </span>
+                                            </button>
+                                            <button class="btn btn-sm btn-icon btn-light-danger delete-run-btn"
+                                                    data-user-id="${l.user_id}" data-run-id="${l.id}" title="Delete this run">
+                                                <i class="ki-duotone ki-trash fs-4">
+                                                    <span class="path1"></span><span class="path2"></span>
+                                                    <span class="path3"></span><span class="path4"></span>
+                                                </i>
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
                             `).join('')}
@@ -1400,13 +1515,19 @@
                 </div>
             `;
 
+
             // Retry buttons
             wrap.querySelectorAll('.retry-run-btn').forEach(btn => {
                 btn.addEventListener('click', function () {
-                    if (!confirm('Clear failed drafts and retry for this user?')) return;
+                    if (this.dataset.inFlight === '1') return;
+                    if (retryInFlight) { window.showToast?.('error', 'Another retry is in progress.'); return; }
+                    if (!confirm('Retry only the failed items for this user? Successful drafts and sent applications will be kept.')) return;
 
                     const label = this.querySelector('.indicator-label');
                     const prog  = this.querySelector('.indicator-progress');
+
+                    retryInFlight = true;
+                    this.dataset.inFlight = '1';
                     this.disabled = true;
                     label?.classList.add('d-none');
                     prog?.classList.remove('d-none');
@@ -1426,6 +1547,8 @@
                     })
                     .catch(() => window.showToast?.('error', 'Network error.'))
                     .finally(() => {
+                        retryInFlight = false;
+                        this.dataset.inFlight = '0';
                         this.disabled = false;
                         label?.classList.remove('d-none');
                         prog?.classList.add('d-none');
@@ -1507,13 +1630,109 @@
         window.showToast?.('success', 'Filters cleared and data reloaded.');
     });
 
-    document.querySelectorAll('a[data-bs-toggle="tab"]').forEach(a => {
+    document.querySelectorAll('a[data-bs-toggle="tab"][href^="#tab_"]').forEach(a => {
         a.addEventListener('shown.bs.tab', function (e) {
             const href = e.target.getAttribute('href');
             if (href === '#tab_logs')         loadLogs(logsState.page);
             else if (href === '#tab_history') loadHistory(historyState.page);
             else                              loadDrafts(draftsState.page);
         });
+    });
+
+    // ── Delete draft (relay or external) ─────────────────────
+    document.addEventListener('click', async function (e) {
+        const btn = e.target.closest('.delete-draft-btn');
+        if (!btn || btn.disabled) return;
+
+        if (!confirm('Delete this draft? This cannot be undone.')) return;
+
+        btn.disabled = true;
+        const original = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+        try {
+            const res = await fetch(`{{ url('admin/auto-apply/draft') }}/${btn.dataset.id}?type=${btn.dataset.type}`, {
+                method: 'DELETE',
+                headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' },
+            });
+            const data = await res.json();
+            if (data.success) {
+                window.showToast?.('success', data.message || 'Draft deleted.');
+                loadDrafts(draftsState.page);
+            } else {
+                window.showToast?.('error', data.message || 'Delete failed.');
+                btn.disabled = false;
+                btn.innerHTML = original;
+            }
+        } catch (err) {
+            window.showToast?.('error', 'Network error.');
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    });
+
+    // ── Delete AI run log ────────────────────────────────────
+    document.addEventListener('click', async function (e) {
+        const btn = e.target.closest('.delete-run-btn');
+        if (!btn || btn.disabled) return;
+
+        if (!confirm('Delete this run log? Drafts attached to it will also be removed.')) return;
+
+        btn.disabled = true;
+        const original = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+        try {
+            const res = await fetch(`{{ url('admin/auto-apply/run') }}/${btn.dataset.runId}`, {
+                method: 'DELETE',
+                headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' },
+            });
+            const data = await res.json();
+            if (data.success) {
+                window.showToast?.('success', data.message || 'Run deleted.');
+                loadLogs(logsState.page);
+            } else {
+                window.showToast?.('error', data.message || 'Delete failed.');
+                btn.disabled = false;
+                btn.innerHTML = original;
+            }
+        } catch (err) {
+            window.showToast?.('error', 'Network error.');
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    });
+
+    // ── Delete one applied-history row ───────────────────────
+    document.addEventListener('click', async function (e) {
+        const btn = e.target.closest('.delete-history-btn');
+        if (!btn || btn.disabled) return;
+
+        if (!confirm('Remove this entry from the applied history? The subscriber\'s counter will be reduced by 1.')) return;
+
+        btn.disabled = true;
+        const original = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+        try {
+            const res = await fetch(`{{ url('admin/auto-apply/history') }}/${btn.dataset.id}`, {
+                method: 'DELETE',
+                headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' },
+            });
+            const data = await res.json();
+            if (data.success) {
+                window.showToast?.('success', data.message || 'History removed.');
+                loadHistory(historyState.page);
+            } else {
+                window.showToast?.('error', data.message || 'Delete failed.');
+                btn.disabled = false;
+                btn.innerHTML = original;
+            }
+        } catch (err) {
+            window.showToast?.('error', 'Network error.');
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
     });
 
     // Initial boot

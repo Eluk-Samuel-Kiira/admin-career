@@ -223,7 +223,9 @@ Route::prefix('admin')->middleware(['auth'])->group(function () {
 
     // ── 5. Bare {id} routes (LAST — wildcard) ──────────────────
 
-    
+    Route::post('cv-review-requests/{id}/update-answers', [CvReviewRequestController::class, 'updateAnswers'])
+    ->name('admin.cv-review.update-answers');
+
     Route::get('/cv-review-requests/{id}/rewrite/download', [CvReviewRequestController::class, 'downloadRewritePdf'])
         ->name('admin.cv-review.rewrite.download');
 
@@ -327,6 +329,8 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     Route::post  ('/subscriptions/manual-deposit',     [EmployerSubscriptionController::class, 'manualDeposit'])      ->name('employer-subscriptions.manual-deposit');
     Route::get   ('/subscriptions/service-options',    [EmployerSubscriptionController::class, 'serviceOptions'])     ->name('employer-subscriptions.service-options');
     Route::get   ('/subscriptions/user-search',        [EmployerSubscriptionController::class, 'userSearch'])          ->name('employer-subscriptions.user-search');
+    Route::post('/employer-subscriptions/{uuid}/extend', [EmployerSubscriptionController::class, 'extend'])
+        ->name('admin.employer-subscriptions.extend');
 });
 
 
