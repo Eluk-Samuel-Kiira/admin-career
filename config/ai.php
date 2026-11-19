@@ -40,15 +40,15 @@ return [
         ],
 
         'gemini' => [
-            'name' => 'Gemini',
-            'provider' => 'google',
-            'api_key' => env('GEMINI_API_KEY'),
-            'endpoint' => 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent',
-            'model' => 'gemini-3.5-flash',
-            'max_tokens' => 4096,
-            'icon' => 'ti-planet',
-            'color' => '#4285f4',
-            'supports' => ['text', 'image'],
+            'name'      => 'Gemini',
+            'provider'  => 'google',
+            'api_key'   => env('GEMINI_API_KEY'),
+            'endpoint'  => 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent',
+            'model'     => 'gemini-3.8-flash',
+            'max_tokens'=> 4096,
+            'icon'      => 'ti-planet',
+            'color'     => '#4285f4',
+            'supports'  => ['text', 'image'],
         ],
 
         'grok' => [
@@ -192,7 +192,7 @@ return [
         ])),
     ],
 
-    'letter_gemini_model'    => env('GEMINI_LETTER_MODEL', 'gemini-3.5-flash'),
+    'letter_gemini_model'    => env('GEMINI_LETTER_MODEL', 'gemini-3.8-flash'),
     'letter_gemini_endpoint' => 'https://generativelanguage.googleapis.com/v1beta/models',
 
 

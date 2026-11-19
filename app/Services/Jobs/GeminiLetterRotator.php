@@ -24,23 +24,16 @@ class GeminiLetterRotator
         $attempts = [];
         $lastErr  = null;
 
-        Log::info('CvRewriteService: about to call AI', [
-            'uuid'             => $request->uuid,
-            'cv_text_len'      => strlen($cvText),
-            'cv_text_preview'  => substr($cvText, 0, 500),
-            'answers_len'      => strlen($gaps),
-            'job_title'        => $request->target_job_title,
-            'job_desc_len'     => strlen((string) $request->target_job_description),
-            'job_desc_preview' => substr((string) $request->target_job_description, 0, 300),
-            'prompt_len'       => strlen($prompt),
-            'prompt_preview'   => substr($prompt, 0, 1000),
-            'prompt_tail'      => substr($prompt, -300),
+        Log::info('GeminiLetterRotator: dispatching', [
+            'prompt_len'     => strlen($prompt),
+            'prompt_preview' => substr($prompt, 0, 200),
+            'max_tokens'     => $maxTokens,
         ]);
 
         // ── 1. Try each Gemini key ────────────────────────────────
         foreach ($this->geminiKeys() as $index => $apiKey) {
             $slot = 'gemini#' . ($index + 1)
-                  . ' (' . substr($apiKey, 0, 6) . '…' . substr($apiKey, -4) . ')';
+                . ' (' . substr($apiKey, 0, 6) . '…' . substr($apiKey, -4) . ')';
 
             if ($this->isCoolingDown('gemini', $apiKey)) {
                 $attempts[] = "{$slot}: cooling down";
@@ -71,6 +64,13 @@ class GeminiLetterRotator
                     'status' => $e->status,
                     'body'   => substr($e->body, 0, 200),
                 ]);
+            } catch (\Illuminate\Http\Client\ConnectionException $e) {
+                $attempts[] = "{$slot}: connection error";
+                $lastErr    = $e->getMessage();
+                Log::error('GeminiLetterRotator: connection failed', [
+                    'slot'  => $slot,
+                    'error' => $e->getMessage(),
+                ]);
             } catch (\Throwable $e) {
                 $attempts[] = "{$slot}: " . $e->getMessage();
                 $lastErr    = $e->getMessage();
@@ -78,13 +78,6 @@ class GeminiLetterRotator
                     'slot'  => $slot,
                     'error' => $e->getMessage(),
                 ]);
-            } catch (\Illuminate\Http\Client\ConnectionException $e) {
-                Log::error('GeminiLetterRotator: connection failed', [
-                    'model' => $model,
-                    'error' => $e->getMessage(),
-                    'url'   => preg_replace('/key=[^&]+/', 'key=***', $url),
-                ]);
-                throw $e;
             }
         }
 
@@ -168,7 +161,6 @@ class GeminiLetterRotator
             $attempts[] = 'claude: no key configured';
         }
 
-        // ── All providers exhausted ───────────────────────────────
         throw new \Exception(
             'All letter providers failed. Tried: ' . implode(' | ', $attempts)
             . ' — last error: ' . ($lastErr ?? 'unknown')
@@ -185,16 +177,9 @@ class GeminiLetterRotator
     protected function callGemini(string $apiKey, string $prompt, int $maxTokens): ?string
     {
         $endpoint = rtrim((string) config('ai.letter_gemini_endpoint'), '/');
-        $model    = (string) config('ai.letter_gemini_model', 'gemini-3.5-flash');
+        $model    = (string) config('ai.letter_gemini_model', 'gemini-3.8-flash');
 
-        Log::info('GeminiLetterRotator: sending request', [
-            'model'       => $model,
-            'url'         => preg_replace('/key=[^&]+/', 'key=***', $url),
-            'body_bytes'  => strlen(json_encode($body)),
-            'timeout'     => 90,
-        ]);
-
-        $body = [
+        $body = [                                    // ← define FIRST
             'contents' => [[
                 'parts' => [['text' => $prompt]],
             ]],
@@ -204,7 +189,14 @@ class GeminiLetterRotator
             ],
         ];
 
-        $url = "{$endpoint}/{$model}:generateContent?key={$apiKey}";
+        $url = "{$endpoint}/{$model}:generateContent?key={$apiKey}";   // ← define FIRST
+
+        Log::info('GeminiLetterRotator: sending request', [             // ← THEN log
+            'model'      => $model,
+            'url'        => preg_replace('/key=[^&]+/', 'key=***', $url),
+            'body_bytes' => strlen(json_encode($body)),
+            'timeout'    => 90,
+        ]);
 
         $response = Http::timeout(90)
             ->withHeaders(['Content-Type' => 'application/json'])
@@ -213,8 +205,6 @@ class GeminiLetterRotator
         if (!$response->successful()) {
             throw new ProviderHttpException($response->status(), $response->body());
         }
-
- 
 
         return $response->json('candidates.0.content.parts.0.text');
     }
