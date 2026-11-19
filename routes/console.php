@@ -79,7 +79,7 @@ Schedule::command(
 //   withoutOverlapping(300) prevents a second worker starting mid-run
 Schedule::command(
     'queue:work ' .
-    '--queue=letters,auto-apply,ai-screening,emails ' .
+    '--queue=letters,auto-apply,ai-screening,emails' .
     '--stop-when-empty ' .
     '--max-time=290 ' .      // ← was 50; jobs take up to 5 min
     '--max-jobs=3 ' .        // ← was 10; slow jobs, don't stack

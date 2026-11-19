@@ -7,7 +7,6 @@ use App\Models\AutoApplyRelay;
 use App\Models\AutoApplyExternalDraft;
 use App\Models\SeekerProfile;
 use App\Services\AutoApply\JobFinder;
-use App\Services\AutoApply\CvTailor;
 use App\Services\AutoApply\DispatchRouter;
 use App\Services\Jobs\AiService;
 use App\Services\Subscription\SubscriptionGate;
@@ -17,6 +16,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use App\Services\AutoApply\CvTailor;
 
 class DraftAutoApplyJob implements ShouldQueue
 {
@@ -114,7 +114,15 @@ class DraftAutoApplyJob implements ShouldQueue
                     $run->increment('relayed_count');
                 }
             } catch (\Throwable $e) {
-                Log::error("AutoApply Draft failed for job {$job->id}: " . $e->getMessage());
+                Log::error("AutoApply Draft failed and Failed again for job {$job->id}: " . $e->getMessage(), [
+                    'job_id'     => $job->id,
+                    'seeker_id'  => $seeker->id,
+                    'file'       => $e->getFile(),
+                    'line'       => $e->getLine(),
+                    'class'      => get_class($e),
+                    'trace'      => $e->getTraceAsString(),
+                ]);
+
                 $run->increment('failed_count');
                 $run->update([
                     'error_message' => mb_substr($e->getMessage(), 0, 500),
