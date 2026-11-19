@@ -35,14 +35,20 @@ class AutoApplyController extends Controller
         }
 
         $stats = [
-            'drafts_ready' => AutoApplyRelay::where('status', 'queued')->count() 
-                            + AutoApplyExternalDraft::where('status', 'drafted')->count(),
-            'sent_today'   => AutoApplyRelay::where('status', 'sent')->whereDate('sent_at', today())->count(),
+            'drafts_ready'     => AutoApplyRelay::where('status', 'queued')->count() 
+                                + AutoApplyExternalDraft::where('status', 'drafted')->count(),
+            'sent_today'       => AutoApplyRelay::where('status', 'sent')->whereDate('sent_at', today())->count(),
             'external_pending' => AutoApplyExternalDraft::where('status', 'drafted')->count(),
-            'failed_today' => AutoApplyRun::whereDate('created_at', today())->sum('failed_count'),
+            'failed_today'     => AutoApplyRun::whereDate('created_at', today())->sum('failed_count'),
         ];
 
-        return view('job-seeker.auto-apply.index', compact('stats'));
+        // Top subscribers by applied count
+        $topSubs = \App\Models\AutoApplyStat::with('user:id,name,email')
+            ->orderByDesc('applied_total')
+            ->limit(5)
+            ->get();
+
+        return view('job-seeker.auto-apply.index', compact('stats','topSubs'));
     }
 
     /**
@@ -241,12 +247,31 @@ class AutoApplyController extends Controller
                     countryName:  \App\Models\Job\Country::where('code', $relay->jobPost->country_code)->value('name') ?? '',
                 ));
 
+
             $relay->update([
                 'status'          => 'sent',
                 'sent_at'         => now(),
                 'employer_email'  => $toEmail,
                 'seeker_cc_email' => $seeker->user?->email,
             ]);
+
+            // ── Bump the subscriber's applied counter ──
+            $channel = $relay->channels_attempted[0] ?? 'email';   // 'email' | 'whatsapp'
+
+            \App\Models\AutoApplyStat::updateOrCreate(
+                ['user_id' => $relay->user_id],
+                []
+            )->increment('applied_total');
+
+            \App\Models\AutoApplyStat::where('user_id', $relay->user_id)->update([
+                'last_applied_at' => now(),
+            ]);
+
+            if ($channel === 'whatsapp') {
+                \App\Models\AutoApplyStat::where('user_id', $relay->user_id)->increment('applied_via_whatsapp');
+            } else {
+                \App\Models\AutoApplyStat::where('user_id', $relay->user_id)->increment('applied_via_email');
+            }
 
             return response()->json(['success' => true, 'message' => 'Application sent successfully.']);
 
@@ -276,6 +301,33 @@ class AutoApplyController extends Controller
         
         // 1. Mark the draft as applied
         $draft->update(['status' => 'applied']);
+
+
+        $seekerId = SeekerProfile::where('user_id', $draft->user_id)->value('id');
+        if ($seekerId) {
+            \App\Models\Job\JobSeekerJob::updateOrCreate(
+                ['seeker_profile_id' => $seekerId, 'job_post_id' => $draft->job_post_id],
+                [
+                    'is_applied'            => true,
+                    'applied_at'            => now(),
+                    'notes'                 => 'Applied via External Link',
+                    'auto_apply_draft_id'   => $draft->id,
+                    'auto_apply_draft_type' => 'external',
+                ]
+            );
+            \App\Models\Job\JobPost::where('id', $draft->job_post_id)->increment('application_count');
+
+            // ── Bump the subscriber's counter ──
+            \App\Models\AutoApplyStat::updateOrCreate(
+                ['user_id' => $draft->user_id],
+                []
+            )->increment('applied_total');
+
+            \App\Models\AutoApplyStat::where('user_id', $draft->user_id)->update([
+                'last_applied_at' => now(),
+            ]);
+            \App\Models\AutoApplyStat::where('user_id', $draft->user_id)->increment('applied_via_external');
+        }
 
         // 2. Log into history with the Draft ID
         $seekerId = SeekerProfile::where('user_id', $draft->user_id)->value('id');
@@ -795,6 +847,48 @@ class AutoApplyController extends Controller
         ]);
     }
 
+    public function countDeliveryForSubscriber(): void
+    {
+        if ($this->delivery_counted_at) {
+            return;
+        }
+
+        $isSubscriber = $this->covered_by_subscription
+            || \App\Models\Subscription\Subscription::query()
+                ->where('user_id', $this->user_id)
+                ->whereIn('status', ['trialing', 'active'])
+                ->where('current_period_end', '>', now())
+                ->exists();
+
+        if (!$isSubscriber) {
+            return;
+        }
+
+        \Illuminate\Support\Facades\DB::transaction(function () {
+            $fresh = static::lockForUpdate()->find($this->id);
+            if (!$fresh || $fresh->delivery_counted_at) {
+                return;
+            }
+
+            $stat = \App\Models\AutoApplyStat::firstOrCreate(['user_id' => $this->user_id]);
+            $stat->increment('cv_reviews_delivered', 1, ['last_cv_delivered_at' => now()]);
+            $total = (int) $stat->fresh()->cv_reviews_delivered;
+
+            $log   = $fresh->delivery_log ?? [];
+            $log[] = [
+                'at'    => now()->toISOString(),
+                'type'  => 'delivery_counted',
+                'by'    => auth()->id(),
+                'total' => $total,   // subscriber's running total after this delivery
+            ];
+
+            $fresh->forceFill([
+                'delivery_counted_at' => now(),
+                'delivery_log'        => $log,
+            ])->saveQuietly();
+        });
+    }
+
     /**
      * Delete a draft / log.
      * DELETE /admin/auto-apply/draft/{id}?type=relay|external
@@ -817,8 +911,8 @@ class AutoApplyController extends Controller
     }
 
     /**
-     * Retry drafting for a specific seeker.
-     * Deletes their failed drafts for today, resets the run, and re-queues.
+     * Retry drafting for a specific seeker, failed items only.
+     * Keeps queued/sent drafts, applied external drafts and their history untouched.
      * POST /admin/auto-apply/retry-user/{userId}
      */
     public function retryUserRun(Request $request, $userId): JsonResponse
@@ -832,26 +926,57 @@ class AutoApplyController extends Controller
             return response()->json(['success' => false, 'message' => 'Seeker not found.'], 404);
         }
 
-        // Clear today's drafts for this user
-        AutoApplyRelay::where('user_id', $userId)
-            ->whereDate('created_at', today())
-            ->delete();
-
-        AutoApplyExternalDraft::where('user_id', $userId)
-            ->whereDate('created_at', today())
-            ->delete();
-
-        // Delete today's run so firstOrCreate starts fresh
-        AutoApplyRun::where('user_id', $userId)
+        $run = AutoApplyRun::where('user_id', $userId)
             ->whereDate('run_date', today())
-            ->delete();
+            ->first();
 
-        // Re-dispatch
+        $failedStatuses = ['failed', 'quota_exhausted', 'no_cv', 'no_preferences'];
+
+        $failedRelays = AutoApplyRelay::where('user_id', $userId)
+            ->whereDate('created_at', today())
+            ->where('status', 'failed');
+
+        $failedExternal = AutoApplyExternalDraft::where('user_id', $userId)
+            ->whereDate('created_at', today())
+            ->where('status', 'failed');
+
+        $runFailed = $run && (
+            in_array($run->status, $failedStatuses, true) || (int) $run->failed_count > 0
+        );
+
+        $relayCount    = (clone $failedRelays)->count();
+        $externalCount = (clone $failedExternal)->count();
+
+        if (!$runFailed && $relayCount === 0 && $externalCount === 0) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Nothing to retry: no failed items for this user today.',
+            ], 422);
+        }
+
+        \DB::transaction(function () use ($failedRelays, $failedExternal, $run, $runFailed) {
+            // 1. Remove ONLY failed drafts (sent / queued / drafted / applied stay)
+            $failedRelays->delete();
+            $failedExternal->delete();
+
+            // 2. Reset the run in place instead of deleting it,
+            //    so counters for the successful items are preserved
+            if ($run && $runFailed) {
+                $run->update([
+                    'status'        => 'queued',
+                    'failed_count'  => 0,
+                    'error_message' => null,
+                    'completed_at'  => null,
+                ]);
+            }
+        });
+
+        // 3. Re-dispatch the drafting job
         \App\Jobs\DraftAutoApplyJob::dispatch($seeker->id)->onQueue('auto-apply');
 
         return response()->json([
             'success' => true,
-            'message' => 'Retry queued. Drafts will regenerate shortly.',
+            'message' => "Retry queued. Cleared {$relayCount} failed email/WhatsApp and {$externalCount} failed external draft(s); successful ones were kept.",
         ]);
     }
 
@@ -954,5 +1079,51 @@ class AutoApplyController extends Controller
         ]);
     }
 
+    /**
+     * DELETE /admin/auto-apply/run/{id}
+     * Deletes an AutoApplyRun and all drafts tied to it.
+     */
+    public function deleteRun(Request $request, $id): JsonResponse
+    {
+        if (!auth()->user()->can('manage job alerts')) {
+            return response()->json(['success' => false], 403);
+        }
+
+        $run = AutoApplyRun::findOrFail($id);
+
+        // Clean up linked drafts first
+        AutoApplyRelay::where('auto_apply_run_id', $run->id)->delete();
+        AutoApplyExternalDraft::where('auto_apply_run_id', $run->id)->delete();
+
+        $run->delete();
+
+        return response()->json(['success' => true, 'message' => 'Run and its drafts deleted.']);
+    }
+
+    /**
+     * DELETE /admin/auto-apply/history/{id}
+     * Removes one JobSeekerJob row, and decrements the subscriber's applied counter.
+     */
+    public function deleteHistory(Request $request, $id): JsonResponse
+    {
+        if (!auth()->user()->can('manage job alerts')) {
+            return response()->json(['success' => false], 403);
+        }
+
+        $row = JobSeekerJob::findOrFail($id);
+
+        // Decrement the per-subscriber applied counter (see section 3 below)
+        $seeker = SeekerProfile::find($row->seeker_profile_id);
+        if ($seeker && $seeker->user_id) {
+            $stat = \App\Models\AutoApplyStat::where('user_id', $seeker->user_id)->first();
+            if ($stat && $stat->applied_total > 0) {
+                $stat->decrement('applied_total');
+            }
+        }
+
+        $row->delete();
+
+        return response()->json(['success' => true, 'message' => 'History entry removed.']);
+    }
 
 }

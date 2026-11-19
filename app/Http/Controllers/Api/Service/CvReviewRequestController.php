@@ -218,6 +218,123 @@ class CvReviewRequestController extends Controller
     }
 
     /**
+     * GET /api/user/subscriptions/usage
+     *
+     * Returns counters of everything the seeker has used against their
+     * active plan's feature_snapshot limits, plus the next reset date.
+     */
+    public function usage(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+        }
+
+        $sub = \App\Models\Subscription\Subscription::query()
+            ->where('user_id', $user->id)
+            ->whereIn('status', ['active', 'trialing'])
+            ->where('current_period_end', '>', now())
+            ->orderByDesc('id')
+            ->first();
+
+        if (!$sub) {
+            return response()->json([
+                'success' => true,
+                'active'  => false,
+                'message' => 'No active subscription.',
+            ]);
+        }
+
+        // The period we count within. Fall back to "since the subscription started"
+        $periodStart = $sub->current_period_start ?? $sub->starts_at ?? $sub->created_at ?? now()->startOfMonth();
+        $periodEnd   = $sub->current_period_end;
+
+        $snapshot = $sub->feature_snapshot ?? [];
+
+        // ── CV reviews in the current period ─────────────────────
+        $cvReviewUsed = \App\Models\Service\CvReviewRequest::where('user_id', $user->id)
+            ->where('created_at', '>=', $periodStart)
+            ->where('created_at', '<=', $periodEnd)
+            ->whereNotIn('status', ['cancelled'])
+            ->count();
+
+        // ── Cover letters in the current period ──────────────────
+        $coverLetterUsed = \App\Models\Service\LetterRequest::where('user_id', $user->id)
+            ->where('created_at', '>=', $periodStart)
+            ->where('created_at', '<=', $periodEnd)
+            ->whereNotIn('status', ['cancelled', 'failed'])
+            ->where('letter_type', 'cover')
+            ->count();
+
+        // ── Auto-applications in the current period ──────────────
+        $autoApplyUsed = \App\Models\AutoApplyRun::where('user_id', $user->id)
+            ->where('created_at', '>=', $periodStart)
+            ->where('created_at', '<=', $periodEnd)
+            ->sum('relayed_count');
+
+        // ── Extract quotas from feature_snapshot ─────────────────
+        // true = unlimited, number = cap, missing = not in plan
+        $quota = function ($key) use ($snapshot) {
+            if (!array_key_exists($key, $snapshot)) return 0;
+            $v = $snapshot[$key];
+            if ($v === true) return null;    // unlimited
+            return is_numeric($v) ? (int) $v : 0;
+        };
+
+        $cvReviewQuota    = $quota('cv_review');
+        $coverLetterQuota = $quota('cover_letter');
+        $autoApplyQuota   = $quota('auto_apply');
+
+        // If the plan uses a different key name, fall back to a couple of common variants
+        if ($cvReviewQuota === 0) {
+            $cvReviewQuota = $quota('cv_reviews') ?: $quota('cv_rewrite');
+        }
+        if ($coverLetterQuota === 0) {
+            $coverLetterQuota = $quota('cover_letters') ?: $quota('letter_generation');
+        }
+        if ($autoApplyQuota === 0) {
+            $autoApplyQuota = $quota('auto_apply_subscription') ?: $quota('auto_applications');
+        }
+
+        // ── Shape each feature ───────────────────────────────────
+        $feature = fn(int $used, ?int $limit) => [
+            'used'      => $used,
+            'limit'     => $limit,                       // null = unlimited
+            'unlimited' => $limit === null,
+            'remaining' => $limit === null ? null : max(0, $limit - $used),
+            'percent'   => $limit === null || $limit === 0
+                ? null
+                : (int) round(($used / $limit) * 100),
+        ];
+
+        return response()->json([
+            'success' => true,
+            'active'  => true,
+            'plan'    => [
+                'service_key'   => $sub->service_key,
+                'service_name'  => $sub->service?->name ?? $sub->service_key,
+                'status'        => $sub->status,
+                'status_label'  => ucfirst($sub->status),
+                'interval'      => $sub->interval,
+                'amount_cents'  => (int) $sub->amount_cents,
+                'amount_formatted' => $sub->formatted_amount,
+                'period_start'  => $periodStart->toISOString(),
+                'period_end'    => $periodEnd?->toISOString(),
+                'renewal_label' => $periodEnd
+                    ? $periodEnd->diffForHumans(now(), ['parts' => 1, 'short' => true]) . ' left'
+                    : null,
+            ],
+            'usage' => [
+                'cv_reviews'    => $feature($cvReviewUsed,    $cvReviewQuota),
+                'cover_letters' => $feature($coverLetterUsed, $coverLetterQuota),
+                'auto_apply'    => $feature((int) $autoApplyUsed, $autoApplyQuota),
+            ],
+            'generated_at' => now()->toISOString(),
+        ]);
+    }
+
+
+    /**
      * Resolve job context from the request:
      *  - db:     load the JobPost and merge description + responsibilities + qualifications + skills
      *  - manual: use provided title + company

@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
+use App\Models\Subscription\Subscription;
+
 use App\Services\Jobs\AiService;
 use App\Services\Jobs\CvTextExtractionService;
 use App\Services\Delivery\ReviewDeliveryService;
@@ -398,7 +400,7 @@ class CvReviewRequestController extends Controller
                     'cancelled'
                 ) ASC
             ")
-            ->orderBy('created_at', 'asc')
+            ->latest()
             ->paginate($perPage, ['*'], 'page', $page);
 
 
@@ -1411,6 +1413,15 @@ class CvReviewRequestController extends Controller
                 return response()->json(['success' => false, 'message' => 'Only AI rewrites can be generated here.'], 422);
             }
 
+            // Generation needs the gap answers (unless the review had no questions)
+            $reviewQuestions = (array) ($req->ai_gap_review['missing_fields'] ?? []);
+            if (!empty($reviewQuestions) && empty($req->seeker_gap_answers)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Answers to the gap questions are required before generating.',
+                ], 422);
+            }
+
             if (in_array($req->status, ['cancelled', 'completed'], true)) {
                 return response()->json(['success' => false, 'message' => "Cannot generate when the status is '{$req->status}'."], 422);
             }
@@ -1620,6 +1631,97 @@ class CvReviewRequestController extends Controller
                 'label' => $j->job_title . ($j->company?->name ? " — {$j->company->name}" : ''),
             ]),
         ]);
+    }
+
+    /**
+     * Edit already-submitted gap answers.
+     * Changes ONLY seeker_gap_answers (+ audit log). No status change, no generation.
+     * POST /admin/cv-review/{id}/update-answers
+     */
+    public function updateAnswers(Request $request, $id)
+    {
+        if (!auth()->user()->can('edit cv review requests')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        $validated = $request->validate([
+            'answers'   => 'required|array|min:1',
+            'answers.*' => 'nullable|string|max:5000',
+        ]);
+
+        try {
+            $req = DB::transaction(function () use ($id, $validated) {
+                $req = CvReviewRequest::lockForUpdate()->findOrFail($id);
+
+                if (empty($req->seeker_gap_answers)) {
+                    throw ValidationException::withMessages([
+                        'answers' => ['No answers have been submitted yet. Use the submit form first.'],
+                    ]);
+                }
+
+                if (in_array($req->status, ['cancelled', 'completed'], true)) {
+                    throw ValidationException::withMessages([
+                        'status' => ["Answers cannot be edited when the status is '{$req->status}'."],
+                    ]);
+                }
+
+                // Trim and drop blanks
+                $new = collect($validated['answers'])
+                    ->map(fn ($v) => trim((string) $v))
+                    ->filter(fn ($v) => $v !== '')
+                    ->all();
+
+                if (empty($new)) {
+                    throw ValidationException::withMessages([
+                        'answers' => ['At least one answer is required.'],
+                    ]);
+                }
+
+                $old     = (array) $req->seeker_gap_answers;
+                $changed = array_values(array_filter(
+                    array_unique(array_merge(array_keys($old), array_keys($new))),
+                    fn ($k) => ($old[$k] ?? null) !== ($new[$k] ?? null)
+                ));
+
+                if (empty($changed)) {
+                    return $req; // nothing changed
+                }
+
+                $log   = $req->delivery_log ?? [];
+                $log[] = [
+                    'at'      => now()->toISOString(),
+                    'type'    => 'answers_edited',
+                    'by'      => auth()->id(),
+                    'by_name' => auth()->user()->name,
+                    'changed' => $changed,
+                ];
+
+                $req->update([
+                    'seeker_gap_answers' => $new,
+                    'delivery_log'       => $log,
+                ]);
+
+                return $req;
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Answers updated.',
+                'data'    => $this->shapeForAdmin($req->fresh(['user', 'service', 'currency', 'country', 'assignedAdmin'])),
+            ]);
+
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => collect($e->errors())->flatten()->first(),
+                'errors'  => $e->errors(),
+            ], 422);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json(['success' => false, 'message' => 'Request not found.'], 404);
+        } catch (\Throwable $e) {
+            \Log::error('Update answers failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed: ' . $e->getMessage()], 500);
+        }
     }
 
 }

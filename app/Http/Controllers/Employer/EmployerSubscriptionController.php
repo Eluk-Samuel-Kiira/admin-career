@@ -10,6 +10,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\{ Log, DB };
 use Illuminate\Support\Str;
+use App\Models\Service\CvReviewRequest;
 
 class EmployerSubscriptionController extends Controller
 {
@@ -263,27 +264,34 @@ class EmployerSubscriptionController extends Controller
     // ═════════════════════════════════════════════════════════════
     // SUBSCRIPTION DETAIL
     // ═══════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════
+    // SUBSCRIPTION DETAIL
+    // ═════════════════════════════════════════════════════════════
     public function show(string $uuid): JsonResponse
     {
         if (!auth()->user()->can('view subscriptions')) {
             return response()->json(['success' => false], 403);
         }
 
-        // 1. Try to find the subscription by UUID first
-        $sub = Subscription::with(['user:id,name,email,phone,country_code', 'service:id,key,name,description'])
+        $with = [
+            'user:id,name,email,phone,country_code',
+            'user.seekerProfile:id,user_id,first_name,last_name',
+            'service:id,key,name,description',
+        ];
+
+        $sub = Subscription::with($with)
             ->where('uuid', $uuid)
             ->first();
 
-        // 2. Fallback: the reference might belong to a deposit (e.g., auto_apply_subscription),
-        //    so look up the deposit and find its owner's subscription instead
+        // Fallback: the reference might belong to a deposit (e.g., auto_apply_subscription),
+        // so look up the deposit and find its owner's subscription instead.
         if (!$sub) {
             $deposit = Deposit::where('purpose_reference', $uuid)
                 ->orWhere('deposit_ref', $uuid)
                 ->first();
 
             if ($deposit) {
-                // Match the deposit's user to their most recent subscription
-                $sub = Subscription::with(['user:id,name,email,phone,country_code', 'service:id,key,name,description'])
+                $sub = Subscription::with($with)
                     ->where('user_id', $deposit->paid_by_user_id)
                     ->orderByDesc('id')
                     ->first();
@@ -299,19 +307,18 @@ class EmployerSubscriptionController extends Controller
             ], 404);
         }
 
-        // ── 1. Fetch the raw deposit models once ─────────────────
+        // ── 1. Raw deposit models ────────────────────────────────
         $paymentModels = Deposit::with('currency')
             ->where('purpose_reference', $sub->uuid)
             ->orderByDesc('created_at')
             ->get();
 
-        // ── 2. Format them for the response body ─────────────────
-        $payments = $paymentModels->map(fn($d) => $this->formatPaymentDetail($d));
+        // ── 2. Format for the response ───────────────────────────
+        $payments = $paymentModels->map(fn ($d) => $this->formatPaymentDetail($d));
 
-        // ── 3. Build the webhook reference list from the MODELS ──
-        //     (not from the formatted arrays)
+        // ── 3. Webhook references (built from the models) ────────
         $references = $paymentModels
-            ->flatMap(fn($d) => [
+            ->flatMap(fn ($d) => [
                 $d->deposit_ref,
                 $d->gateway_transaction_uuid,
                 $d->source_reference,
@@ -321,20 +328,18 @@ class EmployerSubscriptionController extends Controller
             ->values()
             ->all();
 
-        // Also include the subscription's own gateway_subscription_id
-        // — some gateways store the same reference there.
         if ($sub->gateway_subscription_id) {
             $references[] = $sub->gateway_subscription_id;
             $references   = array_values(array_unique($references));
         }
 
-        // ── 4. Query the webhooks ────────────────────────────────
+        // ── 4. Webhooks ──────────────────────────────────────────
         $webhooks = empty($references)
             ? collect()
             : PaymentWebhook::whereIn('gateway_reference', $references)
                 ->orderByDesc('id')
                 ->get()
-                ->map(fn($w) => [
+                ->map(fn ($w) => [
                     'id'                => $w->id,
                     'gateway'           => $w->gateway,
                     'event_type'        => $w->event_type,
@@ -346,11 +351,179 @@ class EmployerSubscriptionController extends Controller
                     'created_at'        => $w->created_at?->toISOString(),
                 ]);
 
+        // ═════════════════════════════════════════════════════════
+        // AUTO-APPLY STATS + CV DELIVERY LOG (job_seeker users only)
+        // ═════════════════════════════════════════════════════════
+        $autoApplyStats = null;
+
+        if ($sub->user && $sub->user->hasRole('job_seeker')) {
+            $stat     = \App\Models\AutoApplyStat::firstOrCreate(['user_id' => $sub->user_id], []);
+            $seeker   = $sub->user->seekerProfile;
+            $seekerId = $seeker?->id;
+
+            $windows = ['today' => 0, 'last_7' => 0, 'last_30' => 0, 'last_90' => 0];
+            $recent  = [];
+            $trend   = [];
+
+            if ($seekerId) {
+                $base = \App\Models\Job\JobSeekerJob::where('seeker_profile_id', $seekerId)
+                    ->where('is_applied', true);
+
+                $windows['today']   = (clone $base)->whereDate('applied_at', today())->count();
+                $windows['last_7']  = (clone $base)->where('applied_at', '>=', now()->subDays(7))->count();
+                $windows['last_30'] = (clone $base)->where('applied_at', '>=', now()->subDays(30))->count();
+                $windows['last_90'] = (clone $base)->where('applied_at', '>=', now()->subDays(90))->count();
+
+                $recent = (clone $base)
+                    ->with(['jobPost:id,job_title,company_id', 'jobPost.company:id,name'])
+                    ->orderByDesc('applied_at')
+                    ->limit(10)
+                    ->get()
+                    ->map(fn ($r) => [
+                        'id'         => $r->id,
+                        'job_title'  => $r->jobPost?->job_title ?? '—',
+                        'company'    => $r->jobPost?->company?->name ?? '—',
+                        'source'     => $r->auto_apply_draft_type ?? 'manual',
+                        'applied_at' => $r->applied_at?->toISOString(),
+                    ])->values()->all();
+
+                for ($i = 5; $i >= 0; $i--) {
+                    $m = now()->subMonths($i);
+                    $trend[] = [
+                        'month' => $m->format('M'),
+                        'year'  => $m->format('Y'),
+                        'count' => \App\Models\Job\JobSeekerJob::where('seeker_profile_id', $seekerId)
+                            ->where('is_applied', true)
+                            ->whereYear('applied_at', $m->year)
+                            ->whereMonth('applied_at', $m->month)
+                            ->count(),
+                    ];
+                }
+            }
+
+            // CV delivery log — independent of seeker profile.
+            // NOTE: column names (user_id, uuid, delivery_channel, status, delivered_at)
+            // are assumptions; adjust to your cv_review_requests schema.
+            $cvLog = CvReviewRequest::where('user_id', $sub->user_id)
+                ->whereNotNull('delivery_counted_at')
+                ->orderByDesc('delivery_counted_at')
+                ->limit(25)
+                ->get()
+                ->map(fn ($r) => [
+                    'id'           => $r->id,
+                    'reference'    => $r->uuid ?? $r->id,
+                    'channel'      => $r->delivery_channel ?? 'manual', // email|whatsapp|external|manual
+                    'status'       => $r->status ?? null,
+                    'delivered_at' => ($r->delivered_at ?? $r->delivery_counted_at)?->toISOString(),
+                    'counted_at'   => $r->delivery_counted_at?->toISOString(),
+                ])->values()->all();
+
+            $autoApplyStats = [
+                'lifetime' => [
+                    'total'    => (int) $stat->applied_total,
+                    'email'    => (int) $stat->applied_via_email,
+                    'whatsapp' => (int) $stat->applied_via_whatsapp,
+                    'external' => (int) $stat->applied_via_external,
+                ],
+                'cv_delivery' => [
+                    'total'    => (int) $stat->cv_reviews_delivered,
+                    'email'    => (int) $stat->cv_delivered_via_email,
+                    'whatsapp' => (int) $stat->cv_delivered_via_whatsapp,
+                    'external' => (int) $stat->cv_delivered_via_external,
+                    'manual'   => (int) ($stat->cv_delivered_via_manual ?? 0),
+                    'log'      => $cvLog,
+                ],
+                'windows'              => $windows,
+                'recent'               => $recent,
+                'trend'                => $trend,
+                'last_applied_at'      => $stat->last_applied_at?->toISOString(),
+                'last_cv_delivered_at' => $stat->last_cv_delivered_at?->toISOString(),
+                'has_seeker'           => (bool) $seekerId,
+            ];
+        }
+
         return response()->json([
             'success'      => true,
             'subscription' => $this->formatSubscriptionDetail($sub),
             'payments'     => $payments,
             'webhooks'     => $webhooks,
+            'auto_apply'   => $autoApplyStats,
+        ]);
+    }
+
+    /**
+     * POST /admin/employer-subscriptions/{uuid}/extend
+     *
+     * Extends the subscriber's current_period_end by N days.
+     * Records the extension in delivery_log-equivalent (notes column) for audit.
+     */
+    public function extend(Request $request, string $uuid): JsonResponse
+    {
+        if (!auth()->user()->can('edit subscriptions')) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        $validated = $request->validate([
+            'days'   => 'required|integer|min:1|max:365',
+            'reason' => 'nullable|string|max:500',
+        ]);
+
+        $sub = Subscription::where('uuid', $uuid)->first();
+        if (!$sub) {
+            return response()->json(['success' => false, 'message' => 'Subscription not found.'], 404);
+        }
+
+        if (in_array($sub->status, ['cancelled', 'expired'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => "Cannot extend a {$sub->status} subscription. Reactivate it first.",
+            ], 422);
+        }
+
+        $days = (int) $validated['days'];
+
+        // Anchor on the later of (current_period_end, now) so an already-expired
+        // period doesn't extend from a date in the past.
+        $anchor = $sub->current_period_end && $sub->current_period_end->isFuture()
+            ? $sub->current_period_end
+            : now();
+
+        $newEnd = $anchor->copy()->addDays($days);
+
+        // Audit trail — same shape used by cancel()
+        $audit = "\nExtended by {$days} day(s) on " . now()->toDateTimeString()
+            . ' by ' . (auth()->user()->name ?? 'admin')
+            . ($validated['reason'] ?? null ? ' — reason: ' . $validated['reason'] : '');
+
+        $sub->update([
+            'current_period_end' => $newEnd,
+            'notes'              => trim(($sub->notes ?? '') . $audit),
+        ]);
+
+        // Clear the gate cache so the extension takes effect immediately
+        try {
+            app(\App\Services\Subscription\SubscriptionGate::class)->forget($sub->user);
+        } catch (\Throwable $e) {
+            // non-fatal
+        }
+
+        \Log::info('[admin] Subscription extended', [
+            'uuid'          => $sub->uuid,
+            'user_id'       => $sub->user_id,
+            'service_key'   => $sub->service_key,
+            'days'          => $days,
+            'old_period_end'=> $anchor->toISOString(),
+            'new_period_end'=> $newEnd->toISOString(),
+            'admin_id'      => auth()->id(),
+            'reason'        => $validated['reason'] ?? null,
+        ]);
+
+        return response()->json([
+            'success'        => true,
+            'message'        => "Subscription extended by {$days} day(s). New end: {$newEnd->toDateString()}.",
+            'days'           => $days,
+            'old_period_end' => $anchor->toISOString(),
+            'new_period_end' => $newEnd->toISOString(),
         ]);
     }
 

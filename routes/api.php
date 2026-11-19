@@ -264,6 +264,7 @@ Route::middleware(['verifycountry'])->group(function () {
 
     Route::middleware(['auth:sanctum'])->prefix('user')->group(function () {
         Route::get('/subscriptions', [\App\Http\Controllers\Api\Subscription\UserSubscriptionController::class, 'index']);
+        Route::get('/subscriptions/stats', [\App\Http\Controllers\Api\Subscription\UserSubscriptionController::class, 'stats']);
     });
 
     Route::middleware(['auth:sanctum'])->prefix('seeker')->group(function () {

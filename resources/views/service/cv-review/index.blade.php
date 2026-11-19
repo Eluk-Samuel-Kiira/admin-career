@@ -188,7 +188,6 @@
                             <th class="min-w-100px">Price</th>
                             <th class="min-w-140px">Payment</th>
                             <th class="min-w-150px">Status</th>
-                            <th class="min-w-120px">SLA</th>
                             <th class="min-w-120px">Assignee</th>
                             <th class="text-end min-w-180px">Actions</th>
                         </tr>
@@ -785,13 +784,12 @@
                 ${req.seeker_gap_answers && Object.keys(req.seeker_gap_answers).length > 0
                     ? `<span class="badge badge-light-success badge-sm mt-1">✓ ${Object.keys(req.seeker_gap_answers).length} answers</span>`
                     : ''}`;
-
-            row.insertCell(7).innerHTML = req.sla_badge;
-            row.insertCell(8).innerHTML = req.assignee_name
+                    
+            row.insertCell(7).innerHTML = req.assignee_name
                 ? `<span class="badge badge-light-primary">${escapeHtml(req.assignee_name)}</span>`
                 : '<span class="text-muted">Unassigned</span>';
 
-            row.insertCell(9).innerHTML = `
+            row.insertCell(8).innerHTML = `
                 <div class="d-flex justify-content-end gap-1">
                     ${req.cv_download_url
                         ? `<a href="${req.cv_download_url}" target="_blank" class="btn btn-sm btn-icon btn-light" title="Original CV">
@@ -1872,6 +1870,63 @@
         ok ? toast('success', 'Copied as plain text.')
            : toast('error', 'Browser blocked copying. Select the text and press Ctrl+C.');
     }
+
+    /* ── Edit submitted answers: toggle view <-> edit ───────────── */
+    document.addEventListener('click', function (e) {
+        if (e.target.closest('[data-action="edit-answers"]')) {
+            e.preventDefault();
+            document.getElementById('answersViewWrap')?.classList.add('d-none');
+            document.getElementById('answersEditWrap')?.classList.remove('d-none');
+        }
+        if (e.target.closest('[data-action="cancel-edit-answers"]')) {
+            e.preventDefault();
+            document.getElementById('answersEditWrap')?.classList.add('d-none');
+            document.getElementById('answersViewWrap')?.classList.remove('d-none');
+        }
+    });
+
+    /* ── Edit submitted answers: save ───────────────────────────── */
+    document.addEventListener('submit', async function (e) {
+        const form = e.target;
+        if (form.id !== 'adminAnswersEditForm') return;
+        e.preventDefault();
+
+        const id = form.dataset.id;
+        const answers = {};
+        for (const [k, v] of new FormData(form).entries()) {
+            const m = k.match(/^answers\[(.+)\]$/);
+            if (m) answers[m[1]] = v;
+        }
+
+        if (!Object.values(answers).some(v => v.trim() !== '')) {
+            window.showToast?.('error', 'Please keep at least one answer.');
+            return;
+        }
+
+        const btn = document.getElementById('saveAnswersEditBtn');
+        window.showButtonSpinner?.(btn);
+
+        try {
+            const res = await fetch(`/admin/cv-review-requests/${id}/update-answers`, {
+                method: 'PUT',
+                headers: { 'X-CSRF-TOKEN': CV_CSRF, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ answers }),
+            });
+            const data = await res.json();
+
+            if (!data.success) {
+                window.showToast?.('error', data.message || 'Save failed');
+                window.hideButtonSpinner?.(btn);
+                return;
+            }
+
+            window.showToast?.('success', data.message);
+            setTimeout(() => { window.openDetail(id); loadRequests(); }, 400);
+        } catch (err) {
+            window.showToast?.('error', 'Network error: ' + err.message);
+            window.hideButtonSpinner?.(btn);
+        }
+    });
 
     // ── Delegated clicks (drawer buttons only) ───────────────────
     document.addEventListener('click', e => {
