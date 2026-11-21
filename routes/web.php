@@ -295,6 +295,10 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     Route::post('/auto-apply/trigger',  [AutoApplyController::class, 'triggerDraft'])->name('auto-apply.trigger');
     Route::get('/auto-apply/drafts',    [AutoApplyController::class, 'drafts'])->name('auto-apply.drafts');
     Route::post('/auto-apply/send/{id}',[AutoApplyController::class, 'sendRelay'])->name('auto-apply.send-relay');
+
+    // ⬇️ NEW — WhatsApp send
+    Route::post('/auto-apply/send-whatsapp/{id}', [AutoApplyController::class, 'sendWhatsAppRelay'])->name('auto-apply.send-whatsapp');
+
     Route::post('/auto-apply/mark/{id}',[AutoApplyController::class, 'markApplied'])->name('auto-apply.mark-applied');
     Route::delete('/auto-apply/draft/{id}', [AutoApplyController::class, 'deleteDraft'])->name('auto-apply.delete-draft');
     Route::get('/auto-apply/download/{id}', [AutoApplyController::class, 'downloadDraft'])->name('auto-apply.download');
@@ -305,8 +309,8 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     Route::post('/auto-apply/update-draft/{id}', [AutoApplyController::class, 'updateDraftContent'])->name('auto-apply.update-draft');
     Route::post('/auto-apply/retry-user/{userId}', [AutoApplyController::class, 'retryUserRun'])->name('auto-apply.retry-user');
     Route::get('/auto-apply/history', [AutoApplyController::class, 'history'])->name('auto-apply.history');
-    Route::delete('/auto-apply/run/{id}',     [AutoApplyController::class, 'deleteRun'])->name('admin.auto-apply.run.delete');
-    Route::delete('/auto-apply/history/{id}', [AutoApplyController::class, 'deleteHistory'])->name('admin.auto-apply.history.delete');
+    Route::delete('/auto-apply/run/{id}',     [AutoApplyController::class, 'deleteRun'])->name('auto-apply.run.delete');
+    Route::delete('/auto-apply/history/{id}', [AutoApplyController::class, 'deleteHistory'])->name('auto-apply.history.delete');
 });
 
 

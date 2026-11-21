@@ -118,7 +118,7 @@
                     {{-- Jobs Index --}}
                     @can('view jobs')
                     <div data-kt-menu-trigger="click" class="menu-item menu-accordion {{ request()->routeIs('admin.companies*', 'admin.job-locations*', 'admin.job-posts*', 'admin.job-applications*',
-                         'admin.sitemap*', 'admin.job-sharing*') ? 'show here' : '' }}">
+                         'admin.sitemap*', 'admin.job-sharing*', 'admin.social-media*') ? 'show here' : '' }}">
                         <span class="menu-link">
                             <span class="menu-icon">
                                 <i class="ki-duotone ki-briefcase fs-2">

@@ -395,6 +395,65 @@
     </div>
 </div>
 
+{{-- ══════════════════ WHATSAPP COMPOSER ══════════════════ --}}
+<div class="modal fade" id="whatsappComposeModal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header border-bottom">
+                <h5 class="modal-title mb-0">
+                    <i class="ki-duotone ki-whatsapp fs-3 me-2 text-success"></i>
+                    Send via WhatsApp
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+
+            <div class="modal-body p-0">
+                <style>
+                    .wa-row { display:flex; align-items:center; gap:12px; padding:10px 20px; border-bottom:1px solid var(--bs-gray-200); }
+                    .wa-row > label { width:84px; flex:none; font-size:13px; font-weight:600; color:var(--bs-gray-600); margin:0; }
+                    .wa-row input { border:0 !important; box-shadow:none !important; background:transparent !important; flex:1; padding:4px 0; }
+                    .wa-foot { padding:14px 20px; background:#E7FFDB; border-top:1px solid #c7f0b8; }
+                </style>
+
+                {{-- To --}}
+                <div class="wa-row">
+                    <label>WhatsApp</label>
+                    <input type="tel" id="waComposeTo" placeholder="+256 7XX XXX XXX" autocomplete="off">
+                </div>
+
+                {{-- Message --}}
+                <div class="p-0">
+                    <textarea id="waComposeBody" rows="14" class="form-control border-0 rounded-0" placeholder="Type your message…"></textarea>
+                </div>
+
+                {{-- Attachments (informational — WhatsApp sends text; PDFs would be uploaded via WhatsAppChannel separately) --}}
+                <div class="wa-foot">
+                    <div class="d-flex flex-wrap align-items-center gap-3">
+                        <div class="fw-semibold fs-8 text-gray-700">Attachments:</div>
+                        <div id="waComposeAttachments" class="d-flex flex-wrap gap-2"></div>
+                    </div>
+                    <div class="text-muted fs-8 mt-2">
+                        <i class="ki-duotone ki-information-5 fs-7 me-1"><span class="path1"></span><span class="path2"></span><span class="path3"></span></i>
+                        The CV and cover letter are referenced in the message text. The WhatsApp channel
+                        handles document delivery per the Meta Cloud API workflow.
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-footer border-top justify-content-between">
+                <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-success" id="waComposeSendBtn">
+                    <span class="indicator-label">
+                        <i class="ki-duotone ki-whatsapp fs-3 me-1"></i>
+                        Send on WhatsApp
+                    </span>
+                    <span class="indicator-progress">Sending… <span class="spinner-border spinner-border-sm ms-2"></span></span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 @endcan
 @endsection
 
@@ -703,6 +762,7 @@
         }
     }
 
+
     // ═══════════════════════════════════════════════════════════
     // Open Drawer
     // ═══════════════════════════════════════════════════════════
@@ -711,10 +771,13 @@
         const row  = list.find(x => x.id === id);
         if (!row) return;
 
-        // ← Reset buttons (in case previous drawer was history)
+        // Reset button visibility (in case previous drawer was history/read-only)
         document.getElementById('downloadCvBtn').style.display    = 'inline-flex';
         document.getElementById('downloadCoverBtn').style.display = 'inline-flex';
+        document.getElementById('editCvBtn').style.display        = 'inline-flex';
+        document.getElementById('editCoverBtn').style.display     = 'inline-flex';
 
+        // ── Build the drawer state ─────────────────────────────
         currentDraft = {
             id: row.id,
             type: row.type,
@@ -723,33 +786,36 @@
             job_requirements: row.job_requirements || {},
             user_email: row.user_email,
             employer_email: row.employer_email,
+            employer_phone: row.employer_phone || row.telephone || null,
             job_title: row.job_title,
             channel: row.channel || 'manual',
             external_url: row.external_url || null,
-            qualifications: row.qualifications || '',              // ← ADD
-            application_procedure: row.application_procedure || '', // ← ADD
+            qualifications: row.qualifications || '',
+            application_procedure: row.application_procedure || '',
         };
 
-        // Header
-        document.getElementById('drawerTitle').textContent = type === 'external' ? 'External Draft' : 'Email/WhatsApp Draft';
+        // ── Header ─────────────────────────────────────────────
+        document.getElementById('drawerTitle').textContent = type === 'external'
+            ? 'External Draft'
+            : (currentDraft.channel === 'whatsapp' ? 'WhatsApp Draft' : 'Email Draft');
         document.getElementById('drawerSeekerName').textContent  = row.user_name;
         document.getElementById('drawerSeekerEmail').textContent = row.user_email;
         document.getElementById('drawerJobTitle').textContent    = row.job_title;
         document.getElementById('drawerChannel').textContent     = capitalize(row.channel || 'manual');
 
-        // 1. Requirements Badges
+        // ── Requirements badges ────────────────────────────────
         const reqs = row.job_requirements || {};
         const reqWrap = document.getElementById('requirementsWrap');
         const reqItems = [];
-        if (reqs.is_resume_required)              reqItems.push({ label: 'CV Required',             color: 'success' });
-        if (reqs.is_cover_letter_required)        reqItems.push({ label: 'Cover Letter Required',   color: 'info' });
-        if (reqs.is_academic_documents_required)  reqItems.push({ label: 'Academic Docs Required',  color: 'warning' });
+        if (reqs.is_resume_required)              reqItems.push({ label: 'CV Required',            color: 'success' });
+        if (reqs.is_cover_letter_required)        reqItems.push({ label: 'Cover Letter Required',  color: 'info' });
+        if (reqs.is_academic_documents_required)  reqItems.push({ label: 'Academic Docs Required', color: 'warning' });
 
         reqWrap.innerHTML = reqItems.map(r =>
             `<span class="badge badge-light-${r.color} fs-7">${r.label}</span>`
         ).join('') || '<span class="badge badge-light-secondary fs-7">No specific requirements</span>';
 
-        // 2. Employer Contact / Link Info
+        // ── Employer contact block ─────────────────────────────
         const contactWrap = document.getElementById('employerContactWrap');
         let contactHtml = '';
 
@@ -758,36 +824,63 @@
             contactHtml += `
                 <div class="d-flex gap-2 mt-3">
                     <a href="${row.external_url}" target="_blank" class="btn btn-sm btn-light-primary">
-                        <i class="ki-duotone ki-exit-right-corner fs-4 me-1"><span class="path1"></span><span class="path2"></span></i> 
+                        <i class="ki-duotone ki-exit-right-corner fs-4 me-1"><span class="path1"></span><span class="path2"></span></i>
                         Open Application Page
                     </a>
                     <button class="btn btn-sm btn-warning" id="drawerMarkAppliedBtn">
-                        <i class="ki-duotone ki-check-circle fs-4 me-1"><span class="path1"></span><span class="path2"></span></i> 
+                        <i class="ki-duotone ki-check-circle fs-4 me-1"><span class="path1"></span><span class="path2"></span></i>
                         Mark Applied & Send to Seeker
                     </button>
-                </div>
-            `;
+                </div>`;
         } else {
-            // Try to get employer email from the row, or parse it from the text
-            let employerEmail = row.employer_email;
-            if (!employerEmail && row.qualifications) {
-                const match = row.qualifications.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
-                if (match) employerEmail = match[0];
-            }
-            if (!employerEmail && row.application_procedure) {
-                const match = row.application_procedure.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
-                if (match) employerEmail = match[0];
+            // ── Resolve employer email: job field → first from job description → first from procedure ──
+            let employerEmail = firstFromCommaList(row.employer_email);
+            if (!employerEmail) employerEmail = firstEmailFrom(row.qualifications);
+            if (!employerEmail) employerEmail = firstEmailFrom(row.application_procedure);
+
+            // ── Resolve employer phone: job field → first from job description → first from procedure ──
+            let employerPhone = firstFromCommaList(row.employer_phone || row.telephone || '');
+            if (!employerPhone) employerPhone = firstPhoneFrom(row.qualifications);
+            if (!employerPhone) employerPhone = firstPhoneFrom(row.application_procedure);
+
+            // Cache on currentDraft so the Send handler uses the exact same values
+            currentDraft.employer_email = employerEmail;
+            currentDraft.employer_phone = employerPhone;
+
+            if (currentDraft.channel === 'whatsapp') {
+                contactHtml += `<div><strong>Sending To:</strong> ${
+                    employerPhone
+                        ? `<span class="text-success">${employerPhone}</span> (WhatsApp)`
+                        : '<span class="text-danger">Phone not found in Job Post</span>'
+                }</div>`;
+                contactHtml += `<div class="mt-1"><strong>Channel:</strong> <span class="badge badge-light-success">WhatsApp</span></div>`;
+            } else {
+                contactHtml += `<div><strong>Sending To:</strong> ${
+                    employerEmail
+                        ? employerEmail
+                        : '<span class="text-danger">Email not found in Job Post</span>'
+                }</div>`;
+                contactHtml += `<div class="mt-1"><strong>CC:</strong> ${row.user_email} (Seeker)</div>`;
             }
 
-            contactHtml += `<div><strong>Sending To:</strong> ${employerEmail || '<span class="text-danger">Email not found in Job Post</span>'}</div>`;
-            contactHtml += `<div class="mt-1"><strong>CC:</strong> ${row.user_email} (Seeker)</div>`;
+            // Manual "mark applied externally"
+            contactHtml += `
+                <div class="d-flex gap-2 mt-3">
+                    <button class="btn btn-sm btn-warning" id="drawerMarkRelayAppliedBtn">
+                        <i class="ki-duotone ki-check-circle fs-4 me-1">
+                            <span class="path1"></span><span class="path2"></span>
+                        </i>
+                        Mark Applied (submitted externally)
+                    </button>
+                </div>`;
         }
+
         contactWrap.innerHTML = contactHtml;
 
-        // 3. Bind Mark Applied button
-        document.getElementById('drawerMarkAppliedBtn')?.addEventListener('click', async function() {
+        // ── Bind external "Mark Applied" ──────────────────────
+        document.getElementById('drawerMarkAppliedBtn')?.addEventListener('click', async function () {
             if (!confirm('Mark as applied? This will notify the seeker via WhatsApp.')) return;
-            
+
             const btn = this;
             const original = btn.innerHTML;
             btn.disabled = true;
@@ -796,14 +889,15 @@
             try {
                 const res = await fetch(`{{ url('admin/auto-apply/mark') }}/${id}`, {
                     method: 'POST',
-                    headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' }
+                    headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' },
                 });
                 const data = await res.json();
-                
+
                 if (data.success) {
                     window.showToast?.('success', data.message);
                     drawer.hide();
-                    loadDrafts(draftsState.page);  
+                    loadDrafts(draftsState.page);
+                    loadLogs(logsState.page);
                 } else {
                     window.showToast?.('error', data.message);
                     btn.disabled = false;
@@ -816,19 +910,67 @@
             }
         });
 
-        // Reset to CV tab
+        // ── Bind relay "Mark Applied (submitted externally)" ──
+        document.getElementById('drawerMarkRelayAppliedBtn')?.addEventListener('click', async function () {
+            if (!confirm(
+                'Mark this job as applied externally?\n\n' +
+                'Use this when you submitted the application through the employer\'s own portal ' +
+                '(not via our email/WhatsApp pipeline).\n\n' +
+                'The subscriber\'s counter will be updated and the draft will leave the queue.'
+            )) return;
+
+            const btn = this;
+            const original = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Processing...';
+
+            try {
+                const res = await fetch(`{{ url('admin/auto-apply/mark-relay-applied') }}/${id}`, {
+                    method: 'POST',
+                    headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' },
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    window.showToast?.('success', data.message);
+                    drawer.hide();
+                    loadDrafts(draftsState.page);
+                    loadLogs(logsState.page);
+                } else {
+                    window.showToast?.('error', data.message || 'Failed to mark.');
+                    btn.disabled = false;
+                    btn.innerHTML = original;
+                }
+            } catch (e) {
+                window.showToast?.('error', 'Network error.');
+                btn.disabled = false;
+                btn.innerHTML = original;
+            }
+        });
+
+        // ── Reset to CV tab + render previews ─────────────────
         new bootstrap.Tab(document.querySelector('#drawerTabs a[href="#doc_cv"]')).show();
 
-        // Render previews
-        renderPreview('cv',   row.cv_html    || '');
+        renderPreview('cv',    row.cv_html    || '');
         renderPreview('cover', row.cover_html || '');
 
-        // Download links
+        // ── Download links ─────────────────────────────────────
         document.getElementById('downloadCvBtn').href    = `{{ url('admin/auto-apply/download') }}/${id}?type=${type}&document=cv`;
         document.getElementById('downloadCoverBtn').href = `{{ url('admin/auto-apply/download') }}/${id}?type=${type}&document=cover`;
 
-        // Hide send button for external
-        document.getElementById('drawerSendBtn').style.display = type === 'external' ? 'none' : 'inline-flex';
+        // ── Drawer Send button — visibility + label per channel ──
+        const sendBtn = document.getElementById('drawerSendBtn');
+        if (type === 'external') {
+            sendBtn.style.display = 'none';
+        } else {
+            sendBtn.style.display = 'inline-flex';
+            const labelEl = sendBtn.querySelector('.indicator-label');
+            if (currentDraft.channel === 'whatsapp') {
+                labelEl.innerHTML = '<i class="ki-duotone ki-whatsapp fs-4 me-1"></i> Send via WhatsApp';
+            } else {
+                labelEl.innerHTML = '<i class="ki-duotone ki-send fs-4 me-1"></i> Send Application';
+            }
+        }
 
         drawer.show();
     }
@@ -1066,16 +1208,18 @@
     }
 
     function startEdit(kind) {
-        const previewEl = document.getElementById(kind === 'cv' ? 'cvPreview' : 'coverPreview');
+        const previewEl  = document.getElementById(kind === 'cv' ? 'cvPreview'  : 'coverPreview');
         const editorWrap = document.getElementById(kind === 'cv' ? 'cvEditorWrap' : 'coverEditorWrap');
-        const editorEl   = document.getElementById(kind === 'cv' ? 'cvEditor' : 'coverEditor');
+        const html       = kind === 'cv' ? currentDraft.cv_html : currentDraft.cover_html;
 
-        const html = kind === 'cv' ? currentDraft.cv_html : currentDraft.cover_html;
-
+        // ⚠️ Reveal the editor FIRST, then init
         previewEl.classList.add('d-none');
         editorWrap.classList.remove('d-none');
 
-        initEditor(kind, html || '');
+        // Give the browser one frame to layout the now-visible wrapper
+        requestAnimationFrame(() => {
+            initEditor(kind, html || '');
+        });
     }
 
     let cvInitPending = false, coverInitPending = false;
@@ -1084,18 +1228,44 @@
         const instance = kind === 'cv' ? cvEditorInstance : coverEditorInstance;
         const pending  = kind === 'cv' ? cvInitPending    : coverInitPending;
 
-        if (instance) { instance.setContent(content); instance.focus(); return; }
+        if (instance) {
+            instance.setContent(content);
+            instance.focus();
+            return;
+        }
         if (pending) return;
 
         if (kind === 'cv') cvInitPending = true; else coverInitPending = true;
 
+        // Make sure the textarea holds the content BEFORE init
+        const textarea = document.getElementById(kind === 'cv' ? 'cvEditor' : 'coverEditor');
+        if (textarea) textarea.value = content;
+
         tinymce.init({
-            // …same options as before…
+            target: textarea,
+            height: 480,
+            menubar: false,
+            statusbar: true,
+            branding: false,
+            promotion: false,
+            plugins: 'lists link code wordcount',
+            toolbar: 'undo redo | blocks | bold italic underline | bullist numlist | link | alignleft aligncenter alignright | removeformat | code',
+            content_style: `
+                body { font-family: Georgia, "Times New Roman", serif; font-size: 13px; line-height: 1.6; padding: 16px; color: #0F1B2D; }
+                p { margin: 0 0 1em; }
+                h1, h2, h3 { margin: 0.8em 0 0.4em; font-weight: bold; }
+                ul, ol { margin: 0.4em 0 0.6em 1.4em; }
+                li { margin: 0.2em 0; }
+                table { border-collapse: collapse; width: 100%; }
+                td, th { border: 1px solid #eee; padding: 4px 8px; }
+            `,
             setup: (editor) => {
                 editor.on('init', () => {
                     if (kind === 'cv') { cvEditorInstance = editor; cvInitPending = false; }
                     else               { coverEditorInstance = editor; coverInitPending = false; }
-                    editor.setContent(content);
+
+                    // ⚠️ Force content — textarea's .value is not always picked up
+                    editor.setContent(content || '');
                     editor.focus();
                 });
             }
@@ -1219,46 +1389,39 @@
     });
 
     // ═══════════════════════════════════════════════════════════
-    // Drawer "Send Application" — opens the compose modal
+    // Drawer "Send Application" — email OR WhatsApp depending on channel
     // ═══════════════════════════════════════════════════════════
     document.getElementById('drawerSendBtn')?.addEventListener('click', () => {
         if (!currentDraft || currentDraft.type === 'external') return;
 
-        // 1. Resolve employer email (row value, or parsed from the job text)
-        let toEmail = currentDraft.employer_email || '';
-        if (!toEmail && currentDraft.qualifications) {
-            const m = currentDraft.qualifications.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
-            if (m) toEmail = m[0];
-        }
-        if (!toEmail && currentDraft.application_procedure) {
-            const m = currentDraft.application_procedure.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
-            if (m) toEmail = m[0];
+        // ── Branch: WhatsApp-only draft ──
+        if (currentDraft.channel === 'whatsapp') {
+            openWhatsAppComposer();
+            return;
         }
 
-        // 2. Populate the composer fields
+        // ── Email flow ──
+        let toEmail = firstFromCommaList(currentDraft.employer_email || '');
+        if (!toEmail) toEmail = firstEmailFrom(currentDraft.qualifications);
+        if (!toEmail) toEmail = firstEmailFrom(currentDraft.application_procedure);
+
         document.getElementById('composeTo').value      = toEmail || '';
         document.getElementById('composeCc').value      = currentDraft.user_email || '';
         document.getElementById('composeBcc').value     = '';
         document.getElementById('composeSubject').value = `Application for ${currentDraft.job_title || ''}`;
         document.getElementById('composeBccRow').classList.add('d-none');
 
-        // 3. Body — pre-fill from the cover letter (fallback to a generic intro)
         const body = currentDraft.cover_html
             || `<p>Dear Hiring Manager,</p><p>Please find attached my CV and cover letter for the ${escapeHtml(currentDraft.job_title || 'advertised position')}.</p><p>Thank you for your consideration.</p>`;
 
         if (composeEditor) {
             composeEditor.setContent(body);
         } else {
-            // TinyMCE might still be initialising — retry briefly
             const wait = setInterval(() => {
-                if (composeEditor) {
-                    composeEditor.setContent(body);
-                    clearInterval(wait);
-                }
+                if (composeEditor) { composeEditor.setContent(body); clearInterval(wait); }
             }, 100);
         }
 
-        // 4. Attachments — badges based on the job's requirements
         const reqs = currentDraft.job_requirements || {};
         const attach = [];
         if (reqs.is_resume_required)              attach.push({ label: 'CV (PDF)',            color: 'success' });
@@ -1273,10 +1436,110 @@
             </span>`
         ).join('');
 
-        // 5. Show it
         composeModal.show();
     });
 
+    // ═══════════════════════════════════════════════════════════
+    // WhatsApp composer
+    // ═══════════════════════════════════════════════════════════
+    const waModalEl = document.getElementById('whatsappComposeModal');
+    const waModal   = new bootstrap.Modal(waModalEl);
+
+    function openWhatsAppComposer() {
+        let toPhone = firstFromCommaList(currentDraft.employer_phone || '');
+        if (!toPhone) toPhone = firstPhoneFrom(currentDraft.qualifications);
+        if (!toPhone) toPhone = firstPhoneFrom(currentDraft.application_procedure);
+
+        document.getElementById('waComposeTo').value = toPhone || '';
+
+        const bodyText = currentDraft.cover_html
+            ? plainTextFromHtml(currentDraft.cover_html)
+            : `Hello, I am applying for the ${currentDraft.job_title || 'advertised position'}. Please find attached my CV and cover letter.`;
+
+        document.getElementById('waComposeBody').value = bodyText;
+
+        // Attachments badges
+        const reqs = currentDraft.job_requirements || {};
+        const attach = [];
+        if (reqs.is_resume_required)              attach.push({ label: 'CV (PDF)',            color: 'success' });
+        if (reqs.is_cover_letter_required)        attach.push({ label: 'Cover Letter (PDF)',  color: 'info' });
+        if (reqs.is_academic_documents_required)  attach.push({ label: 'Academic Docs (PDF)', color: 'warning' });
+        if (attach.length === 0)                  attach.push({ label: 'No documents required', color: 'secondary' });
+
+        document.getElementById('waComposeAttachments').innerHTML = attach.map(a =>
+            `<span class="badge badge-light-${a.color} fs-7 py-2 px-3">
+                <i class="ki-duotone ki-paper-clip fs-6 me-1"><span class="path1"></span><span class="path2"></span></i>
+                ${a.label}
+            </span>`
+        ).join('');
+
+        waModal.show();
+    }
+
+    function plainTextFromHtml(html) {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = html || '';
+        // Convert block elements to line breaks so WhatsApp renders cleanly
+        tmp.querySelectorAll('p, h1, h2, h3, li, div').forEach(el => {
+            el.appendChild(document.createTextNode('\n'));
+        });
+        return (tmp.innerText || tmp.textContent || '').trim();
+    }
+
+    // ── Send handler ─────────────────────────────────────────
+    document.getElementById('waComposeSendBtn')?.addEventListener('click', async function () {
+        if (!currentDraft) return;
+
+        const to = document.getElementById('waComposeTo').value.trim();
+        if (!to) return window.showToast?.('error', 'Enter a WhatsApp number.');
+
+        const message = document.getElementById('waComposeBody').value.trim();
+        if (!message || message.length < 20) {
+            return window.showToast?.('error', 'Message is too short.');
+        }
+
+        if (!confirm(`Send this application via WhatsApp to ${to}?`)) return;
+
+        const btn   = this;
+        const label = btn.querySelector('.indicator-label');
+        const prog  = btn.querySelector('.indicator-progress');
+
+        btn.disabled = true;
+        label?.classList.add('d-none');
+        prog?.classList.remove('d-none');
+
+        try {
+            const res = await fetch(`{{ url('admin/auto-apply/send-whatsapp') }}/${currentDraft.id}`, {
+                method: 'POST',
+                headers: {
+                    'X-CSRF-TOKEN': CSRF,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify({ phone: to, message: message }),
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                window.showToast?.('success', data.message || 'Application sent via WhatsApp.');
+                waModal.hide();
+                drawer.hide();
+                loadDrafts(draftsState.page);
+                loadLogs(logsState.page);
+            } else {
+                window.showToast?.('error', data.message || 'Send failed.');
+                btn.disabled = false;
+                label?.classList.remove('d-none');
+                prog?.classList.add('d-none');
+            }
+        } catch (e) {
+            console.error(e);
+            window.showToast?.('error', 'Network error.');
+            btn.disabled = false;
+            label?.classList.remove('d-none');
+            prog?.classList.add('d-none');
+        }
+    });
 
     // ── Save Draft (updates the relay, doesn't send) ────────────
     document.getElementById('composeSaveDraftBtn')?.addEventListener('click', async function () {
@@ -1594,6 +1857,28 @@
     function escapeHtml(t) {
         if (t === null || t === undefined) return '';
         const d = document.createElement('div'); d.textContent = String(t); return d.innerHTML;
+    }
+
+    // "a@x.com, b@y.com; c@z.com" → "a@x.com"
+    // "+256700, +256750" → "+256700"
+    function firstFromCommaList(raw) {
+        if (!raw) return '';
+        return String(raw).split(/[,;]+/).map(s => s.trim()).filter(Boolean)[0] || '';
+    }
+
+    // Parse the first email from a block of HTML/text
+    function firstEmailFrom(text) {
+        if (!text) return '';
+        const m = text.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+        return m ? m[0] : '';
+    }
+
+    // Parse the first phone number from a block of HTML/text
+    // Handles +256..., 07..., 256..., with spaces/dashes/dots
+    function firstPhoneFrom(text) {
+        if (!text) return '';
+        const m = text.match(/(\+\d[\d\s\-().]{7,17}\d|\b0\d{9,10}\b)/);
+        return m ? m[0].replace(/[\s().-]+/g, '') : '';
     }
 
     document.getElementById('reloadBtn')?.addEventListener('click', () => {
