@@ -478,62 +478,127 @@
     }
 </style>
 
+
+
+@endcan
+@endsection
+
+@push('scripts')
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
-// ================================================================
-// POSTER ACTIVITY CHART - MULTI-POSTER LINE GRAPH
-// ================================================================
-function loadPosterActivity() {
-    const container = document.getElementById('posterActivityContainer');
-    const loading = document.getElementById('activityLoading');
-    const canvas = document.getElementById('posterActivityChart');
-    const hourlyCanvas = document.getElementById('hourlyDistributionChart');
-    const hourlyLoading = document.getElementById('hourlyLoading');
-    
-    // Get current filter values
-    const form = document.querySelector('form');
-    const params = new URLSearchParams();
-    
-    if (form) {
-        form.querySelectorAll('select, input').forEach(field => {
-            if (field.name && field.value) {
-                params.append(field.name, field.value);
-            }
-        });
+(function () {
+    'use strict';
+
+    // ── Guard: Chart.js must be loaded ──────────────────────
+    function chartReady() {
+        if (typeof Chart === 'undefined') {
+            console.error('[by-poster] Chart.js is not loaded. Cannot render charts.');
+            return false;
+        }
+        return true;
     }
-    
-    const url = '{{ route("admin.jobs-reports.poster-activity") }}?' + params.toString();
-    
-    fetch(url)
-        .then(response => response.json())
-        .then(data => {
-            loading.style.display = 'none';
-            hourlyLoading.style.display = 'none';
-            
-            if (data.success && data.data.labels.length > 0) {
-                // Show charts
-                canvas.style.display = 'block';
-                hourlyCanvas.style.display = 'block';
-                
-                // Update badges
-                document.getElementById('totalPostsBadge').textContent = 'Total: ' + data.data.total_posts + ' posts';
-                document.getElementById('dateRangeBadge').textContent = 'Range: ' + data.data.labels.length + ' hours';
-                document.getElementById('posterCountBadge').textContent = 'Posters: ' + data.data.poster_count;
-                
-                // ============================================================
-                // CHART 1: MULTI-POSTER LINE CHART
-                // ============================================================
-                const ctx = canvas.getContext('2d');
+
+    // ── Show a friendly "no data" message in a container ─────
+    function showEmpty(containerId, message) {
+        const el = document.getElementById(containerId);
+        if (!el) return;
+        el.innerHTML = `<div class="text-center py-5 text-muted">${message}</div>`;
+    }
+
+    // ── Destroy old chart instances so re-runs don't double-draw ──
+    let posterChartInstance  = null;
+    let hourlyChartInstance  = null;
+
+    function destroyCharts() {
+        if (posterChartInstance)  { try { posterChartInstance.destroy();  } catch (e) {} posterChartInstance  = null; }
+        if (hourlyChartInstance)  { try { hourlyChartInstance.destroy();  } catch (e) {} hourlyChartInstance  = null; }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Loader
+    // ═══════════════════════════════════════════════════════════
+    function loadPosterActivity() {
+        const loading       = document.getElementById('activityLoading');
+        const hourlyLoading = document.getElementById('hourlyLoading');
+        const canvas        = document.getElementById('posterActivityChart');
+        const hourlyCanvas  = document.getElementById('hourlyDistributionChart');
+
+        // Show loading, hide canvases
+        if (loading)       loading.style.display = 'block';
+        if (hourlyLoading) hourlyLoading.style.display = 'block';
+        if (canvas)        canvas.style.display = 'none';
+        if (hourlyCanvas)  hourlyCanvas.style.display = 'none';
+
+        if (!chartReady()) {
+            if (loading)       loading.style.display = 'none';
+            if (hourlyLoading) hourlyLoading.style.display = 'none';
+            return;
+        }
+
+        // Collect form filters
+        const params = new URLSearchParams();
+        document.querySelectorAll('form select, form input').forEach(field => {
+            if (field.name && field.value) params.append(field.name, field.value);
+        });
+
+        const url = '{{ route("admin.jobs-reports.poster-activity") }}?' + params.toString();
+
+        fetch(url, { headers: { 'Accept': 'application/json' } })
+            .then(res => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return res.json();
+            })
+            .then(payload => {
+                if (loading)       loading.style.display = 'none';
+                if (hourlyLoading) hourlyLoading.style.display = 'none';
+
+                // ── Guard: response must have the expected shape ──
+                if (!payload || !payload.success || !payload.data) {
+                    console.warn('[by-poster] Unexpected response:', payload);
+                    showEmpty('posterActivityContainer', 'No activity data available for the selected filters.');
+                    showEmpty('hourlyDistributionContainer', 'No hourly data available.');
+                    return;
+                }
+
+                const data = payload.data;
+                const labels = Array.isArray(data.labels) ? data.labels : [];
+                const posterDatasets = Array.isArray(data.poster_datasets) ? data.poster_datasets : [];
+                const hourlyDistribution = Array.isArray(data.hourly_distribution) ? data.hourly_distribution : [];
+
+                // ── Empty state ──
+                if (labels.length === 0 || posterDatasets.length === 0) {
+                    showEmpty('posterActivityContainer', 'No activity data available for the selected filters.');
+                    showEmpty('hourlyDistributionContainer', 'No hourly data available.');
+                    return;
+                }
+
+                // ── Update badges ──
+                const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+                setText('totalPostsBadge', 'Total: ' + (data.total_posts ?? 0) + ' posts');
+                setText('dateRangeBadge', 'Range: ' + labels.length + ' hours');
+                setText('posterCountBadge', 'Posters: ' + (data.poster_count ?? 0));
+
+                // ── Show canvases ──
+                if (canvas)       canvas.style.display = 'block';
+                if (hourlyCanvas) hourlyCanvas.style.display = 'block';
+
+                // ── Destroy old instances ──
+                destroyCharts();
+
+                // ═════════════════════════════════════════════════════
+                // Chart 1 — Multi-poster line chart
+                // ═════════════════════════════════════════════════════
                 const colors = [
                     '#009ef7', '#50cd89', '#f1416c', '#ffc700', '#7239ea',
                     '#f6b100', '#1c4f8b', '#e37b3c', '#6f4e37', '#2e8b57',
-                    '#4169e1', '#dc143c', '#ff8c00', '#8b008b', '#2f4f4f'
+                    '#4169e1', '#dc143c', '#ff8c00', '#8b008b', '#2f4f4f',
                 ];
-                
-                const datasets = data.data.poster_datasets.map((poster, index) => {
-                    const color = colors[index % colors.length];
+
+                const datasets = posterDatasets.map((poster, i) => {
+                    const color = colors[i % colors.length];
                     return {
-                        label: poster.name,
-                        data: poster.data,
+                        label: poster.name || ('Poster ' + (i + 1)),
+                        data: Array.isArray(poster.data) ? poster.data : [],
                         borderColor: color,
                         backgroundColor: color + '20',
                         borderWidth: 2.5,
@@ -542,195 +607,120 @@ function loadPosterActivity() {
                         pointBackgroundColor: color,
                         pointBorderColor: '#fff',
                         pointBorderWidth: 2,
-                        pointRadius: 4,
-                        pointHoverRadius: 7,
-                        spanGaps: true
+                        pointRadius: 3,
+                        pointHoverRadius: 6,
+                        spanGaps: true,
                     };
                 });
-                
-                new Chart(ctx, {
-                    type: 'line',
-                    data: {
-                        labels: data.data.labels,
-                        datasets: datasets
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        interaction: {
-                            mode: 'index',
-                            intersect: false
-                        },
-                        plugins: {
-                            legend: {
-                                position: 'top',
-                                labels: {
-                                    font: {
-                                        size: 11,
-                                        weight: '600'
-                                    },
-                                    padding: 15,
-                                    usePointStyle: true,
-                                    pointStyle: 'circle',
-                                    boxWidth: 12
-                                }
-                            },
-                            tooltip: {
-                                callbacks: {
-                                    title: function(context) {
-                                        return 'Hour: ' + context[0].label;
-                                    },
-                                    label: function(context) {
-                                        const label = context.dataset.label || '';
-                                        const value = context.raw || 0;
-                                        return label + ': ' + value + ' job' + (value !== 1 ? 's' : '');
-                                    },
-                                    footer: function(context) {
-                                        let total = 0;
-                                        context.forEach(item => {
-                                            total += item.raw || 0;
-                                        });
-                                        return 'Total: ' + total + ' jobs in this hour';
-                                    }
-                                }
-                            }
-                        },
-                        scales: {
-                            x: {
-                                grid: {
-                                    display: false
-                                },
-                                ticks: {
-                                    maxRotation: 45,
-                                    minRotation: 0,
-                                    font: {
-                                        size: 9
-                                    }
-                                }
-                            },
-                            y: {
-                                beginAtZero: true,
-                                grid: {
-                                    color: 'rgba(0, 0, 0, 0.05)'
-                                },
-                                ticks: {
-                                    stepSize: 1,
-                                    font: {
-                                        size: 10
-                                    }
-                                },
-                                title: {
-                                    display: true,
-                                    text: 'Number of Jobs Posted',
-                                    font: {
-                                        size: 11,
-                                        weight: '600'
-                                    }
-                                }
-                            }
-                        }
-                    }
-                });
-                
-                // ============================================================
-                // CHART 2: BAR CHART - Hourly Distribution (Aggregated)
-                // ============================================================
-                const hourlyCtx = hourlyCanvas.getContext('2d');
-                const hourlyData = data.data.hourly_distribution || [];
-                const hourlyLabels = hourlyData.map(item => item.label);
-                const hourlyCounts = hourlyData.map(item => item.count);
-                
-                new Chart(hourlyCtx, {
-                    type: 'bar',
-                    data: {
-                        labels: hourlyLabels,
-                        datasets: [
-                            {
-                                label: 'Total Posts',
-                                data: hourlyCounts,
-                                backgroundColor: hourlyCounts.map(count => 
-                                    count > 0 ? 'rgba(0, 158, 247, 0.7)' : 'rgba(228, 230, 239, 0.5)'
-                                ),
-                                borderColor: hourlyCounts.map(count => 
-                                    count > 0 ? '#009ef7' : '#e4e6ef'
-                                ),
-                                borderWidth: 2,
-                                borderRadius: 4,
-                                barPercentage: 0.8,
-                                categoryPercentage: 0.9
-                            }
-                        ]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: {
-                            legend: {
-                                display: false
-                            },
-                            tooltip: {
-                                callbacks: {
-                                    label: function(context) {
-                                        const label = context.label || '';
-                                        const value = context.raw || 0;
-                                        return label + ': ' + value + ' posts';
-                                    }
-                                }
-                            }
-                        },
-                        scales: {
-                            x: {
-                                grid: {
-                                    display: false
-                                },
-                                ticks: {
-                                    maxRotation: 0,
-                                    minRotation: 0,
-                                    font: {
-                                        size: 9
-                                    }
-                                }
-                            },
-                            y: {
-                                beginAtZero: true,
-                                grid: {
-                                    color: 'rgba(0, 0, 0, 0.05)'
-                                },
-                                ticks: {
-                                    stepSize: 1,
-                                    font: {
-                                        size: 9
-                                    }
-                                }
-                            }
-                        }
-                    }
-                });
-                
-            } else {
-                container.innerHTML = '<div class="text-center py-5 text-muted">No activity data available for the selected filters</div>';
-                document.getElementById('hourlyDistributionContainer').innerHTML = '<div class="text-center py-5 text-muted">No hourly data available</div>';
-            }
-        })
-        .catch(error => {
-            console.error('Error loading poster activity:', error);
-            loading.style.display = 'none';
-            hourlyLoading.style.display = 'none';
-            container.innerHTML = '<div class="text-center py-5 text-danger">Failed to load activity data</div>';
-        });
-}
 
-// Load activity on page load and when filters change
-document.addEventListener('DOMContentLoaded', function() {
-    // Load initial data
-    loadPosterActivity();
-    
-    // Reload when form is submitted
-    document.querySelector('form')?.addEventListener('submit', function(e) {
-        setTimeout(loadPosterActivity, 500);
+                try {
+                    posterChartInstance = new Chart(canvas.getContext('2d'), {
+                        type: 'line',
+                        data: { labels, datasets },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: { mode: 'index', intersect: false },
+                            plugins: {
+                                legend: {
+                                    position: 'top',
+                                    labels: { font: { size: 11, weight: '600' }, padding: 15, usePointStyle: true },
+                                },
+                                tooltip: {
+                                    callbacks: {
+                                        title: (items) => 'Hour: ' + items[0].label,
+                                        label: (ctx) => {
+                                            const v = ctx.raw || 0;
+                                            return `${ctx.dataset.label}: ${v} job${v !== 1 ? 's' : ''}`;
+                                        },
+                                        footer: (items) => {
+                                            const total = items.reduce((sum, i) => sum + (i.raw || 0), 0);
+                                            return 'Total: ' + total + ' jobs';
+                                        },
+                                    },
+                                },
+                            },
+                            scales: {
+                                x: { grid: { display: false }, ticks: { maxRotation: 45, font: { size: 9 } } },
+                                y: {
+                                    beginAtZero: true,
+                                    grid: { color: 'rgba(0,0,0,0.05)' },
+                                    ticks: { stepSize: 1, font: { size: 10 } },
+                                    title: { display: true, text: 'Jobs Posted', font: { size: 11, weight: '600' } },
+                                },
+                            },
+                        },
+                    });
+                } catch (e) {
+                    console.error('[by-poster] Failed to render poster line chart:', e);
+                    showEmpty('posterActivityContainer', 'Could not render the activity chart. See console for details.');
+                }
+
+                // ═════════════════════════════════════════════════════
+                // Chart 2 — Hourly distribution bar chart
+                // ═════════════════════════════════════════════════════
+                if (hourlyDistribution.length > 0) {
+                    const hourLabels = hourlyDistribution.map(h => h.label || h.hour);
+                    const hourCounts = hourlyDistribution.map(h => h.count || 0);
+
+                    try {
+                        hourlyChartInstance = new Chart(hourlyCanvas.getContext('2d'), {
+                            type: 'bar',
+                            data: {
+                                labels: hourLabels,
+                                datasets: [{
+                                    label: 'Total Posts',
+                                    data: hourCounts,
+                                    backgroundColor: hourCounts.map(c => c > 0 ? 'rgba(0,158,247,0.7)' : 'rgba(228,230,239,0.5)'),
+                                    borderColor: hourCounts.map(c => c > 0 ? '#009ef7' : '#e4e6ef'),
+                                    borderWidth: 2,
+                                    borderRadius: 4,
+                                    barPercentage: 0.8,
+                                }],
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: { display: false },
+                                    tooltip: {
+                                        callbacks: {
+                                            label: (ctx) => `${ctx.label}: ${ctx.raw || 0} posts`,
+                                        },
+                                    },
+                                },
+                                scales: {
+                                    x: { grid: { display: false }, ticks: { font: { size: 9 } } },
+                                    y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { stepSize: 1, font: { size: 9 } } },
+                                },
+                            },
+                        });
+                    } catch (e) {
+                        console.error('[by-poster] Failed to render hourly bar chart:', e);
+                        showEmpty('hourlyDistributionContainer', 'Could not render the hourly chart. See console for details.');
+                    }
+                }
+            })
+            .catch(err => {
+                console.error('[by-poster] Activity load failed:', err);
+                if (loading)       loading.style.display = 'none';
+                if (hourlyLoading) hourlyLoading.style.display = 'none';
+                showEmpty('posterActivityContainer', 'Failed to load activity data: ' + err.message);
+                showEmpty('hourlyDistributionContainer', 'Failed to load hourly data.');
+            });
+    }
+
+    // ── Run on page load ──
+    document.addEventListener('DOMContentLoaded', loadPosterActivity);
+
+    // ── Re-run after filter form submit (page reloads anyway, but handle SPA-style if you move to that later) ──
+    document.querySelector('form')?.addEventListener('submit', function () {
+        // The form is a normal GET submit — the page will reload. Nothing to do.
     });
-});
-</script>
 
-@endcan
-@endsection
+    // Expose for manual re-run
+    window.reloadPosterActivity = loadPosterActivity;
+
+})();
+</script>
+@endpush

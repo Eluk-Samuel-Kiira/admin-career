@@ -1334,102 +1334,149 @@ class JobsReportsController extends Controller
     public function getPosterActivity(Request $request)
     {
         $startDate = $request->get('start_date', Carbon::now()->startOfYear()->format('Y-m-d'));
-        $endDate = $request->get('end_date', Carbon::now()->format('Y-m-d'));
-        $posterId = $request->get('poster_id');
+        $endDate   = $request->get('end_date',   Carbon::now()->format('Y-m-d'));
+        $posterId  = $request->get('poster_id');
         $countryCode = $request->get('country_code');
-        
+
         $startDateTime = Carbon::parse($startDate)->startOfDay();
-        $endDateTime = Carbon::parse($endDate)->endOfDay();
-        
-        // Get all posters with their jobs
-        $query = JobPost::whereBetween('job_posts.created_at', [$startDateTime, $endDateTime])
+        $endDateTime   = Carbon::parse($endDate)->endOfDay();
+
+        // ── 1. Hard cap the hourly resolution ────────────────────
+        //     More than ~14 days of hourly data is unreadable anyway.
+        //     If the range is wider, group by DAY instead of HOUR.
+        $totalHours = $startDateTime->diffInHours($endDateTime) + 1;
+        $groupByDay = $totalHours > 24 * 14;   // > 14 days → daily buckets
+
+        $dateFormat = $groupByDay ? '%Y-%m-%d' : '%Y-%m-%d %H:00';
+        $labelFormat = $groupByDay ? 'M d' : 'M d H:00';
+
+        // ── 2. Aggregation query ─────────────────────────────────
+        //     Two jobs in ONE query:
+        //       a) hourly/daily counts per poster
+        //       b) hourly distribution (all hours of day, aggregated)
+        $query = DB::table('job_posts')
             ->join('users', 'job_posts.poster_id', '=', 'users.id')
+            ->whereBetween('job_posts.created_at', [$startDateTime, $endDateTime])
+            ->when($posterId, fn($q) => $q->where('job_posts.poster_id', $posterId))
+            ->when($countryCode, fn($q) => $q->where('job_posts.country_code', $countryCode));
+
+        // Aggregate per (poster, bucket) — one row per poster per hour/day
+        $perPosterBucket = (clone $query)
             ->select(
-                'job_posts.id',
-                'job_posts.created_at',
                 'users.id as poster_id',
                 'users.name as poster_name',
-                DB::raw('HOUR(job_posts.created_at) as hour')
+                DB::raw("DATE_FORMAT(job_posts.created_at, '{$dateFormat}') as bucket"),
+                DB::raw('COUNT(*) as total')
             )
-            ->orderBy('job_posts.created_at', 'asc');
-        
-        if ($posterId) {
-            $query->where('poster_id', $posterId);
-        }
-        
-        if ($countryCode) {
-            $query->where('job_posts.country_code', $countryCode);
-        }
-        
-        $jobs = $query->get();
-        
-        // Get all unique posters
-        $posters = $jobs->groupBy('poster_id')->map(function($items, $key) {
-            return [
-                'id' => $key,
-                'name' => $items->first()->poster_name,
-            ];
-        })->values();
-        
-        // Get date range for labels (hourly)
+            ->groupBy('users.id', 'users.name', 'bucket')
+            ->orderBy('bucket')
+            ->get();
+
+        // Hourly distribution (0–23) across all matching jobs
+        $hourlyDist = (clone $query)
+            ->select(
+                DB::raw('HOUR(job_posts.created_at) as hour'),
+                DB::raw('COUNT(*) as total')
+            )
+            ->groupBy('hour')
+            ->pluck('total', 'hour')
+            ->all();
+
+        // Totals for badges
+        $totals = (clone $query)
+            ->select(
+                DB::raw('COUNT(*) as total_posts'),
+                DB::raw('COUNT(DISTINCT job_posts.poster_id) as poster_count')
+            )
+            ->first();
+
+        // ── 3. Build the label axis ──────────────────────────────
         $labels = [];
-        $currentHour = $startDateTime->copy()->startOfHour();
-        $endHour = $endDateTime->copy()->startOfHour();
-        
-        while ($currentHour <= $endHour) {
-            $labels[] = $currentHour->format('M d H:00');
-            $currentHour->addHour();
-        }
-        
-        // Build dataset for each poster
-        $posterDatasets = [];
-        $hourlyDistribution = array_fill(0, 24, 0);
-        
-        foreach ($posters as $poster) {
-            $posterJobs = $jobs->where('poster_id', $poster['id']);
-            $data = [];
-            
-            // Fill data for each hour
-            $currentHour = $startDateTime->copy()->startOfHour();
-            while ($currentHour <= $endHour) {
-                $hourCount = $posterJobs->filter(function($job) use ($currentHour) {
-                    return $job->created_at->format('Y-m-d H:00') == $currentHour->format('Y-m-d H:00');
-                })->count();
-                
-                $data[] = $hourCount;
-                $currentHour->addHour();
+        if ($groupByDay) {
+            $cursor = $startDateTime->copy()->startOfDay();
+            $last   = $endDateTime->copy()->startOfDay();
+            while ($cursor <= $last) {
+                $labels[] = $cursor->format($labelFormat);
+                $cursor->addDay();
             }
-            
+        } else {
+            $cursor = $startDateTime->copy()->startOfHour();
+            $last   = $endDateTime->copy()->startOfHour();
+            while ($cursor <= $last) {
+                $labels[] = $cursor->format($labelFormat);
+                $cursor->addHour();
+            }
+        }
+
+        // ── 4. Pivot the aggregated rows into per-poster series ──
+        //     Build a bucket→index map so each series array lines up
+        //     with the labels.
+        $bucketIndex = array_flip(
+            array_map(
+                fn ($label) => $groupByDay ? $label : $label,   // labels match bucket format
+                $labels
+            )
+        );
+
+        // Group rows by poster
+        $byPoster = $perPosterBucket->groupBy('poster_id');
+
+        $posterDatasets = [];
+        foreach ($byPoster as $posterIdKey => $rows) {
+            $series = array_fill(0, count($labels), 0);
+            $name   = $rows->first()->poster_name;
+            $bucketKeyMap = [];
+
+            if ($groupByDay) {
+                // Build bucket → position in labels
+                foreach ($labels as $idx => $label) {
+                    $bucketKeyMap[$label] = $idx;   // e.g. "Nov 21" → 5
+                }
+            } else {
+                foreach ($labels as $idx => $label) {
+                    $bucketKeyMap[$label] = $idx;   // e.g. "Nov 21 14:00" → 5
+                }
+            }
+
+            foreach ($rows as $row) {
+                // row->bucket is "2026-11-21 14:00" or "2026-11-21"
+                // labels[] is "Nov 21 14:00" or "Nov 21"
+                // Convert row->bucket to the label format
+                $bucketLabel = $groupByDay
+                    ? Carbon::parse($row->bucket)->format($labelFormat)
+                    : Carbon::parse($row->bucket . ':00')->format($labelFormat);
+
+                if (isset($bucketKeyMap[$bucketLabel])) {
+                    $series[$bucketKeyMap[$bucketLabel]] = (int) $row->total;
+                }
+            }
+
             $posterDatasets[] = [
-                'name' => $poster['name'],
-                'data' => $data,
+                'name' => $name,
+                'data' => $series,
             ];
         }
-        
-        // Calculate hourly distribution (aggregated)
-        foreach ($jobs as $job) {
-            $hour = (int)$job->hour;
-            $hourlyDistribution[$hour]++;
-        }
-        
-        $hourlyDistributionData = [];
-        for ($hour = 0; $hour < 24; $hour++) {
-            $hourlyDistributionData[] = [
-                'hour' => $hour,
-                'label' => date('g A', mktime($hour, 0, 0)),
-                'count' => $hourlyDistribution[$hour],
+
+        // ── 5. Hourly distribution (24 buckets) ──────────────────
+        $hourlyDistribution = [];
+        for ($h = 0; $h < 24; $h++) {
+            $hourlyDistribution[] = [
+                'hour'  => $h,
+                'label' => date('g A', mktime($h, 0, 0)),
+                'count' => (int) ($hourlyDist[$h] ?? 0),
             ];
         }
-        
+
         return response()->json([
             'success' => true,
-            'data' => [
-                'labels' => $labels,
-                'poster_datasets' => $posterDatasets,
-                'poster_count' => $posters->count(),
-                'total_posts' => $jobs->count(),
-                'hourly_distribution' => $hourlyDistributionData,
-            ]
+            'data'    => [
+                'labels'              => $labels,
+                'poster_datasets'     => $posterDatasets,
+                'poster_count'        => (int) ($totals->poster_count ?? 0),
+                'total_posts'         => (int) ($totals->total_posts  ?? 0),
+                'hourly_distribution' => $hourlyDistribution,
+                'grouped_by'          => $groupByDay ? 'day' : 'hour',
+            ],
         ]);
     }
 

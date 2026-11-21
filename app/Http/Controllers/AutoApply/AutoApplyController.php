@@ -111,7 +111,11 @@ class AutoApplyController extends Controller
         // ── 1. Resolve the recipient email ─────────────────────────
         $toEmail = trim((string) $request->input('to', ''));
         if ($toEmail === '') {
-            $toEmail = $relay->jobPost->email;
+            $rawEmail = (string) ($relay->jobPost->email ?? '');
+            if ($rawEmail !== '') {
+                $parts = preg_split('/[,;]+/', $rawEmail);
+                $toEmail = trim($parts[0] ?? '');
+            }
         }
         if (!$toEmail) {
             $text = strip_tags(
@@ -427,10 +431,10 @@ class AutoApplyController extends Controller
 
         // ── Relay query ──
         $relayQuery = AutoApplyRelay::with([
-                'user:id,name,email',
-                'jobPost:id,job_title,slug,email,qualifications,application_procedure,is_resume_required,is_cover_letter_required,is_academic_documents_required,is_application_required',
-            ])
-            ->where('status', 'queued');
+            'user:id,name,email',
+            'jobPost:id,job_title,slug,email,telephone,is_whatsapp_contact,is_telephone_call,qualifications,application_procedure,is_resume_required,is_cover_letter_required,is_academic_documents_required,is_application_required',
+        ])
+        ->where('status', 'queued');
 
         if ($search !== '') {
             $relayQuery->where(function ($q) use ($like) {
@@ -464,49 +468,55 @@ class AutoApplyController extends Controller
 
         $relays = $includeRelays
             ? $relayQuery->orderByDesc('id')->get()->map(fn($r) => [
-                'id'              => $r->id,
-                'type'            => 'relay',
-                'user_name'       => $r->user?->name ?? 'Unknown',
-                'user_email'      => $r->user?->email,
-                'job_title'       => $r->jobPost?->job_title ?? '—',
-                'job_slug'        => $r->jobPost?->slug,
-                'channel'         => $r->channels_attempted[0] ?? 'email',
-                'cv_html'         => $r->tailored_cv_html ?? '',
-                'cover_html'      => $r->cover_letter_html ?? '',
-                'employer_email'  => $r->jobPost?->email,
-                'qualifications'  => $r->jobPost?->qualifications,
+                'id'                    => $r->id,
+                'type'                  => 'relay',
+                'user_name'             => $r->user?->name ?? 'Unknown',
+                'user_email'            => $r->user?->email,
+                'job_title'             => $r->jobPost?->job_title ?? '—',
+                'job_slug'              => $r->jobPost?->slug,
+                'channel'               => $r->channels_attempted[0] ?? 'email',
+                'cv_html'               => $r->tailored_cv_html ?? '',
+                'cover_html'            => $r->cover_letter_html ?? '',
+                'employer_email'        => $r->jobPost?->email,
+                'employer_phone'        => $r->jobPost?->telephone,                            // ⬅ NEW
+                'is_whatsapp_contact'   => (bool) ($r->jobPost?->is_whatsapp_contact ?? false), // ⬅ NEW
+                'is_telephone_call'     => (bool) ($r->jobPost?->is_telephone_call   ?? false), // ⬅ NEW
+                'qualifications'        => $r->jobPost?->qualifications,
                 'application_procedure' => $r->jobPost?->application_procedure,
-                'job_requirements'=> [
+                'job_requirements'      => [
                     'is_resume_required'             => (bool) ($r->jobPost?->is_resume_required ?? false),
                     'is_cover_letter_required'       => (bool) ($r->jobPost?->is_cover_letter_required ?? false),
                     'is_academic_documents_required' => (bool) ($r->jobPost?->is_academic_documents_required ?? false),
                     'is_application_required'        => (bool) ($r->jobPost?->is_application_required ?? false),
                 ],
-                'created_at'      => $r->created_at->toISOString(),
+                'created_at'            => $r->created_at->toISOString(),
             ])
             : collect();
 
         $external = $includeExternal
             ? $externalQuery->orderByDesc('id')->get()->map(fn($e) => [
-                'id'              => $e->id,
-                'type'            => 'external',
-                'user_name'       => $e->user?->name ?? 'Unknown',
-                'user_email'      => $e->user?->email,
-                'job_title'       => $e->jobPost?->job_title ?? '—',
-                'job_slug'        => $e->jobPost?->slug,
-                'external_url'    => $e->external_url,
-                'cv_html'         => $e->tailored_cv_html ?? '',
-                'cover_html'      => $e->cover_letter_html ?? '',
-                'employer_email'  => $e->jobPost?->email,
-                'qualifications'  => $e->jobPost?->qualifications,
+                'id'                    => $e->id,
+                'type'                  => 'external',
+                'user_name'             => $e->user?->name ?? 'Unknown',
+                'user_email'            => $e->user?->email,
+                'job_title'             => $e->jobPost?->job_title ?? '—',
+                'job_slug'              => $e->jobPost?->slug,
+                'external_url'          => $e->external_url,
+                'cv_html'               => $e->tailored_cv_html ?? '',
+                'cover_html'            => $e->cover_letter_html ?? '',
+                'employer_email'        => $e->jobPost?->email,
+                'employer_phone'        => $e->jobPost?->telephone,                            // ⬅ NEW
+                'is_whatsapp_contact'   => (bool) ($e->jobPost?->is_whatsapp_contact ?? false), // ⬅ NEW
+                'is_telephone_call'     => (bool) ($e->jobPost?->is_telephone_call   ?? false), // ⬅ NEW
+                'qualifications'        => $e->jobPost?->qualifications,
                 'application_procedure' => $e->jobPost?->application_procedure,
-                'job_requirements'=> [
+                'job_requirements'      => [
                     'is_resume_required'             => (bool) ($e->jobPost?->is_resume_required ?? false),
                     'is_cover_letter_required'       => (bool) ($e->jobPost?->is_cover_letter_required ?? false),
                     'is_academic_documents_required' => (bool) ($e->jobPost?->is_academic_documents_required ?? false),
                     'is_application_required'        => (bool) ($e->jobPost?->is_application_required ?? false),
                 ],
-                'created_at'      => $e->created_at->toISOString(),
+                'created_at'            => $e->created_at->toISOString(),
             ])
             : collect();
 
@@ -1124,6 +1134,242 @@ class AutoApplyController extends Controller
         $row->delete();
 
         return response()->json(['success' => true, 'message' => 'History entry removed.']);
+    }
+
+    /**
+     * POST /admin/auto-apply/mark-relay-applied/{id}
+     *
+     * Marks an email/WhatsApp relay as "applied manually" — for cases where the
+     * employer also accepts external applications and the admin submitted it there
+     * instead of via our email pipeline.
+     *
+     * - Flips the relay status to 'sent' so it no longer shows in Drafts
+     * - Logs to JobSeekerJob with a distinct note
+     * - Bumps the subscriber's applied counter under the correct channel
+     */
+    public function markRelayApplied(Request $request, $id): JsonResponse
+    {
+        if (!auth()->user()->can('manage job alerts')) {
+            return response()->json(['success' => false], 403);
+        }
+
+        $relay = AutoApplyRelay::with(['user', 'jobPost'])->findOrFail($id);
+
+        // Resolve the seeker profile
+        $seeker = SeekerProfile::where('user_id', $relay->user_id)->first();
+        if (!$seeker) {
+            return response()->json(['success' => false, 'message' => 'Seeker profile not found.'], 404);
+        }
+
+        $channel = $relay->channels_attempted[0] ?? 'email';
+
+        // Idempotency: already logged?
+        $already = JobSeekerJob::where('seeker_profile_id', $seeker->id)
+            ->where('job_post_id', $relay->job_post_id)
+            ->where('is_applied', true)
+            ->exists();
+
+        if ($already) {
+            // Still flip the relay status so it leaves the Drafts tab
+            if ($relay->status === 'queued') {
+                $relay->update([
+                    'status'      => 'sent',
+                    'sent_at'     => now(),
+                    'notes'       => trim(($relay->notes ?? '') . "\nManually marked applied by admin on " . now()->toDateTimeString()),
+                ]);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'This job was already marked as applied. Relay moved to Sent.',
+                'already' => true,
+            ]);
+        }
+
+        // Record history + bump counters inside a transaction
+        \DB::transaction(function () use ($relay, $seeker, $channel) {
+            JobSeekerJob::create([
+                'seeker_profile_id'     => $seeker->id,
+                'job_post_id'           => $relay->job_post_id,
+                'is_applied'            => true,
+                'applied_at'            => now(),
+                'notes'                 => 'Applied manually by admin via ' . ucfirst($channel)
+                                        . ' (external submission)',
+                'auto_apply_draft_id'   => $relay->id,
+                'auto_apply_draft_type' => 'relay',
+            ]);
+
+            \App\Models\Job\JobPost::where('id', $relay->job_post_id)
+                ->increment('application_count');
+
+            // Flip the relay to sent so it stops showing in Drafts
+            $relay->update([
+                'status'         => 'sent',
+                'sent_at'        => now(),
+                'employer_email' => $relay->employer_email ?? $relay->jobPost?->email,
+                'notes'          => trim(($relay->notes ?? '') . "\nManually marked applied by admin on " . now()->toDateTimeString()),
+            ]);
+
+            // Bump the subscriber's applied counter
+            \App\Models\AutoApplyStat::updateOrCreate(
+                ['user_id' => $relay->user_id],
+                []
+            )->increment('applied_total');
+
+            \App\Models\AutoApplyStat::where('user_id', $relay->user_id)
+                ->update(['last_applied_at' => now()]);
+
+            \App\Models\AutoApplyStat::where('user_id', $relay->user_id)
+                ->increment($channel === 'whatsapp' ? 'applied_via_whatsapp' : 'applied_via_email');
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Marked as applied via ' . ucfirst($channel) . ' (external).',
+        ]);
+    }
+
+
+    /**
+     * POST /admin/auto-apply/send-whatsapp/{id}
+     *
+     * Sends the application via WhatsApp using the existing WhatsAppChannel.
+     * Records the JobSeekerJob, increments the subscriber counter, and marks
+     * the relay as sent.
+     */
+    public function sendWhatsAppRelay(Request $request, $id): JsonResponse
+    {
+        if (!auth()->user()->can('manage job alerts')) {
+            return response()->json(['success' => false], 403);
+        }
+
+        $validated = $request->validate([
+            'phone'   => 'nullable|string|max:25',
+            'message' => 'required|string|max:4000',
+        ]);
+
+        $relay  = AutoApplyRelay::with(['user', 'jobPost.company'])->findOrFail($id);
+        $seeker = SeekerProfile::where('user_id', $relay->user_id)->first();
+
+        if (!$seeker) {
+            return response()->json(['success' => false, 'message' => 'Seeker not found.'], 404);
+        }
+
+        // Resolve the WhatsApp number: explicit input → job post telephone
+        // → whatsapp_number column (whichever exists) → parse from text
+        // Resolve WhatsApp number: explicit input → job telephone → whatsapp_number → parse text
+        $to = trim((string) ($validated['phone'] ?? ''));
+        if ($to === '') {
+            $to = trim((string) ($relay->jobPost->telephone ?? ''));
+        }
+        if ($to === '' && isset($relay->jobPost->whatsapp_number)) {
+            $to = trim((string) $relay->jobPost->whatsapp_number);
+        }
+
+        // Always take the FIRST item if it's a comma-separated list
+        if ($to !== '') {
+            $parts = preg_split('/[,;]+/', $to);
+            $to = trim($parts[0] ?? '');
+        }
+
+        // Last resort: parse from text
+        if ($to === '') {
+            $text = strip_tags(
+                ($relay->jobPost->qualifications ?? '') . ' ' .
+                ($relay->jobPost->application_procedure ?? '')
+            );
+            if (preg_match('/(\+\d[\d\s\-().]{7,17}\d|\b0\d{9,10}\b)/', $text, $m)) {
+                $to = preg_replace('/[\s().-]+/', '', $m[0]);
+            }
+        }
+
+        if ($to === '') {
+            return response()->json([
+                'success' => false,
+                'message' => 'No WhatsApp number on the job post. Enter one to send.',
+            ], 422);
+        }
+
+        $message = trim($validated['message']);
+        if ($message === '') {
+            return response()->json(['success' => false, 'message' => 'Message is empty.'], 422);
+        }
+
+        // Persist the edited message back so re-open shows it
+        $relay->cover_letter_html = $message;
+        $relay->save();
+
+        try {
+            // Reuse the existing WhatsApp channel service
+            app(\App\Services\AutoApply\Channels\WhatsAppChannel::class)
+                ->submit(
+                    $seeker,
+                    $relay->jobPost,
+                    ['html' => $relay->tailored_cv_html, 'path' => null],
+                    $message,
+                    []
+                );
+
+            // Flip the relay + log the application
+            \DB::transaction(function () use ($relay, $seeker, $to) {
+                $relay->update([
+                    'status'              => 'sent',
+                    'sent_at'             => now(),
+                    'channels_sent'       => array_values(array_unique(
+                        array_merge((array) $relay->channels_sent, ['whatsapp'])
+                    )),
+                    'source_contact'      => $to,
+                ]);
+
+                $already = \App\Models\Job\JobSeekerJob::where('seeker_profile_id', $seeker->id)
+                    ->where('job_post_id', $relay->job_post_id)
+                    ->where('is_applied', true)
+                    ->exists();
+
+                if (!$already) {
+                    \App\Models\Job\JobSeekerJob::create([
+                        'seeker_profile_id'     => $seeker->id,
+                        'job_post_id'           => $relay->job_post_id,
+                        'is_applied'            => true,
+                        'applied_at'            => now(),
+                        'notes'                 => 'Applied via WhatsApp',
+                        'auto_apply_draft_id'   => $relay->id,
+                        'auto_apply_draft_type' => 'relay',
+                    ]);
+
+                    \App\Models\Job\JobPost::where('id', $relay->job_post_id)
+                        ->increment('application_count');
+
+                    \App\Models\AutoApplyStat::updateOrCreate(
+                        ['user_id' => $relay->user_id],
+                        []
+                    )->increment('applied_total');
+
+                    \App\Models\AutoApplyStat::where('user_id', $relay->user_id)
+                        ->update(['last_applied_at' => now()]);
+
+                    \App\Models\AutoApplyStat::where('user_id', $relay->user_id)
+                        ->increment('applied_via_whatsapp');
+                }
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Application sent via WhatsApp to ' . $to . '.',
+            ]);
+
+        } catch (\Throwable $e) {
+            \Log::error('WhatsApp send failed', [
+                'relay_id' => $relay->id,
+                'to'       => $to,
+                'error'    => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to send: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
 }

@@ -135,7 +135,7 @@ Schedule::command('queue:prune-failed --hours=168')
     ->dailyAt('04:00')
     ->withoutOverlapping();
 
-Schedule::command('letters:cleanup-temp-cvs --hours=24 --max-age-days=3')
+Schedule::command('letters:cleanup-temp-cvs --hours=24 --max-age-days=3 --stale-days=14')
     ->dailyAt('03:00')
     ->withoutOverlapping();
 

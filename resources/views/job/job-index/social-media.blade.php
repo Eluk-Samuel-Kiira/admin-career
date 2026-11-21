@@ -683,31 +683,65 @@ function renderPlatformsTable(platforms) {
 function renderPagination(data) {
     const el = document.getElementById('pagination');
     const info = document.getElementById('paginationInfo');
-    if (!el) return;
-    
+    if (!el || !info) return;
+
     el.innerHTML = '';
     info.innerHTML = `Showing ${data.from || 0} to ${data.to || 0} of ${data.total} entries`;
-    
+
     const addPage = (page, text, isActive = false, isDisabled = false) => {
         const li = document.createElement('li');
-        li.className = `page-item ${isActive ? 'active' : ''} ${isDisabled ? 'disabled' : ''}`;
+        li.className = `page-item${isActive ? ' active' : ''}${isDisabled ? ' disabled' : ''}`;
+
         const a = document.createElement('a');
         a.className = 'page-link';
         a.href = '#';
         a.textContent = text;
-        if (!isDisabled) a.onclick = (e) => { e.preventDefault(); changePage(page); };
+
+        if (!isDisabled && !isActive) {
+            a.addEventListener('click', (e) => {
+                e.preventDefault();
+                changePage(page);
+            });
+        }
+
         li.appendChild(a);
         el.appendChild(li);
     };
-    
+
+    const addEllipsis = () => {
+        const li = document.createElement('li');
+        li.className = 'page-item disabled';
+        const span = document.createElement('span');
+        span.className = 'page-link';
+        span.textContent = '…';
+        li.appendChild(span);
+        el.appendChild(li);
+    };
+
+    // Previous
     addPage(data.current_page - 1, 'Previous', false, !data.prev_page_url);
-    let start = Math.max(1, data.current_page - 2);
-    let end = Math.min(data.last_page, data.current_page + 2);
-    if (start > 1) addPage(1, '1');
-    if (start > 2) el.innerHTML += '<li class="page-item disabled"><span class="page-link">...</span></li>';
-    for (let i = start; i <= end; i++) addPage(i, i, i === data.current_page);
-    if (end < data.last_page - 1) el.innerHTML += '<li class="page-item disabled"><span class="page-link">...</span></li>';
-    if (end < data.last_page) addPage(data.last_page, data.last_page);
+
+    const start = Math.max(1, data.current_page - 2);
+    const end   = Math.min(data.last_page, data.current_page + 2);
+
+    // Leading "1 …" if we're far enough right
+    if (start > 1) {
+        addPage(1, '1');
+        if (start > 2) addEllipsis();
+    }
+
+    // The page window
+    for (let i = start; i <= end; i++) {
+        addPage(i, String(i), i === data.current_page);
+    }
+
+    // Trailing "… last" if we're far enough left
+    if (end < data.last_page) {
+        if (end < data.last_page - 1) addEllipsis();
+        addPage(data.last_page, String(data.last_page));
+    }
+
+    // Next
     addPage(data.current_page + 1, 'Next', false, !data.next_page_url);
 }
 
